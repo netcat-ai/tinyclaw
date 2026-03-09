@@ -1,9 +1,9 @@
-# OneClaw Architecture v0
+# tinyclaw Architecture v0
 
 ## 1. 目标与边界
 
 ### 1.1 项目目标
-OneClaw 是一个面向企业微信会话的 AI Agent Runtime：
+tinyclaw 是一个面向企业微信会话的 AI Agent Runtime：
 - 员工在企业微信私聊/群聊中与 Agent 交互。
 - 每个会话（私聊/群聊）映射到独立 sandbox agent。
 - 主服务负责消息拉取、事件入流、分发调度。
