@@ -31,3 +31,20 @@
   1. `go test ./...`
   2. 构建并推送镜像到 `ghcr.io/<owner>/tinyclaw`
   3. 部署到 `claw` 命名空间
+
+## CI/CD 前置条件
+- `deploy-claw` job 通过 `tailscale/github-action@v3` 接入 tailnet 后再执行 `kubectl`。
+- 需要在 GitHub 仓库 secrets 中配置：
+  - `TS_AUTHKEY`：Tailscale auth key（建议绑定最小权限 tag，如 `tag:ci`）。
+  - `KUBE_CONFIG`：Kubernetes kubeconfig 内容（apiserver 必须是 tailnet 可达地址）。
+  - `REDIS_ADDR`
+  - `REDIS_PASSWORD`
+  - `STREAM_PREFIX`
+  - `WECOM_CORP_ID`
+  - `WECOM_CORP_SECRET`
+  - `WECOM_RSA_PRIVATE_KEY`
+  - `WECOM_SEQ_KEY`
+- 目前仓库内默认值：
+  - `REDIS_ADDR=redis:6379`
+  - `STREAM_PREFIX=stream:group`
+  - `WECOM_SEQ_KEY=msg:seq`
