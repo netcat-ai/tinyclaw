@@ -81,6 +81,16 @@ jobs:
           EOF
           chmod 600 "$HOME/.kube/config"
 
+      - name: Select kube context
+        run: |
+          CTX="$(kubectl config get-contexts -o name | head -n1)"
+          if [ -z "${CTX}" ]; then
+            echo "no context found in kubeconfig"
+            exit 1
+          fi
+          kubectl config use-context "${CTX}"
+          echo "using context: ${CTX}"
+
       - name: Verify cluster access
         run: kubectl cluster-info
 
