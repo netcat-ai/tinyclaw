@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,7 +13,21 @@ import (
 	"k8s.io/client-go/rest"
 	sandboxclient "sigs.k8s.io/agent-sandbox/clients/k8s/clientset/versioned"
 	"tinyclaw/sandbox"
+	"tinyclaw/worktool"
 )
+
+// portFromAddr extracts the port from an address like ":8080" or "0.0.0.0:8080".
+func portFromAddr(addr string) string {
+	if i := len(addr) - 1; i >= 0 {
+		for i >= 0 && addr[i] != ':' {
+			i--
+		}
+		if i >= 0 {
+			return addr[i+1:]
+		}
+	}
+	return addr
+}
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
@@ -51,10 +66,14 @@ func main() {
 			os.Exit(1)
 		}
 		orch = sandbox.NewOrchestrator(clientset, redisClient, sandbox.Config{
-			Namespace:    cfg.SandboxNamespace,
-			Image:        cfg.SandboxImage,
-			RedisAddr:    cfg.RedisAddr,
-			StreamPrefix: cfg.StreamPrefix,
+			Namespace:       cfg.SandboxNamespace,
+			Image:           cfg.SandboxImage,
+			RedisAddr:       cfg.RedisAddr,
+			StreamPrefix:    cfg.StreamPrefix,
+			EgressBaseURL:   "http://clawman-svc:" + portFromAddr(cfg.EgressAddr) + "/egress",
+			EgressToken:     cfg.EgressToken,
+			ModelAPIBaseURL: cfg.ModelAPIBaseURL,
+			ModelAPIKey:     cfg.ModelAPIKey,
 		})
 		slog.Info("sandbox orchestrator enabled", "namespace", cfg.SandboxNamespace, "image", cfg.SandboxImage)
 	}
@@ -69,9 +88,30 @@ func main() {
 	runCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Start egress HTTP server if worktool is configured
+	var egressSrv *http.Server
+	if cfg.WorkToolRobotID != "" && cfg.EgressToken != "" {
+		wt := worktool.NewClient(cfg.WorkToolRobotID)
+		egress := NewEgressServer(cfg.EgressToken, redisClient, wt)
+		egressSrv = &http.Server{Addr: cfg.EgressAddr, Handler: egress}
+		go func() {
+			slog.Info("egress server starting", "addr", cfg.EgressAddr)
+			if err := egressSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("egress server failed", "err", err)
+			}
+		}()
+	}
+
 	if err := clawman.Run(runCtx); err != nil {
 		slog.Error("clawman stopped with error", "err", err)
 		os.Exit(1)
 	}
+
+	if egressSrv != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		egressSrv.Shutdown(shutdownCtx)
+	}
+
 	slog.Info("clawman stopped")
 }

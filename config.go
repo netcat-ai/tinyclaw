@@ -27,6 +27,13 @@ type Config struct {
 	SandboxEnabled   bool
 	SandboxNamespace string
 	SandboxImage     string
+
+	WorkToolRobotID string
+	EgressAddr      string
+	EgressToken     string
+
+	ModelAPIBaseURL string
+	ModelAPIKey     string
 }
 
 func LoadConfig() (Config, error) {
@@ -57,6 +64,13 @@ func LoadConfig() (Config, error) {
 		SandboxEnabled:   sandboxEnabled,
 		SandboxNamespace: envOrDefault("SANDBOX_NAMESPACE", "claw"),
 		SandboxImage:     os.Getenv("SANDBOX_IMAGE"),
+
+		WorkToolRobotID: os.Getenv("WORKTOOL_ROBOT_ID"),
+		EgressAddr:      envOrDefault("EGRESS_ADDR", ":8080"),
+		EgressToken:     os.Getenv("EGRESS_TOKEN"),
+
+		ModelAPIBaseURL: os.Getenv("MODEL_API_BASE_URL"),
+		ModelAPIKey:     os.Getenv("MODEL_API_KEY"),
 	}
 
 	return cfg, nil

@@ -36,6 +36,11 @@ type Config struct {
 	Image        string // Agent container image
 	RedisAddr    string // Passed to sandbox as env var
 	StreamPrefix string // Passed to sandbox as env var
+
+	EgressBaseURL  string // Egress endpoint URL for agent to POST replies
+	EgressToken    string // Bearer token for egress auth
+	ModelAPIBaseURL string // LLM API base URL
+	ModelAPIKey    string // LLM API key
 }
 
 type Orchestrator struct {
@@ -146,10 +151,16 @@ func buildSandbox(name string, cfg Config, roomID, tenantID, chatType string, cr
 							Image: cfg.Image,
 							Env: []corev1.EnvVar{
 								{Name: "ROOM_ID", Value: roomID},
+								{Name: "TENANT_ID", Value: tenantID},
+								{Name: "CHAT_TYPE", Value: chatType},
 								{Name: "REDIS_ADDR", Value: cfg.RedisAddr},
 								{Name: "REDIS_USERNAME", Value: cred.Username},
 								{Name: "REDIS_PASSWORD", Value: cred.Password},
 								{Name: "STREAM_PREFIX", Value: cfg.StreamPrefix},
+								{Name: "WECOM_EGRESS_BASE_URL", Value: cfg.EgressBaseURL},
+								{Name: "WECOM_EGRESS_TOKEN", Value: cfg.EgressToken},
+								{Name: "MODEL_API_BASE_URL", Value: cfg.ModelAPIBaseURL},
+								{Name: "MODEL_API_KEY", Value: cfg.ModelAPIKey},
 							},
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{

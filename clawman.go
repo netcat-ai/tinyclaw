@@ -164,6 +164,9 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 			ct := chatTypeFromMsg(&msg)
 			r.orch.Ensure(ctx, roomID, r.cfg.WeComCorpID, ct)
 		}
+
+		// Cache room target name for egress lookup
+		r.cacheTarget(ctx, &msg, roomID)
 	}
 
 	return seq, nil
@@ -187,6 +190,43 @@ func streamKey(prefix string, msg *WeComMessage) string {
 // roomIDFromStream extracts the room ID from a full stream key.
 func roomIDFromStream(prefix, stream string) string {
 	return strings.TrimPrefix(stream, prefix+":")
+}
+
+// cacheTarget resolves and caches the display name for a room/user so egress
+// can look it up later. Skips if already cached. Errors are logged, never returned.
+func (r *Clawman) cacheTarget(ctx context.Context, msg *WeComMessage, roomID string) {
+	key := targetPrefix + roomID
+	if exists, _ := r.redis.Exists(ctx, key).Result(); exists > 0 {
+		return
+	}
+
+	var target string
+	if msg.RoomID != "" {
+		// Group chat — resolve group name
+		if r.wecom == nil {
+			return
+		}
+		chat, err := r.wecom.GetGroupChat(ctx, msg.RoomID)
+		if err != nil {
+			slog.Warn("cache target: get group chat failed", "room_id", msg.RoomID, "err", err)
+			return
+		}
+		target = chat.Name
+	} else {
+		// DM — resolve sender name
+		ident, err := r.Resolve(ctx, msg.From)
+		if err != nil {
+			slog.Warn("cache target: resolve sender failed", "from", msg.From, "err", err)
+			return
+		}
+		target = ident.Name
+	}
+
+	if target == "" {
+		return
+	}
+	r.redis.Set(ctx, key, target, cacheTTL)
+	slog.Info("cached target", "room_id", roomID, "target", target)
 }
 
 // chatTypeFromMsg returns "group" for group chats, "dm" for direct messages.

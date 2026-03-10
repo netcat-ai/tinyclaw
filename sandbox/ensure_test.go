@@ -29,10 +29,14 @@ func newTestOrchestrator(t *testing.T, client *sandboxfake.Clientset) (*Orchestr
 	t.Cleanup(func() { rdb.Close() })
 
 	orch := NewOrchestrator(client, rdb, Config{
-		Namespace:    "claw",
-		Image:        "ghcr.io/test/agent:latest",
-		RedisAddr:    "redis:6379",
-		StreamPrefix: "stream:room",
+		Namespace:       "claw",
+		Image:           "ghcr.io/test/agent:latest",
+		RedisAddr:       "redis:6379",
+		StreamPrefix:    "stream:room",
+		EgressBaseURL:   "http://clawman:8080/egress",
+		EgressToken:     "test-token",
+		ModelAPIBaseURL: "http://llm:4000",
+		ModelAPIKey:     "sk-test",
 	})
 	orch.provisionFn = stubProvisioner
 	return orch, mr
@@ -85,20 +89,23 @@ func TestEnsure_CreatesSandbox(t *testing.T) {
 	for _, e := range c0.Env {
 		envMap[e.Name] = e.Value
 	}
-	if envMap["ROOM_ID"] != "test-room-123" {
-		t.Errorf("ROOM_ID = %q, want %q", envMap["ROOM_ID"], "test-room-123")
+	wantEnv := map[string]string{
+		"ROOM_ID":              "test-room-123",
+		"TENANT_ID":            "corp1",
+		"CHAT_TYPE":            "group",
+		"REDIS_ADDR":           "redis:6379",
+		"REDIS_USERNAME":       "sb:test-room-123",
+		"REDIS_PASSWORD":       "test-password",
+		"STREAM_PREFIX":        "stream:room",
+		"WECOM_EGRESS_BASE_URL": "http://clawman:8080/egress",
+		"WECOM_EGRESS_TOKEN":   "test-token",
+		"MODEL_API_BASE_URL":   "http://llm:4000",
+		"MODEL_API_KEY":        "sk-test",
 	}
-	if envMap["REDIS_ADDR"] != "redis:6379" {
-		t.Errorf("REDIS_ADDR = %q, want %q", envMap["REDIS_ADDR"], "redis:6379")
-	}
-	if envMap["REDIS_USERNAME"] != "sb:test-room-123" {
-		t.Errorf("REDIS_USERNAME = %q, want %q", envMap["REDIS_USERNAME"], "sb:test-room-123")
-	}
-	if envMap["REDIS_PASSWORD"] != "test-password" {
-		t.Errorf("REDIS_PASSWORD = %q, want %q", envMap["REDIS_PASSWORD"], "test-password")
-	}
-	if envMap["STREAM_PREFIX"] != "stream:room" {
-		t.Errorf("STREAM_PREFIX = %q, want %q", envMap["STREAM_PREFIX"], "stream:room")
+	for k, v := range wantEnv {
+		if envMap[k] != v {
+			t.Errorf("env %s = %q, want %q", k, envMap[k], v)
+		}
 	}
 
 	// Verify restartPolicy
