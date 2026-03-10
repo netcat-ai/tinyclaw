@@ -8,10 +8,8 @@ require (
 	k8s.io/api v0.35.2
 	k8s.io/apimachinery v0.35.2
 	k8s.io/client-go v0.35.2
-	sigs.k8s.io/agent-sandbox v0.1.2-0.20260310000000-1a0aaf200000
+	sigs.k8s.io/agent-sandbox v0.1.2-0.20260305222618-1a0aaf2a1b1e
 )
-
-replace sigs.k8s.io/agent-sandbox => ../agent-sandbox
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
