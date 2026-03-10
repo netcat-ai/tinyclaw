@@ -14,6 +14,14 @@ import (
 	sandboxfake "sigs.k8s.io/agent-sandbox/clients/k8s/clientset/versioned/fake"
 )
 
+// stubProvisioner returns a fixed credential without calling Redis ACL.
+func stubProvisioner(_ context.Context, roomID string) (RedisCredential, error) {
+	return RedisCredential{
+		Username: "sb:" + roomID,
+		Password: "test-password",
+	}, nil
+}
+
 func newTestOrchestrator(t *testing.T, client *sandboxfake.Clientset) (*Orchestrator, *miniredis.Miniredis) {
 	t.Helper()
 	mr := miniredis.RunT(t)
@@ -26,6 +34,7 @@ func newTestOrchestrator(t *testing.T, client *sandboxfake.Clientset) (*Orchestr
 		RedisAddr:    "redis:6379",
 		StreamPrefix: "stream:room",
 	})
+	orch.provisionFn = stubProvisioner
 	return orch, mr
 }
 
@@ -81,6 +90,12 @@ func TestEnsure_CreatesSandbox(t *testing.T) {
 	}
 	if envMap["REDIS_ADDR"] != "redis:6379" {
 		t.Errorf("REDIS_ADDR = %q, want %q", envMap["REDIS_ADDR"], "redis:6379")
+	}
+	if envMap["REDIS_USERNAME"] != "sb:test-room-123" {
+		t.Errorf("REDIS_USERNAME = %q, want %q", envMap["REDIS_USERNAME"], "sb:test-room-123")
+	}
+	if envMap["REDIS_PASSWORD"] != "test-password" {
+		t.Errorf("REDIS_PASSWORD = %q, want %q", envMap["REDIS_PASSWORD"], "test-password")
 	}
 	if envMap["STREAM_PREFIX"] != "stream:room" {
 		t.Errorf("STREAM_PREFIX = %q, want %q", envMap["STREAM_PREFIX"], "stream:room")

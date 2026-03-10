@@ -2,6 +2,9 @@ package sandbox
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -19,6 +22,15 @@ const (
 	lockTTL    = 3 * time.Second
 )
 
+// RedisCredential holds the username and password for a per-sandbox Redis user.
+type RedisCredential struct {
+	Username string
+	Password string
+}
+
+// UserProvisioner creates a scoped Redis ACL user for a room.
+type UserProvisioner func(ctx context.Context, roomID string) (RedisCredential, error)
+
 type Config struct {
 	Namespace    string // K8s namespace for sandboxes
 	Image        string // Agent container image
@@ -27,17 +39,20 @@ type Config struct {
 }
 
 type Orchestrator struct {
-	client sandboxclient.Interface
-	redis  *redis.Client
-	cfg    Config
+	client      sandboxclient.Interface
+	redis       *redis.Client
+	cfg         Config
+	provisionFn UserProvisioner
 }
 
 func NewOrchestrator(client sandboxclient.Interface, rdb *redis.Client, cfg Config) *Orchestrator {
-	return &Orchestrator{
+	o := &Orchestrator{
 		client: client,
 		redis:  rdb,
 		cfg:    cfg,
 	}
+	o.provisionFn = o.provisionRedisUser
+	return o
 }
 
 // Ensure creates or confirms the Sandbox CR for a room.
@@ -52,8 +67,14 @@ func (o *Orchestrator) Ensure(ctx context.Context, roomID, tenantID, chatType st
 		return
 	}
 
+	cred, err := o.provisionFn(ctx, roomID)
+	if err != nil {
+		slog.Error("ensure redis user failed", "room_id", roomID, "err", err)
+		return
+	}
+
 	name := sandboxName(roomID)
-	sbx := buildSandbox(name, o.cfg, roomID, tenantID, chatType)
+	sbx := buildSandbox(name, o.cfg, roomID, tenantID, chatType, cred)
 
 	_, err = o.client.AgentsV1alpha1().Sandboxes(o.cfg.Namespace).Create(ctx, sbx, metav1.CreateOptions{})
 	if errors.IsAlreadyExists(err) {
@@ -66,7 +87,41 @@ func (o *Orchestrator) Ensure(ctx context.Context, roomID, tenantID, chatType st
 	slog.Info("ensure sandbox created", "room_id", roomID, "sandbox", name)
 }
 
-func buildSandbox(name string, cfg Config, roomID, tenantID, chatType string) *sandboxv1alpha1.Sandbox {
+// provisionRedisUser creates a Redis ACL user scoped to the room's stream key.
+// The user can only run read-side stream commands on its own stream.
+func (o *Orchestrator) provisionRedisUser(ctx context.Context, roomID string) (RedisCredential, error) {
+	username := "sb:" + roomID
+	password, err := generatePassword(16)
+	if err != nil {
+		return RedisCredential{}, fmt.Errorf("generate password: %w", err)
+	}
+
+	streamPattern := o.cfg.StreamPrefix + ":" + roomID
+
+	// ACL SETUSER <user> on ><password> ~<key-pattern> +allowed-commands
+	err = o.redis.Do(ctx, "ACL", "SETUSER", username,
+		"on",
+		">"+password,
+		"~"+streamPattern,
+		"+xreadgroup", "+xack", "+xinfo", "+xgroup", "+ping",
+	).Err()
+	if err != nil {
+		return RedisCredential{}, fmt.Errorf("acl setuser: %w", err)
+	}
+
+	slog.Info("redis user provisioned", "username", username, "room_id", roomID)
+	return RedisCredential{Username: username, Password: password}, nil
+}
+
+func generatePassword(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func buildSandbox(name string, cfg Config, roomID, tenantID, chatType string, cred RedisCredential) *sandboxv1alpha1.Sandbox {
 	return &sandboxv1alpha1.Sandbox{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
@@ -92,6 +147,8 @@ func buildSandbox(name string, cfg Config, roomID, tenantID, chatType string) *s
 							Env: []corev1.EnvVar{
 								{Name: "ROOM_ID", Value: roomID},
 								{Name: "REDIS_ADDR", Value: cfg.RedisAddr},
+								{Name: "REDIS_USERNAME", Value: cred.Username},
+								{Name: "REDIS_PASSWORD", Value: cred.Password},
 								{Name: "STREAM_PREFIX", Value: cfg.StreamPrefix},
 							},
 							Resources: corev1.ResourceRequirements{
