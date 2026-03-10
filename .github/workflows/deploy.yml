@@ -1,68 +1,32 @@
-name: CI-CD
+name: Deploy
 
 on:
-  push:
-  pull_request:
+  workflow_run:
+    workflows: ["Build"]
+    types:
+      - completed
   workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy. Leave empty to use triggering commit SHA."
+        required: false
+        type: string
 
 jobs:
-  test:
-    name: Go Test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Test
-        run: go test ./...
-
-  build-image:
-    name: Docker Build
-    runs-on: ubuntu-latest
-    needs: test
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login GHCR
-        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build Image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/tinyclaw:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/tinyclaw:latest
-          platforms: linux/amd64
-
   deploy-claw:
     name: Deploy To K8s Claw
     runs-on: ubuntu-latest
-    needs: build-image
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: >
+      (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main') ||
+      (github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main')
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Setup kubectl
         uses: azure/setup-kubectl@v4
@@ -128,9 +92,13 @@ jobs:
         run: kubectl apply -f k8s/deployment.yaml
 
       - name: Update image
+        env:
+          DEFAULT_IMAGE_TAG: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          MANUAL_IMAGE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.image_tag || '' }}
         run: |
-          IMAGE_REF="ghcr.io/${{ github.repository_owner }}/tinyclaw:${{ github.sha }}"
-          kubectl -n claw set image deployment/tinyclaw-relay relay="${IMAGE_REF}"
+          IMAGE_TAG="${MANUAL_IMAGE_TAG:-$DEFAULT_IMAGE_TAG}"
+          IMAGE_REF="ghcr.io/${{ github.repository_owner }}/tinyclaw:${IMAGE_TAG}"
+          kubectl -n claw set image deployment/clawman clawman="${IMAGE_REF}"
 
       - name: Wait rollout
-        run: kubectl -n claw rollout status deployment/tinyclaw-relay --timeout=300s
+        run: kubectl -n claw rollout status deployment/clawman --timeout=300s
