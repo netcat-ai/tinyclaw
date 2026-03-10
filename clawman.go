@@ -12,10 +12,11 @@ import (
 )
 
 type Clawman struct {
-	cfg   Config
-	redis *redis.Client
-	sdk   *finance.SDK
-	seq   uint64
+	cfg     Config
+	redis   *redis.Client
+	sdk     *finance.SDK
+	ensurer SessionRuntimeEnsurer
+	seq     uint64
 }
 
 type WeComMessage struct {
@@ -47,9 +48,10 @@ func NewClawman(cfg Config, rdb *redis.Client) (*Clawman, error) {
 	}
 
 	r := &Clawman{
-		cfg:   cfg,
-		redis: rdb,
-		sdk:   sdk,
+		cfg:     cfg,
+		redis:   rdb,
+		sdk:     sdk,
+		ensurer: newSessionRuntimeEnsurer(cfg, rdb),
 	}
 
 	return r, nil
@@ -127,6 +129,9 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 			Values: streamValues(event),
 		}).Err(); err != nil {
 			return seq, fmt.Errorf("xadd %s failed: %w", stream, err)
+		}
+		if err := r.ensurer.Ensure(ctx, event); err != nil {
+			log.Printf("ensure session runtime failed: session_key=%s trace_id=%s err=%v", event.SessionKey, event.TraceID, err)
 		}
 		if err := r.redis.Set(ctx, r.cfg.WeComSeqKey, chatData.Seq, 0).Err(); err != nil {
 			return seq, fmt.Errorf("set seq in redis: %w", err)

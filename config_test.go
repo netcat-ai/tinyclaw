@@ -22,6 +22,10 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("WECOM_CORP_SECRET", "")
 	t.Setenv("WECOM_RSA_PRIVATE_KEY", "")
 	t.Setenv("WECOM_SEQ_KEY", "")
+	t.Setenv("ENSURE_LOCK_PREFIX", "")
+	t.Setenv("ENSURE_LOCK_TTL_SECONDS", "")
+	t.Setenv("SESSION_RUNTIME_ENSURE_URL", "")
+	t.Setenv("ENSURE_REQUEST_TIMEOUT_SECONDS", "")
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -40,6 +44,18 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.WeComSeqKey != defaultWeComSeqKey {
 		t.Fatalf("WeComSeqKey = %q, want %q", cfg.WeComSeqKey, defaultWeComSeqKey)
 	}
+	if cfg.EnsureLockPrefix != defaultEnsureLockPrefix {
+		t.Fatalf("EnsureLockPrefix = %q, want %q", cfg.EnsureLockPrefix, defaultEnsureLockPrefix)
+	}
+	if cfg.EnsureLockTTL.Seconds() != defaultEnsureLockTTLSeconds {
+		t.Fatalf("EnsureLockTTL = %v, want %ds", cfg.EnsureLockTTL, defaultEnsureLockTTLSeconds)
+	}
+	if cfg.EnsureRequestTimeout.Seconds() != defaultEnsureRequestTimeoutSecs {
+		t.Fatalf("EnsureRequestTimeout = %v, want %ds", cfg.EnsureRequestTimeout, defaultEnsureRequestTimeoutSecs)
+	}
+	if cfg.SessionRuntimeEnsureURL != "" {
+		t.Fatalf("SessionRuntimeEnsureURL = %q, want empty", cfg.SessionRuntimeEnsureURL)
+	}
 	if cfg.RedisPassword != "" {
 		t.Fatalf("RedisPassword = %q, want empty", cfg.RedisPassword)
 	}
@@ -54,6 +70,10 @@ func TestLoadConfigReadsEnv(t *testing.T) {
 	t.Setenv("WECOM_CORP_SECRET", "corp-secret")
 	t.Setenv("WECOM_RSA_PRIVATE_KEY", "private-key")
 	t.Setenv("WECOM_SEQ_KEY", "msg:seq:test")
+	t.Setenv("ENSURE_LOCK_PREFIX", "lock:ensure")
+	t.Setenv("ENSURE_LOCK_TTL_SECONDS", "5")
+	t.Setenv("SESSION_RUNTIME_ENSURE_URL", "http://127.0.0.1:18080/internal/session-runtime/ensure")
+	t.Setenv("ENSURE_REQUEST_TIMEOUT_SECONDS", "4")
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -83,5 +103,17 @@ func TestLoadConfigReadsEnv(t *testing.T) {
 	}
 	if cfg.WeComSeqKey != "msg:seq:test" {
 		t.Fatalf("WeComSeqKey = %q, want %q", cfg.WeComSeqKey, "msg:seq:test")
+	}
+	if cfg.EnsureLockPrefix != "lock:ensure" {
+		t.Fatalf("EnsureLockPrefix = %q, want %q", cfg.EnsureLockPrefix, "lock:ensure")
+	}
+	if cfg.EnsureLockTTL.Seconds() != 5 {
+		t.Fatalf("EnsureLockTTL = %v, want 5s", cfg.EnsureLockTTL)
+	}
+	if cfg.SessionRuntimeEnsureURL != "http://127.0.0.1:18080/internal/session-runtime/ensure" {
+		t.Fatalf("SessionRuntimeEnsureURL = %q, want %q", cfg.SessionRuntimeEnsureURL, "http://127.0.0.1:18080/internal/session-runtime/ensure")
+	}
+	if cfg.EnsureRequestTimeout.Seconds() != 4 {
+		t.Fatalf("EnsureRequestTimeout = %v, want 4s", cfg.EnsureRequestTimeout)
 	}
 }

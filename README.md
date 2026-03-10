@@ -55,7 +55,14 @@
   - `REDIS_PASSWORD`（可选）
   - `STREAM_PREFIX`（可选，默认 `stream:session`）
   - `WECOM_SEQ_KEY`（可选，默认 `msg:seq`）
+  - `SESSION_RUNTIME_ENSURE_URL`（可选，配置后 Ingress 会在写入 stream 后触发 ensure）
+  - `ENSURE_LOCK_PREFIX`（可选，默认 `lock:ensure`）
+  - `ENSURE_LOCK_TTL_SECONDS`（可选，默认 `3`）
+  - `ENSURE_REQUEST_TIMEOUT_SECONDS`（可选，默认 `2`）
 - 目前仓库内默认值：
   - `REDIS_ADDR=redis:6379`
   - `STREAM_PREFIX=stream:session`
   - `WECOM_SEQ_KEY=msg:seq`
+  - `ENSURE_LOCK_PREFIX=lock:ensure`
+  - `ENSURE_LOCK_TTL_SECONDS=3`
+  - `ENSURE_REQUEST_TIMEOUT_SECONDS=2`
