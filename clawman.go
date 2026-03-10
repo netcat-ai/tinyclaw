@@ -122,8 +122,8 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 		}).Err(); err != nil {
 			return seq, fmt.Errorf("xadd %s failed: %w", stream, err)
 		}
-		if err := r.redis.IncrBy(ctx, r.cfg.WeComSeqKey, chatData.Seq-seq).Err(); err != nil {
-			return seq, fmt.Errorf("incr seq in redis: %w", err)
+		if err := r.redis.Set(ctx, r.cfg.WeComSeqKey, chatData.Seq, 0).Err(); err != nil {
+			return seq, fmt.Errorf("set seq in redis: %w", err)
 		}
 		seq = chatData.Seq
 	}
@@ -136,14 +136,6 @@ func streamValues(msg WeComMessage) map[string]any {
 		"msgid": msg.MsgID,
 		"raw":   msg.RawContent,
 	}
-}
-
-func mustJSON(v any) string {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return "[]"
-	}
-	return string(b)
 }
 
 func streamKey(prefix string, msg *WeComMessage) string {
