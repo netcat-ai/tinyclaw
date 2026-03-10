@@ -37,27 +37,12 @@ jobs:
           authkey: ${{ secrets.TS_AUTHKEY }}
           tags: tag:ci
 
-      - name: Setup kubeconfig
-        run: |
-          mkdir -p "$HOME/.kube"
-          cat > "$HOME/.kube/config" <<'EOF'
-          ${{ secrets.KUBE_CONFIG }}
-          EOF
-          chmod 600 "$HOME/.kube/config"
-
-      - name: Select kube context
-        run: |
-          if kubectl config get-contexts default >/dev/null 2>&1; then
-            CTX="default"
-          else
-            CTX="$(kubectl config get-contexts -o name | head -n1)"
-          fi
-          if [ -z "${CTX}" ]; then
-            echo "no context found in kubeconfig"
-            exit 1
-          fi
-          kubectl config use-context "${CTX}"
-          echo "using context: ${CTX}"
+      - name: Set kube context
+        uses: azure/k8s-set-context@v4
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBE_CONFIG }}
+          context: default
 
       - name: Verify cluster access
         run: kubectl cluster-info
