@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -96,7 +96,7 @@ func (r *Clawman) Run(ctx context.Context) error {
 	for {
 		seq, err = r.pullAndDispatch(ctx, seq, 100)
 		if err != nil {
-			log.Printf("pull and dispatch failed: %v", err)
+			slog.Error("pull and dispatch failed", "err", err)
 		}
 
 		select {
@@ -114,7 +114,7 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 	}
 
 	if len(chatDataList) == 0 {
-		log.Printf("pulled=0 dispatched=0 seq=%d", seq)
+		slog.Info("pull completed", "pulled", 0, "dispatched", 0, "seq", seq)
 		return seq, nil
 	}
 
@@ -124,18 +124,18 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 		}
 		raw, err := r.sdk.DecryptData(&chatData)
 		if err != nil {
-			log.Printf("skip message decrypt failed: seq=%d msgid=%s err=%v", chatData.Seq, chatData.MsgID, err)
+			slog.Warn("skip message decrypt failed", "seq", chatData.Seq, "msgid", chatData.MsgID, "err", err)
 			continue
 		}
 
 		var msg WeComMessage
 		if err := json.Unmarshal(raw, &msg); err != nil {
-			log.Printf("skip invalid message json: seq=%d msgid=%s err=%v", chatData.Seq, chatData.MsgID, err)
+			slog.Warn("skip invalid message json", "seq", chatData.Seq, "msgid", chatData.MsgID, "err", err)
 			continue
 		}
 		msg.RawContent = string(raw)
 		if msg.From == "" || len(msg.ToList) == 0 {
-			log.Printf("skip invalid message without from/tolist: seq=%d msgid=%s", chatData.Seq, chatData.MsgID)
+			slog.Warn("skip invalid message without from/tolist", "seq", chatData.Seq, "msgid", chatData.MsgID)
 			continue
 		}
 		// 私聊中忽略 bot 自己发出的消息
@@ -143,12 +143,12 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 			continue
 		}
 
-		sessionKey := msg.RoomID
+		roomID := msg.RoomID
 		if msg.RoomID == "" {
-			sessionKey = msg.From
+			roomID = msg.From
 		}
 
-		stream := r.cfg.StreamPrefix + ":" + sessionKey
+		stream := r.cfg.StreamPrefix + ":" + roomID
 		if err := r.redis.XAdd(ctx, &redis.XAddArgs{
 			Stream: stream,
 			Values: streamValues(msg),
@@ -162,7 +162,7 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 
 		if r.orch != nil {
 			ct := chatTypeFromMsg(&msg)
-			r.orch.Ensure(ctx, sessionKey, r.cfg.WeComCorpID, ct)
+			r.orch.Ensure(ctx, roomID, r.cfg.WeComCorpID, ct)
 		}
 	}
 
@@ -180,12 +180,12 @@ func streamKey(prefix string, msg *WeComMessage) string {
 	if msg.RoomID != "" {
 		return prefix + ":" + msg.RoomID
 	}
-	// 私聊直接用 from 作为 session key
+	// 私聊直接用 from 作为 room ID
 	return prefix + ":" + msg.From
 }
 
-// sessionKeyFromStream extracts the session key from a full stream key.
-func sessionKeyFromStream(prefix, stream string) string {
+// roomIDFromStream extracts the room ID from a full stream key.
+func roomIDFromStream(prefix, stream string) string {
 	return strings.TrimPrefix(stream, prefix+":")
 }
 

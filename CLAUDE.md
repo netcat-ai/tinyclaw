@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is tinyclaw
 
-Cloud-based AI Agent Runtime for WeChat Work (企业微信). The main service (`clawman`) pulls encrypted messages from WeChat Work's Finance SDK, decrypts them, and dispatches to per-session Redis Streams. Agents in isolated K8s sandboxes consume from their session stream via `XREADGROUP BLOCK`.
+Cloud-based AI Agent Runtime for WeChat Work (企业微信). The main service (`clawman`) pulls encrypted messages from WeChat Work's Finance SDK, decrypts them, and dispatches to per-room Redis Streams. Agents in isolated K8s sandboxes consume from their room stream via `XREADGROUP BLOCK`.
 
 ## Build & Run
 
@@ -21,7 +21,7 @@ Required env vars: `WECOM_CORP_ID`, `WECOM_CORP_SECRET`, `WECOM_RSA_PRIVATE_KEY`
 ## Architecture
 
 ```
-WeChat Work Finance SDK → Clawman (3s poll loop) → Redis Stream per session → Agent sandbox (XREADGROUP BLOCK)
+WeChat Work Finance SDK → Clawman (3s poll loop) → Redis Stream per room → Agent sandbox (XREADGROUP BLOCK)
 ```
 
 - `main.go` — entry point: Redis client, Resolver, Clawman init, signal handling
@@ -36,18 +36,17 @@ WeChat Work Finance SDK → Clawman (3s poll loop) → Redis Stream per session 
 
 | Pattern | Purpose |
 |---------|---------|
-| `stream:group:{roomID}` | Per-group-chat message stream |
-| `stream:group:{from}-{to}` | Per-1on1-chat stream (IDs sorted lexically) |
+| `stream:room:{roomID}` | Per-room message stream |
 | `msg:seq` | Last processed WeChat Work sequence number |
 | `wecom:id2name:{id}` | Identity cache (24h TTL) |
 | `wecom:group:owner:{roomID}` | Group owner cache (24h TTL) |
-| `lock:ensure:{session_key}` | Ensure-once lock (3s TTL) |
+| `lock:ensure:{room_id}` | Ensure-once lock (3s TTL) |
 
 ### Message flow
 
 1. Finance SDK returns encrypted `ChatData` batches starting from stored `seq`
 2. Each message is RSA-decrypted, JSON-parsed, validated (must have `from` + `tolist`)
-3. Valid messages are `XADD`'d to the session stream with fields `msgid` and `raw`
+3. Valid messages are `XADD`'d to the room stream with fields `msgid` and `raw`
 4. Sequence is persisted to Redis after each successful dispatch
 5. Invalid/undecryptable messages are skipped with a log line
 
@@ -65,7 +64,7 @@ CI is two workflows:
 
 ## Conventions
 
-- Commit format: `<type>: <summary>` (e.g., `docs: clarify session_key rules`)
+- Commit format: `<type>: <summary>` (e.g., `docs: clarify room_id rules`)
 - One logical change per commit
 - Filenames: uppercase snake-style with version suffix for docs (e.g., `ARCHITECTURE_V0.md`)
 - Reuse existing terminology from `docs/ARCHITECTURE_V0.md` — don't invent new terms for established concepts

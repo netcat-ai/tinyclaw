@@ -24,7 +24,7 @@ func newTestOrchestrator(t *testing.T, client *sandboxfake.Clientset) (*Orchestr
 		Namespace:    "claw",
 		Image:        "ghcr.io/test/agent:latest",
 		RedisAddr:    "redis:6379",
-		StreamPrefix: "stream:group",
+		StreamPrefix: "stream:room",
 	})
 	return orch, mr
 }
@@ -60,9 +60,9 @@ func TestEnsure_CreatesSandbox(t *testing.T) {
 	// Verify pod template labels
 	ptLabels := sbx.Spec.PodTemplate.ObjectMeta.Labels
 	wantLabels := map[string]string{
-		"tinyclaw/session-key": "test-room-123",
-		"tinyclaw/tenant-id":   "corp1",
-		"tinyclaw/chat-type":   "group",
+		"tinyclaw/room-id":   "test-room-123",
+		"tinyclaw/tenant-id": "corp1",
+		"tinyclaw/chat-type": "group",
 	}
 	for k, v := range wantLabels {
 		if ptLabels[k] != v {
@@ -76,14 +76,14 @@ func TestEnsure_CreatesSandbox(t *testing.T) {
 	for _, e := range c0.Env {
 		envMap[e.Name] = e.Value
 	}
-	if envMap["SESSION_KEY"] != "test-room-123" {
-		t.Errorf("SESSION_KEY = %q, want %q", envMap["SESSION_KEY"], "test-room-123")
+	if envMap["ROOM_ID"] != "test-room-123" {
+		t.Errorf("ROOM_ID = %q, want %q", envMap["ROOM_ID"], "test-room-123")
 	}
 	if envMap["REDIS_ADDR"] != "redis:6379" {
 		t.Errorf("REDIS_ADDR = %q, want %q", envMap["REDIS_ADDR"], "redis:6379")
 	}
-	if envMap["STREAM_PREFIX"] != "stream:group" {
-		t.Errorf("STREAM_PREFIX = %q, want %q", envMap["STREAM_PREFIX"], "stream:group")
+	if envMap["STREAM_PREFIX"] != "stream:room" {
+		t.Errorf("STREAM_PREFIX = %q, want %q", envMap["STREAM_PREFIX"], "stream:room")
 	}
 
 	// Verify restartPolicy
@@ -158,10 +158,10 @@ func TestSandboxName_Deterministic(t *testing.T) {
 		t.Errorf("sandboxName not deterministic: %q != %q", name1, name2)
 	}
 
-	// Different session keys produce different names
+	// Different room IDs produce different names
 	name3 := sandboxName("room-xyz-456")
 	if name1 == name3 {
-		t.Errorf("different session keys produced same sandbox name: %q", name1)
+		t.Errorf("different room IDs produced same sandbox name: %q", name1)
 	}
 }
 

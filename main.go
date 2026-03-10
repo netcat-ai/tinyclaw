@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -14,9 +15,12 @@ import (
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
 	cfg, err := LoadConfig()
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		slog.Error("load config failed", "err", err)
+		os.Exit(1)
 	}
 
 	redisClient := redis.NewClient(&redis.Options{
@@ -29,7 +33,8 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	if err := redisClient.Ping(ctx).Err(); err != nil {
 		cancel()
-		log.Fatalf("redis ping failed: %v", err)
+		slog.Error("redis ping failed", "err", err)
+		os.Exit(1)
 	}
 	cancel()
 
@@ -37,11 +42,13 @@ func main() {
 	if cfg.SandboxEnabled {
 		k8sCfg, err := rest.InClusterConfig()
 		if err != nil {
-			log.Fatalf("k8s in-cluster config: %v", err)
+			slog.Error("k8s in-cluster config failed", "err", err)
+			os.Exit(1)
 		}
 		clientset, err := sandboxclient.NewForConfig(k8sCfg)
 		if err != nil {
-			log.Fatalf("k8s clientset: %v", err)
+			slog.Error("k8s clientset init failed", "err", err)
+			os.Exit(1)
 		}
 		orch = sandbox.NewOrchestrator(clientset, redisClient, sandbox.Config{
 			Namespace:    cfg.SandboxNamespace,
@@ -49,12 +56,13 @@ func main() {
 			RedisAddr:    cfg.RedisAddr,
 			StreamPrefix: cfg.StreamPrefix,
 		})
-		log.Printf("sandbox orchestrator enabled: namespace=%s image=%s", cfg.SandboxNamespace, cfg.SandboxImage)
+		slog.Info("sandbox orchestrator enabled", "namespace", cfg.SandboxNamespace, "image", cfg.SandboxImage)
 	}
 
 	clawman, err := NewClawman(cfg, redisClient, orch)
 	if err != nil {
-		log.Fatalf("init clawman: %v", err)
+		slog.Error("init clawman failed", "err", err)
+		os.Exit(1)
 	}
 	defer clawman.Close()
 
@@ -62,7 +70,8 @@ func main() {
 	defer stop()
 
 	if err := clawman.Run(runCtx); err != nil {
-		log.Fatalf("clawman stopped with error: %v", err)
+		slog.Error("clawman stopped with error", "err", err)
+		os.Exit(1)
 	}
-	log.Printf("clawman stopped")
+	slog.Info("clawman stopped")
 }

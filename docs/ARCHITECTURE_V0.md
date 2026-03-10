@@ -26,12 +26,12 @@ tinyclaw 是一个面向企业微信会话的 AI Agent Runtime：
                                               v
                                    +---------------------------+
                                    | Redis Streams             |
-                                   | stream:session:{key}      |
+                                   | stream:room:{key}         |
                                    +---------------------------+
                                               |
                                    +----------+-----------+
-                                   | Session Runtime Mgr  |
-                                   | (ensure session pod) |
+                                   | Room Runtime Mgr     |
+                                   | (ensure room pod)    |
                                    +----------+-----------+
                                               |
                     +-------------------------+-------------------------+
@@ -52,52 +52,53 @@ tinyclaw 是一个面向企业微信会话的 AI Agent Runtime：
       +-------------------------------+                          +-------------------------------+
 ```
 
-## 3. 会话与隔离模型
+## 3. Room 与隔离模型
 
-### 3.1 session_key 规范
+### 3.1 room_id 规范
 建议统一：
 
 ```text
-session_key = {chat_id_or_user_id}
+room_id = {roomid_or_from}
 ```
 
-- `chat_id_or_user_id`: 群聊 ID 或员工用户 ID。
+- 群聊：`room_id = roomid`
+- 私聊：`room_id = from`
 - `tenant_id` 与 `chat_type` 作为独立字段保留在事件中，用于审计、统计和权限校验。
-- 如果后续发现 `chat_id_or_user_id` 在跨租户场景不是全局唯一，可平滑升级为 `session_key = {tenant_id}:{chat_id_or_user_id}`。
+- 如果后续发现 `roomid_or_from` 在跨租户场景不是全局唯一，可平滑升级为 `room_id = {tenant_id}:{chat_type}:{roomid_or_from}`。
 
-所有核心能力都围绕 `session_key`：
+所有核心能力都围绕 `room_id`：
 - 路由（该消息发给哪个 agent）。
 - 隔离（Pod/命名空间/权限边界）。
 - 生命周期管理（休眠/唤醒/销毁）。
 
 ### 3.2 隔离等级（建议）
-- 运行时隔离：每个 `session_key` 对应一个独立 Pod（或容器实例）。
-- 文件系统隔离：每个 session 独立工作目录和 quota。
+- 运行时隔离：每个 `room_id` 对应一个独立 Pod（或容器实例）。
+- 文件系统隔离：每个 room 独立工作目录和 quota。
 - 网络隔离：默认 deny，按工具白名单放行目标域名。
-- 密钥隔离：按 session 注入最小权限短期凭证（避免平台全局长 token 泄露）。
+- 密钥隔离：按 room 注入最小权限短期凭证（避免平台全局长 token 泄露）。
 
-### 3.3 部署选项（除“每会话独立 Pod”外）
+### 3.3 部署选项（除“每 room 独立 Pod”外）
 1. Pool Worker（共享进程 + 逻辑隔离）
    - 优点：成本最低、冷启动快。
    - 缺点：隔离性最弱，逃逸和资源争抢风险高。
 2. Sandbox Pool（预热沙箱池）
    - 优点：兼顾隔离和冷启动，唤醒速度明显好于按需新建 Pod。
    - 缺点：需要维持预热池容量，调度复杂度更高。
-3. 每会话独立 Pod（当前建议）
+3. 每 room 独立 Pod（当前建议）
    - 优点：隔离边界清晰，审计和治理最简单。
    - 缺点：冷启动慢，成本高于池化方案。
 
 ## 4. 事件流与消息语义
 
 ### 4.1 Redis Stream 设计
-采用按会话分流（每个 `session_key` 一个 stream）：
+采用按 room 分流（每个 `room_id` 一个 stream）：
 
-- Stream: `stream:session:{session_key}`
-- Consumer Group: `cg:session:{session_key}`
+- Stream: `stream:room:{room_id}`
+- Consumer Group: `cg:room:{room_id}`
 
 触发方式：
-- Ingress 每次拉到新消息后，先 `XADD stream:session:{session_key}`。
-- 再调用 `Session Runtime Ensure` 保证对应 sandbox 存在并可消费。
+- Ingress 每次拉到新消息后，先 `XADD stream:room:{room_id}`。
+- 再调用 `Room Runtime Ensure` 保证对应 sandbox 存在并可消费。
 - 不额外引入 `stream:dispatch`。
 
 字段最小集：
@@ -107,7 +108,7 @@ session_key = {chat_id_or_user_id}
   "event_id": "uuid",
   "event_type": "message.received",
   "tenant_id": "t_001",
-  "session_key": "chat_123",
+  "room_id": "chat_123",
   "source_msg_id": "wecom_msg_abc",
   "sender_id": "u_001",
   "chat_type": "group",
@@ -136,8 +137,8 @@ session_key = {chat_id_or_user_id}
 3. 回发成功后 `XACK`。
 
 ### 4.3 顺序与并发
-- 同一个 `session_key` 严格串行消费。
-- 不同 `session_key` 并行处理。
+- 同一个 `room_id` 严格串行消费。
+- 不同 `room_id` 并行处理。
 - 出现长任务时，新消息进入缓冲队列，策略可选：
   - `append`：追加到当前上下文后继续。
   - `interrupt`：中断当前任务，优先处理新输入。
@@ -173,13 +174,13 @@ cold -> starting -> active -> idle -> hibernated -> terminated
 - 周期拉取企业微信会话存档。
 - 将原始消息转为标准事件 schema。
 - 处理媒体下载（可选异步）。
-- 按 `session_key` 写入 `stream:session:{session_key}`。
-- 新消息到达后直接触发 `Session Runtime Ensure`。
+- 按 `room_id` 写入 `stream:room:{room_id}`。
+- 新消息到达后直接触发 `Room Runtime Ensure`。
 
-### 6.2 Session Runtime Manager（调度）
-- 根据 `session_key` 查询（并可短时缓存）SandboxClaim/Pod 状态，判断 agent 是否在线。
+### 6.2 Room Runtime Manager（调度）
+- 根据 `room_id` 查询（并可短时缓存）SandboxClaim/Pod 状态，判断 agent 是否在线。
 - 不在线则触发 K8s 创建（或唤醒）对应 agent pod。
-- 不建设独立 session registry 表。
+- 不建设独立 room registry 表。
 
 ### 6.3 Egress（回发）
 - Agent 生成回复后调用统一回发 API。
@@ -214,7 +215,7 @@ cold -> starting -> active -> idle -> hibernated -> terminated
 ### 8.1 权限边界
 - 所有工具调用都走 Tool Gateway（统一鉴权和审计）。
 - 不允许 agent 直接持有平台 root secret。
-- 每次工具调用附带 `trace_id` 和 `session_key`。
+- 每次工具调用附带 `trace_id` 和 `room_id`。
 
 ### 8.2 资源治理
 - pod 级别资源限额（CPU/Mem/ephemeral storage）。
@@ -239,16 +240,16 @@ cold -> starting -> active -> idle -> hibernated -> terminated
 SLO（MVP）建议：
 - P95 `reply_e2e_ms` < 8s（纯文本场景）
 - 回发成功率 >= 99.5%
-- 同 session 顺序错乱率 < 0.1%
+- 同 room 顺序错乱率 < 0.1%
 
 ## 10. MVP 分阶段落地
 
 ### Phase 1: 消息闭环
-- Ingress -> `stream:session:{session_key}` -> agent 自拉消费 -> Egress。
+- Ingress -> `stream:room:{room_id}` -> agent 自拉消费 -> Egress。
 - 接入 trace_id 和基础重试链路。
 
 ### Phase 2: 会话隔离
-- 按 `session_key` 拉起独立 agent pod。
+- 按 `room_id` 拉起独立 agent pod。
 - 先实现 `idle`（软休眠）状态迁移；`hibernate/terminate` 在压测后再启用自动化。
 
 ### Phase 3: 记忆与文件
@@ -263,18 +264,18 @@ SLO（MVP）建议：
 ## 11. 待确认决策（需要团队讨论）
 
 已确认：
-1. `session_key = {chat_id_or_user_id}`（`tenant_id`、`chat_type` 保留为独立字段）。
+1. `room_id = {roomid_or_from}`（`tenant_id`、`chat_type` 保留为独立字段）。
 2. 长任务策略 v0 固定为 `append`，中断机制后续评估。
 3. 记忆写入采用“关键字段实时写 + 低优先字段批量/延迟写”。
 4. 不引入 `stream:dispatch`，由 Ingress 在消息到达时直接触发 `ensure`。
-5. agent 在 sandbox 内自拉 `stream:session:{session_key}`（`XREADGROUP BLOCK`）。
-6. 不建设独立 session registry 表，暂不维护中心化 `last_seen_at`。
+5. agent 在 sandbox 内自拉 `stream:room:{room_id}`（`XREADGROUP BLOCK`）。
+6. 不建设独立 room registry 表，暂不维护中心化 `last_seen_at`。
 7. v0 默认软休眠；自动硬休眠/自动销毁后置。
 
 待确认：
 1. Agent Runtime：是否固定使用 Claude Code，还是支持多 runtime 插件化。
-2. Session 级别：群聊是否需要进一步按 `thread/topic` 细分子会话。
-3. 隔离成本：每会话独立 Pod 与 Sandbox Pool 的切换阈值（QPS、并发会话数、成本上限）。
+2. Room 级别：群聊是否需要进一步按 `thread/topic` 细分子会话。
+3. 隔离成本：每 room 独立 Pod 与 Sandbox Pool 的切换阈值（QPS、并发 room 数、成本上限）。
 
 ## 12. 结论
 

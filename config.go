@@ -7,7 +7,7 @@ import (
 
 const (
 	defaultRedisAddr    = "127.0.0.1:6379"
-	defaultStreamPrefix = "stream:group"
+	defaultStreamPrefix = "stream:room"
 	defaultWeComSeqKey  = "msg:seq"
 )
 

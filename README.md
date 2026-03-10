@@ -6,17 +6,17 @@
 - [下一步执行清单](./docs/NEXT_STEPS.md)
 
 ## 当前共识（2026-03-09）
-1. 会话键：`session_key = {chat_id_or_user_id}`，`tenant_id` 和 `chat_type` 作为独立字段保留。
-2. Redis 设计：每个会话一个 stream，键为 `stream:session:{session_key}`。
-3. 不引入 `stream:dispatch`，由 Ingress 收到新消息后直接触发 `ensure(session_key)`。
+1. 统一房间标识：`room_id = {roomid_or_from}`，其中群聊取 `roomid`，私聊取 `from`；`tenant_id` 和 `chat_type` 作为独立字段保留。
+2. Redis 设计：每个 `room_id` 一个 stream，键为 `stream:room:{room_id}`。
+3. 不引入 `stream:dispatch`，由 Ingress 收到新消息后直接触发 `ensure(room_id)`。
 4. agent 在 sandbox 内自行 `XREADGROUP BLOCK` 持续拉取消息并串行消费。
-5. 不建设独立 `session registry` 表，暂不维护中心化 `last_seen_at`。
+5. 不建设独立 `room registry` 表，暂不维护中心化 `last_seen_at`。
 6. 交付语义简化为：agent 消费成功并回发后 `XACK`，不引入额外幂等设计。
 7. 空闲策略先采用软休眠（阻塞等待），硬休眠（退出/缩容）后续按压测引入，自动销毁后置到 v1。
 
 ## 项目目标
 构建云端 AI Agent Runtime，让企业员工可在企业微信私聊/群聊中与 agent 交互：
-- 每个会话运行在隔离 sandbox 中。
+- 每个 `room_id` 运行在隔离 sandbox 中。
 - agent 可自由执行代码（在安全边界内）并访问企业内部/外部工具。
 - 记忆与人格等结构化数据放在智能表格，文件上下文放在企业云盘。
 - 主服务负责消息拉取、会话分发、唤醒与治理；agent 负责消费、执行与回发。
@@ -52,9 +52,9 @@
   - `WECOM_RSA_PRIVATE_KEY`（必需）
   - `REDIS_ADDR`（可选，默认 `redis:6379`）
   - `REDIS_PASSWORD`（可选）
-  - `STREAM_PREFIX`（可选，默认 `stream:group`）
+  - `STREAM_PREFIX`（可选，默认 `stream:room`）
   - `WECOM_SEQ_KEY`（可选，默认 `msg:seq`）
 - 目前仓库内默认值：
   - `REDIS_ADDR=redis:6379`
-  - `STREAM_PREFIX=stream:group`
+  - `STREAM_PREFIX=stream:room`
   - `WECOM_SEQ_KEY=msg:seq`

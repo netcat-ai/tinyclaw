@@ -2,7 +2,7 @@ package sandbox
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -40,33 +40,33 @@ func NewOrchestrator(client sandboxclient.Interface, rdb *redis.Client, cfg Conf
 	}
 }
 
-// Ensure creates or confirms the Sandbox CR for a session.
+// Ensure creates or confirms the Sandbox CR for a room.
 // Uses a Redis lock to prevent ensure storms. All errors are logged, never returned.
-func (o *Orchestrator) Ensure(ctx context.Context, sessionKey, tenantID, chatType string) {
-	locked, err := o.redis.SetNX(ctx, lockPrefix+sessionKey, "1", lockTTL).Result()
+func (o *Orchestrator) Ensure(ctx context.Context, roomID, tenantID, chatType string) {
+	locked, err := o.redis.SetNX(ctx, lockPrefix+roomID, "1", lockTTL).Result()
 	if err != nil {
-		log.Printf("ensure lock check failed: session_key=%s err=%v", sessionKey, err)
+		slog.Error("ensure lock check failed", "room_id", roomID, "err", err)
 		return
 	}
 	if !locked {
 		return
 	}
 
-	name := sandboxName(sessionKey)
-	sbx := buildSandbox(name, o.cfg, sessionKey, tenantID, chatType)
+	name := sandboxName(roomID)
+	sbx := buildSandbox(name, o.cfg, roomID, tenantID, chatType)
 
 	_, err = o.client.AgentsV1alpha1().Sandboxes(o.cfg.Namespace).Create(ctx, sbx, metav1.CreateOptions{})
 	if errors.IsAlreadyExists(err) {
 		return
 	}
 	if err != nil {
-		log.Printf("ensure sandbox create failed: session_key=%s sandbox=%s err=%v", sessionKey, name, err)
+		slog.Error("ensure sandbox create failed", "room_id", roomID, "sandbox", name, "err", err)
 		return
 	}
-	log.Printf("ensure sandbox created: session_key=%s sandbox=%s", sessionKey, name)
+	slog.Info("ensure sandbox created", "room_id", roomID, "sandbox", name)
 }
 
-func buildSandbox(name string, cfg Config, sessionKey, tenantID, chatType string) *sandboxv1alpha1.Sandbox {
+func buildSandbox(name string, cfg Config, roomID, tenantID, chatType string) *sandboxv1alpha1.Sandbox {
 	return &sandboxv1alpha1.Sandbox{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
@@ -78,9 +78,9 @@ func buildSandbox(name string, cfg Config, sessionKey, tenantID, chatType string
 			PodTemplate: sandboxv1alpha1.PodTemplate{
 				ObjectMeta: sandboxv1alpha1.PodMetadata{
 					Labels: map[string]string{
-						"tinyclaw/session-key": sessionKey,
-						"tinyclaw/tenant-id":   tenantID,
-						"tinyclaw/chat-type":   chatType,
+						"tinyclaw/room-id":   roomID,
+						"tinyclaw/tenant-id": tenantID,
+						"tinyclaw/chat-type": chatType,
 					},
 				},
 				Spec: corev1.PodSpec{
@@ -90,7 +90,7 @@ func buildSandbox(name string, cfg Config, sessionKey, tenantID, chatType string
 							Name:  "agent",
 							Image: cfg.Image,
 							Env: []corev1.EnvVar{
-								{Name: "SESSION_KEY", Value: sessionKey},
+								{Name: "ROOM_ID", Value: roomID},
 								{Name: "REDIS_ADDR", Value: cfg.RedisAddr},
 								{Name: "STREAM_PREFIX", Value: cfg.StreamPrefix},
 							},
@@ -112,7 +112,7 @@ func buildSandbox(name string, cfg Config, sessionKey, tenantID, chatType string
 	}
 }
 
-// sandboxName returns a deterministic Sandbox name for a session key.
-func sandboxName(sessionKey string) string {
-	return "tinyclaw-agent-" + sessionKey
+// sandboxName returns a deterministic Sandbox name for a room ID.
+func sandboxName(roomID string) string {
+	return "tinyclaw-agent-" + roomID
 }
