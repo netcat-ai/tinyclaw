@@ -112,15 +112,23 @@ CONSUMER_NAME            # 默认 hostname
 WECOM_EGRESS_BASE_URL
 WECOM_EGRESS_TOKEN
 
-MODEL_API_BASE_URL
-MODEL_API_KEY
+ANTHROPIC_API_KEY         # 与 CLAUDE_CODE_OAUTH_TOKEN 二选一
+CLAUDE_CODE_OAUTH_TOKEN   # 与 ANTHROPIC_API_KEY 二选一
 ```
 
 可选环境变量：
 
 ```text
+ANTHROPIC_BASE_URL        # 可选，自定义 Claude API Base URL
+CLAUDE_MODEL              # 默认 claude-sonnet-4-5
+CLAUDE_SYSTEM_PROMPT_APPEND
+CLAUDE_ALLOWED_TOOLS      # 逗号分隔
+CLAUDE_DISALLOWED_TOOLS   # 逗号分隔
+CLAUDE_MAX_TURNS          # 默认 16
+
 AGENT_IDLE_AFTER_SEC     # 默认 300，仅用于状态打点，不触发硬休眠
 AGENT_LOG_LEVEL
+AGENT_READ_BLOCK_MS      # 默认 5000，测试和优雅退出可调小
 AGENT_WORKDIR            # 默认 /workspace
 AGENT_TMPDIR             # 默认 /tmp
 ```
@@ -159,8 +167,7 @@ entrypoint 应至少检查：
 - `STREAM_PREFIX`
 - `WECOM_EGRESS_BASE_URL`
 - `WECOM_EGRESS_TOKEN`
-- `MODEL_API_BASE_URL`
-- `MODEL_API_KEY`
+- `ANTHROPIC_API_KEY` 或 `CLAUDE_CODE_OAUTH_TOKEN`
 
 ### 8.2 Readiness
 

@@ -1,4 +1,4 @@
-export type AgentRuntimeMode = 'echo' | 'openai_compat';
+export type AgentRuntimeMode = 'echo' | 'claude_agent_sdk';
 
 export interface AgentEnv {
   roomId: string;
@@ -13,16 +13,20 @@ export interface AgentEnv {
   consumerName: string;
   wecomEgressBaseUrl: string;
   wecomEgressToken: string;
-  modelApiBaseUrl: string;
-  modelApiKey: string;
+  anthropicApiKey?: string;
+  anthropicBaseUrl?: string;
+  claudeCodeOauthToken?: string;
   agentIdleAfterSec: number;
   agentLogLevel: string;
   agentReadBlockMs: number;
   agentWorkdir: string;
   agentTmpdir: string;
   agentRuntimeMode: AgentRuntimeMode;
-  modelApiChatPath: string;
-  modelName: string;
+  claudeModel: string;
+  claudeSystemPromptAppend?: string;
+  claudeAllowedTools?: string[];
+  claudeDisallowedTools?: string[];
+  claudeMaxTurns: number;
   streamKey: string;
   consumerGroup: string;
 }

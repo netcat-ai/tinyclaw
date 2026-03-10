@@ -1,6 +1,27 @@
+import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 
 import type { AgentEnv, AgentRuntimeMode } from './types.js';
+
+function loadLocalEnvFiles(): void {
+  const mode = process.env.AGENT_LOAD_DOTENV?.trim().toLowerCase();
+  if (mode === '0' || mode === 'false' || mode === 'no') {
+    return;
+  }
+
+  const candidates = [
+    path.resolve(process.cwd(), '.env'),
+    path.resolve(process.cwd(), '../.env'),
+  ];
+
+  for (const filename of candidates) {
+    if (!fs.existsSync(filename)) {
+      continue;
+    }
+    process.loadEnvFile(filename);
+  }
+}
 
 function requireEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -23,16 +44,29 @@ function parseInteger(name: string, fallback: number): number {
 }
 
 function parseRuntimeMode(raw?: string): AgentRuntimeMode {
-  if (!raw || raw === 'echo') {
-    return 'echo';
+  if (!raw || raw === 'claude_agent_sdk') {
+    return 'claude_agent_sdk';
   }
-  if (raw === 'openai_compat') {
+  if (raw === 'echo') {
     return raw;
   }
   throw new Error(`unsupported AGENT_RUNTIME_MODE: ${raw}`);
 }
 
+function parseCsv(raw?: string): string[] | undefined {
+  if (!raw) {
+    return undefined;
+  }
+  const items = raw
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean);
+  return items.length > 0 ? items : undefined;
+}
+
 export function loadEnv(): AgentEnv {
+  loadLocalEnvFiles();
+
   const roomId = requireEnv('ROOM_ID');
   const tenantId = requireEnv('TENANT_ID');
   const chatType = requireEnv('CHAT_TYPE');
@@ -53,17 +87,31 @@ export function loadEnv(): AgentEnv {
     consumerName: process.env.CONSUMER_NAME?.trim() || os.hostname(),
     wecomEgressBaseUrl: requireEnv('WECOM_EGRESS_BASE_URL'),
     wecomEgressToken: requireEnv('WECOM_EGRESS_TOKEN'),
-    modelApiBaseUrl: requireEnv('MODEL_API_BASE_URL'),
-    modelApiKey: requireEnv('MODEL_API_KEY'),
+    anthropicApiKey:
+      process.env.ANTHROPIC_API_KEY?.trim() ||
+      process.env.MODEL_API_KEY?.trim() ||
+      undefined,
+    anthropicBaseUrl:
+      process.env.ANTHROPIC_BASE_URL?.trim() ||
+      process.env.MODEL_API_BASE_URL?.trim() ||
+      undefined,
+    claudeCodeOauthToken:
+      process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim() || undefined,
     agentIdleAfterSec: parseInteger('AGENT_IDLE_AFTER_SEC', 300),
     agentLogLevel: process.env.AGENT_LOG_LEVEL?.trim() || 'info',
     agentReadBlockMs: parseInteger('AGENT_READ_BLOCK_MS', 5000),
     agentWorkdir: process.env.AGENT_WORKDIR?.trim() || '/workspace',
     agentTmpdir: process.env.AGENT_TMPDIR?.trim() || '/tmp',
     agentRuntimeMode: parseRuntimeMode(process.env.AGENT_RUNTIME_MODE?.trim()),
-    modelApiChatPath:
-      process.env.MODEL_API_CHAT_PATH?.trim() || '/v1/chat/completions',
-    modelName: process.env.MODEL_NAME?.trim() || 'gpt-4.1-mini',
+    claudeModel:
+      process.env.CLAUDE_MODEL?.trim() ||
+      process.env.MODEL_NAME?.trim() ||
+      'claude-sonnet-4-5',
+    claudeSystemPromptAppend:
+      process.env.CLAUDE_SYSTEM_PROMPT_APPEND?.trim() || undefined,
+    claudeAllowedTools: parseCsv(process.env.CLAUDE_ALLOWED_TOOLS?.trim()),
+    claudeDisallowedTools: parseCsv(process.env.CLAUDE_DISALLOWED_TOOLS?.trim()),
+    claudeMaxTurns: parseInteger('CLAUDE_MAX_TURNS', 16),
     streamKey: `${streamPrefix}:${roomId}`,
     consumerGroup: `${consumerGroupPrefix}:${roomId}`,
   };

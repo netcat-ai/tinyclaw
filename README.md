@@ -5,6 +5,24 @@
 - [Agent Sandbox 集成设计 v0](./docs/AGENT_SANDBOX_INTEGRATION_V0.md)
 - [下一步执行清单](./docs/NEXT_STEPS.md)
 
+## Agent Scaffold
+- `agent/`：独立的 TypeScript agent 子工程，提供 v0 最小骨架：
+  - 启动校验和 Redis consumer group 初始化
+  - `XREADGROUP BLOCK` 串行消费 `stream:room:{room_id}`
+  - 成功回发后 `XACK`
+  - Claude-first runtime（当前内置 `echo` 测试实现和 `claude_agent_sdk` 真实实现）
+  - 独立 `Dockerfile` 和 `tini + entrypoint.sh` 进程模型
+- 常用命令：
+  - `cd agent && npm run check`
+  - `cd agent && npm test`
+  - `cd agent && npm run test:live`  # 真实 Claude smoke，依赖 `../.env`
+- 测试说明：
+  - `agent` 集成测试会启动临时 Docker Redis 容器和本地 mock HTTP 服务。
+  - 可通过 `AGENT_READ_BLOCK_MS` 缩短阻塞读取时长，便于测试和优雅退出。
+- `claude_agent_sdk` 运行时通过 `ANTHROPIC_API_KEY` 或 `CLAUDE_CODE_OAUTH_TOKEN` 认证；`ANTHROPIC_BASE_URL` 可选。
+- `claude_agent_sdk` 运行时会显式查找 `claude` 可执行程序，可通过 `CLAUDE_CODE_EXECUTABLE` 覆盖。
+- 本地开发时，`agent` 会自动尝试加载 `agent/.env` 和仓库根目录 `.env`；测试可通过 `AGENT_LOAD_DOTENV=0` 关闭。
+
 ## 当前共识（2026-03-09）
 1. 统一房间标识：`room_id = {roomid_or_from}`，其中群聊取 `roomid`，私聊取 `from`；`tenant_id` 和 `chat_type` 作为独立字段保留。
 2. Redis 设计：每个 `room_id` 一个 stream，键为 `stream:room:{room_id}`。
