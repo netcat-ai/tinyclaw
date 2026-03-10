@@ -51,6 +51,9 @@ jobs:
       - name: Ensure namespace claw
         run: kubectl apply -f k8s/namespace.yaml
 
+      - name: Apply RBAC
+        run: kubectl apply -f k8s/rbac.yaml
+
       - name: Apply runtime secret
         env:
           REDIS_ADDR: ${{ secrets.REDIS_ADDR }}
