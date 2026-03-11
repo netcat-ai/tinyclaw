@@ -41,6 +41,15 @@
 - 记忆与人格等结构化数据放在智能表格，文件上下文放在企业云盘。
 - 主服务负责消息拉取、会话分发、唤醒与治理；agent 负责消费、执行与回发。
 
+## 企业微信详情解析
+- 私聊消息按 `from` 分流：
+  - 客户：调用 `externalcontact/get` 获取客户详情，Redis 缓存 `1h`
+  - 员工：调用 `user/get` 获取内部用户详情
+- 群聊消息按 `roomid` 分流：
+  - 先调用 `msgaudit/groupchat/get` 解析内部群详情
+  - 若不是内部群，再调用 `externalcontact/groupchat/get` 解析客户群详情
+- 群详情与 owner 会写入 Redis 短缓存，供 egress 回发目标解析复用。
+
 ## K8s 部署
 - 命名空间固定为 `claw`。
 - 部署清单：
@@ -83,10 +92,11 @@
 - 需要在 GitHub 仓库 variables 中配置：
   - `WECOM_CORP_ID`（必需）
   - `REDIS_ADDR`（可选，默认 `redis:6379`）
+  - `WECOM_BOT_ID`（强烈建议配置；私聊场景下用于过滤 bot 自己发出的消息，否则会回流成 `room_id=<bot_id>`，例如 `moss`）
   - `ANTHROPIC_BASE_URL`（可选，默认 `https://api.anthropic.com`）
 - 目前仓库内默认值：
   - `REDIS_ADDR=redis:6379`
   - `WECOM_SEQ_KEY=msg:seq`
-  - `WECOM_BOT_ID=`（默认不设置）
+  - `WECOM_BOT_ID=`（默认不设置；未配置时不会过滤 bot 自发私聊消息）
   - `SANDBOX_NAMESPACE=claw`
   - `SANDBOX_IMAGE=ghcr.io/<owner>/tinyclaw-agent:<deploy_sha>`

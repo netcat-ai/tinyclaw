@@ -23,6 +23,9 @@ func main() {
 		slog.Error("load config failed", "err", err)
 		os.Exit(1)
 	}
+	if cfg.WeComBotID == "" {
+		slog.Warn("WECOM_BOT_ID is empty; bot-sent direct messages will be ingested as room_id=<bot_id> and may create self-loop sandboxes")
+	}
 
 	redisClient := redis.NewClient(&redis.Options{
 		Addr:     cfg.RedisAddr,

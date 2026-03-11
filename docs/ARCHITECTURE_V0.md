@@ -173,6 +173,12 @@ cold -> starting -> active -> idle -> hibernated -> terminated
 ### 6.1 Ingress（拉取与标准化）
 - 周期拉取企业微信会话存档。
 - 将原始消息转为标准事件 schema。
+- 私聊消息补齐发送方详情：
+  - 客户调用 `externalcontact/get`，详情缓存到 Redis `1h`
+  - 员工调用 `user/get`
+- 群聊消息补齐会话详情：
+  - 优先调用 `msgaudit/groupchat/get` 解析内部群
+  - 若失败则调用 `externalcontact/groupchat/get` 解析客户群
 - 处理媒体下载（可选异步）。
 - 按 `room_id` 写入 `stream:room:{room_id}`。
 - 新消息到达后直接触发 `Room Runtime Ensure`。

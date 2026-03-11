@@ -15,9 +15,11 @@ import (
 )
 
 const (
-	cachePrefix      = "wecom:id2name:"
-	groupOwnerPrefix = "wecom:group:owner:"
-	cacheTTL         = 24 * time.Hour
+	externalContactCachePrefix = "wecom:contact:external:"
+	internalUserCachePrefix    = "wecom:user:internal:"
+	groupDetailCachePrefix     = "wecom:group:detail:"
+	groupOwnerPrefix           = "wecom:group:owner:"
+	detailCacheTTL             = time.Hour
 )
 
 // Identity represents a resolved WeCom user identity.
@@ -28,14 +30,23 @@ type Identity struct {
 	CorpName string `json:"corp_name"` // 外部联系人所属企业
 }
 
+// GroupDetail represents resolved metadata for a room-level group chat.
+type GroupDetail struct {
+	ChatID string `json:"chat_id"`
+	Name   string `json:"name"`
+	Owner  string `json:"owner"`
+	Type   string `json:"type"` // "customer_group" | "internal_group"
+}
+
 type Clawman struct {
-	cfg    Config
-	redis  *redis.Client
-	sdk    *finance.SDK
-	wecom  *wecom.Client
-	orch   *sandbox.Orchestrator
-	egress *EgressConsumer
-	seq    uint64
+	cfg        Config
+	redis      *redis.Client
+	sdk        *finance.SDK
+	contactAPI *wecom.Client
+	archiveAPI *wecom.Client
+	orch       *sandbox.Orchestrator
+	egress     *EgressConsumer
+	seq        uint64
 }
 
 type WeComMessage struct {
@@ -66,18 +77,20 @@ func NewClawman(cfg Config, rdb *redis.Client, orch *sandbox.Orchestrator, egres
 		return nil, fmt.Errorf("init wecom sdk: %w", err)
 	}
 
-	var wc *wecom.Client
+	var contactAPI *wecom.Client
 	if cfg.WeComContactSecret != "" {
-		wc = wecom.NewClient(cfg.WeComCorpID, cfg.WeComContactSecret)
+		contactAPI = wecom.NewClient(cfg.WeComCorpID, cfg.WeComContactSecret)
 	}
+	archiveAPI := wecom.NewClient(cfg.WeComCorpID, cfg.WeComCorpSecret)
 
 	return &Clawman{
-		cfg:    cfg,
-		redis:  rdb,
-		sdk:    sdk,
-		wecom:  wc,
-		orch:   orch,
-		egress: egress,
+		cfg:        cfg,
+		redis:      rdb,
+		sdk:        sdk,
+		contactAPI: contactAPI,
+		archiveAPI: archiveAPI,
+		orch:       orch,
+		egress:     egress,
 	}, nil
 }
 
@@ -150,10 +163,17 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 			roomID = msg.From
 		}
 
+		// Ensure sandbox exists; if newly created, write a system init message first.
+		if r.orch != nil {
+			if created := r.orch.Ensure(ctx, roomID); created {
+				r.writeSystemInit(ctx, &msg, roomID, chatTypeFromMsg(&msg))
+			}
+		}
+
 		stream := "stream:i:" + roomID
 		if err := r.redis.XAdd(ctx, &redis.XAddArgs{
 			Stream: stream,
-			Values: streamValues(msg),
+			Values: streamValues(msg.MsgID, "wecom", msg.RawContent),
 		}).Err(); err != nil {
 			return seq, fmt.Errorf("xadd %s failed: %w", stream, err)
 		}
@@ -161,11 +181,6 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 			return seq, fmt.Errorf("set seq in redis: %w", err)
 		}
 		seq = chatData.Seq
-
-		if r.orch != nil {
-			ct := chatTypeFromMsg(&msg)
-			r.orch.Ensure(ctx, roomID, r.cfg.WeComCorpID, ct)
-		}
 
 		// Register egress stream for this room
 		if r.egress != nil {
@@ -179,10 +194,54 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 	return seq, nil
 }
 
-func streamValues(msg WeComMessage) map[string]any {
+func streamValues(id, kind, raw string) map[string]any {
 	return map[string]any{
-		"msgid": msg.MsgID,
-		"raw":   msg.RawContent,
+		"id":   id,
+		"kind": kind,
+		"raw":  raw,
+	}
+}
+
+// writeSystemInit writes a system init message to the room's ingress stream
+// with resolved group/identity metadata so the agent knows room context.
+func (r *Clawman) writeSystemInit(ctx context.Context, msg *WeComMessage, roomID, chatType string) {
+	init := map[string]any{
+		"type":      "system",
+		"event":     "room_init",
+		"room_id":   roomID,
+		"chat_type": chatType,
+	}
+
+	if chatType == "group" {
+		group, err := r.ResolveGroup(ctx, msg.RoomID)
+		if err != nil {
+			slog.Warn("system init: resolve group failed", "room_id", roomID, "err", err)
+		} else {
+			init["group_name"] = group.Name
+			init["owner"] = group.Owner
+		}
+	} else {
+		ident, err := r.Resolve(ctx, msg.From)
+		if err != nil {
+			slog.Warn("system init: resolve sender failed", "from", msg.From, "err", err)
+		} else {
+			init["sender_name"] = ident.Name
+			init["sender_type"] = ident.Type
+		}
+	}
+
+	raw, err := json.Marshal(init)
+	if err != nil {
+		slog.Error("system init: marshal failed", "room_id", roomID, "err", err)
+		return
+	}
+
+	stream := "stream:i:" + roomID
+	if err := r.redis.XAdd(ctx, &redis.XAddArgs{
+		Stream: stream,
+		Values: streamValues("system:init", "system", string(raw)),
+	}).Err(); err != nil {
+		slog.Error("system init: xadd failed", "room_id", roomID, "err", err)
 	}
 }
 
@@ -196,18 +255,15 @@ func (r *Clawman) cacheTarget(ctx context.Context, msg *WeComMessage, roomID str
 
 	var target string
 	if msg.RoomID != "" {
-		// Group chat — resolve group name
-		if r.wecom == nil {
-			return
-		}
-		chat, err := r.wecom.GetGroupChat(ctx, msg.RoomID)
+		// Group chat — resolve room metadata from customer-group or internal-group APIs.
+		group, err := r.ResolveGroup(ctx, msg.RoomID)
 		if err != nil {
-			slog.Warn("cache target: get group chat failed", "room_id", msg.RoomID, "err", err)
+			slog.Warn("cache target: resolve group failed", "room_id", msg.RoomID, "err", err)
 			return
 		}
-		target = chat.Name
+		target = group.Name
 	} else {
-		// DM — resolve sender name
+		// Direct message — resolve sender from external-contact or internal-user API.
 		ident, err := r.Resolve(ctx, msg.From)
 		if err != nil {
 			slog.Warn("cache target: resolve sender failed", "from", msg.From, "err", err)
@@ -219,7 +275,7 @@ func (r *Clawman) cacheTarget(ctx context.Context, msg *WeComMessage, roomID str
 	if target == "" {
 		return
 	}
-	r.redis.Set(ctx, key, target, cacheTTL)
+	r.redis.Set(ctx, key, target, detailCacheTTL)
 	slog.Info("cached target", "room_id", roomID, "target", target)
 }
 
@@ -231,37 +287,39 @@ func chatTypeFromMsg(msg *WeComMessage) string {
 	return "dm"
 }
 
-// Resolve resolves a WeCom ID to an Identity.
-// Routing by prefix: wm/wo → external contact, others → employee.
-// Falls back to guest on any error.
+// Resolve resolves a WeCom sender ID to an Identity.
+// Direct messages use sender identity to decide between external contact and internal user APIs.
 func (r *Clawman) Resolve(ctx context.Context, id string) (*Identity, error) {
-	if cached, err := r.redis.Get(ctx, cachePrefix+id).Bytes(); err == nil {
+	cacheKey := internalUserCachePrefix + id
+	if isExternalUserID(id) {
+		cacheKey = externalContactCachePrefix + id
+	}
+
+	if cached, err := r.redis.Get(ctx, cacheKey).Bytes(); err == nil {
 		ident := &Identity{}
 		if json.Unmarshal(cached, ident) == nil {
 			return ident, nil
 		}
 	}
 
-	ident := r.resolveIdentity(ctx, id)
+	var ident *Identity
+	if isExternalUserID(id) {
+		ident = r.resolveExternal(ctx, id)
+	} else {
+		ident = r.resolveInternalUser(ctx, id)
+	}
 
 	if data, err := json.Marshal(ident); err == nil {
-		r.redis.Set(ctx, cachePrefix+id, data, cacheTTL)
+		r.redis.Set(ctx, cacheKey, data, detailCacheTTL)
 	}
 	return ident, nil
 }
 
-func (r *Clawman) resolveIdentity(ctx context.Context, id string) *Identity {
-	if strings.HasPrefix(id, "wm") || strings.HasPrefix(id, "wo") {
-		return r.resolveExternal(ctx, id)
-	}
-	return &Identity{UserID: id, Name: id, Type: "employee"}
-}
-
 func (r *Clawman) resolveExternal(ctx context.Context, id string) *Identity {
-	if r.wecom == nil {
+	if r.contactAPI == nil {
 		return &Identity{UserID: id, Name: id, Type: "guest"}
 	}
-	contact, err := r.wecom.GetExternalContact(ctx, id)
+	contact, err := r.contactAPI.GetExternalContact(ctx, id)
 	if err != nil {
 		return &Identity{UserID: id, Name: id, Type: "guest"}
 	}
@@ -273,18 +331,100 @@ func (r *Clawman) resolveExternal(ctx context.Context, id string) *Identity {
 	}
 }
 
+func (r *Clawman) resolveInternalUser(ctx context.Context, id string) *Identity {
+	if r.contactAPI == nil {
+		return &Identity{UserID: id, Name: id, Type: "employee"}
+	}
+	user, err := r.contactAPI.GetUser(ctx, id)
+	if err != nil {
+		return &Identity{UserID: id, Name: id, Type: "employee"}
+	}
+	return &Identity{
+		UserID: user.UserID,
+		Name:   user.Name,
+		Type:   "employee",
+	}
+}
+
+// ResolveGroup resolves a room ID to customer-group or internal-group metadata.
+func (r *Clawman) ResolveGroup(ctx context.Context, roomID string) (*GroupDetail, error) {
+	if cached, err := r.redis.Get(ctx, groupDetailCachePrefix+roomID).Bytes(); err == nil {
+		detail := &GroupDetail{}
+		if json.Unmarshal(cached, detail) == nil {
+			return detail, nil
+		}
+	}
+	if r.archiveAPI == nil && r.contactAPI == nil {
+		return nil, fmt.Errorf("wecom clients not configured")
+	}
+
+	var internalErr error
+	if r.archiveAPI != nil {
+		internalGroup, err := r.archiveAPI.GetArchiveGroupChat(ctx, roomID)
+		if err == nil {
+			detail := &GroupDetail{
+				ChatID: internalGroup.ChatID,
+				Name:   internalGroup.Name,
+				Owner:  internalGroup.Owner,
+				Type:   "internal_group",
+			}
+			r.cacheGroupDetail(ctx, roomID, detail)
+			return detail, nil
+		}
+		internalErr = err
+	}
+
+	var customerErr error
+	if r.contactAPI != nil {
+		customerGroup, err := r.contactAPI.GetGroupChat(ctx, roomID)
+		if err == nil {
+			detail := &GroupDetail{
+				ChatID: customerGroup.ChatID,
+				Name:   customerGroup.Name,
+				Owner:  customerGroup.Owner,
+				Type:   "customer_group",
+			}
+			r.cacheGroupDetail(ctx, roomID, detail)
+			return detail, nil
+		}
+		customerErr = err
+	}
+
+	if customerErr == nil && internalErr == nil {
+		return nil, fmt.Errorf("resolve group %s: no available client", roomID)
+	}
+
+	return nil, fmt.Errorf("resolve group %s: internal=%v customer=%v", roomID, internalErr, customerErr)
+}
+
 // ResolveGroupOwner returns the owner userid of a group chat.
 func (r *Clawman) ResolveGroupOwner(ctx context.Context, roomID string) (string, error) {
 	if owner, err := r.redis.Get(ctx, groupOwnerPrefix+roomID).Result(); err == nil {
 		return owner, nil
 	}
-	if r.wecom == nil {
-		return "", fmt.Errorf("wecom client not configured")
-	}
-	chat, err := r.wecom.GetGroupChat(ctx, roomID)
+	detail, err := r.ResolveGroup(ctx, roomID)
 	if err != nil {
-		return "", fmt.Errorf("get group chat %s: %w", roomID, err)
+		return "", err
 	}
-	r.redis.Set(ctx, groupOwnerPrefix+roomID, chat.Owner, cacheTTL)
-	return chat.Owner, nil
+	if detail.Owner == "" {
+		return "", fmt.Errorf("group %s has empty owner", roomID)
+	}
+	r.redis.Set(ctx, groupOwnerPrefix+roomID, detail.Owner, detailCacheTTL)
+	return detail.Owner, nil
+}
+
+func (r *Clawman) cacheGroupDetail(ctx context.Context, roomID string, detail *GroupDetail) {
+	if detail == nil {
+		return
+	}
+	if data, err := json.Marshal(detail); err == nil {
+		r.redis.Set(ctx, groupDetailCachePrefix+roomID, data, detailCacheTTL)
+	}
+	if detail.Owner != "" {
+		r.redis.Set(ctx, groupOwnerPrefix+roomID, detail.Owner, detailCacheTTL)
+	}
+}
+
+func isExternalUserID(id string) bool {
+	return strings.HasPrefix(id, "wm") || strings.HasPrefix(id, "wo")
 }

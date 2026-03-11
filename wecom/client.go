@@ -12,7 +12,15 @@ import (
 	"time"
 )
 
-const baseURL = "https://qyapi.weixin.qq.com"
+const defaultBaseURL = "https://qyapi.weixin.qq.com"
+
+var baseURL = defaultBaseURL
+
+// SetBaseURL overrides the API base URL for tests.
+func SetBaseURL(u string) { baseURL = strings.TrimRight(u, "/") }
+
+// ResetBaseURL restores the default API base URL.
+func ResetBaseURL() { baseURL = defaultBaseURL }
 
 // APIRes is the common error envelope for WeCom API responses.
 type APIRes struct {

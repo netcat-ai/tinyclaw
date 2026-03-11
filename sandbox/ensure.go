@@ -59,35 +59,37 @@ func NewOrchestrator(client sandboxclient.Interface, rdb *redis.Client, cfg Conf
 }
 
 // Ensure creates or confirms the Sandbox CR for a room.
-// Uses a Redis lock to prevent ensure storms. All errors are logged, never returned.
-func (o *Orchestrator) Ensure(ctx context.Context, roomID, tenantID, chatType string) {
+// Uses a Redis lock to prevent ensure storms. Returns true if a new sandbox was created.
+// All errors are logged, never returned.
+func (o *Orchestrator) Ensure(ctx context.Context, roomID string) bool {
 	locked, err := o.redis.SetNX(ctx, lockPrefix+roomID, "1", lockTTL).Result()
 	if err != nil {
 		slog.Error("ensure lock check failed", "room_id", roomID, "err", err)
-		return
+		return false
 	}
 	if !locked {
-		return
+		return false
 	}
 
 	cred, err := o.provisionFn(ctx, roomID)
 	if err != nil {
 		slog.Error("ensure redis user failed", "room_id", roomID, "err", err)
-		return
+		return false
 	}
 
 	name := sandboxName(roomID)
-	sbx := buildSandbox(name, o.cfg, roomID, tenantID, chatType, cred)
+	sbx := buildSandbox(name, o.cfg, roomID, cred)
 
 	_, err = o.client.AgentsV1alpha1().Sandboxes(o.cfg.Namespace).Create(ctx, sbx, metav1.CreateOptions{})
 	if errors.IsAlreadyExists(err) {
-		return
+		return false
 	}
 	if err != nil {
 		slog.Error("ensure sandbox create failed", "room_id", roomID, "sandbox", name, "err", err)
-		return
+		return false
 	}
 	slog.Info("ensure sandbox created", "room_id", roomID, "sandbox", name)
+	return true
 }
 
 // provisionRedisUser creates a Redis ACL user scoped to the room's stream key.
@@ -127,7 +129,7 @@ func generatePassword(n int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-func buildSandbox(name string, cfg Config, roomID, tenantID, chatType string, cred RedisCredential) *sandboxv1alpha1.Sandbox {
+func buildSandbox(name string, cfg Config, roomID string, cred RedisCredential) *sandboxv1alpha1.Sandbox {
 	return &sandboxv1alpha1.Sandbox{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
@@ -140,8 +142,6 @@ func buildSandbox(name string, cfg Config, roomID, tenantID, chatType string, cr
 				ObjectMeta: sandboxv1alpha1.PodMetadata{
 					Labels: map[string]string{
 						"tinyclaw/room-id":   roomID,
-						"tinyclaw/tenant-id": tenantID,
-						"tinyclaw/chat-type": chatType,
 					},
 				},
 				Spec: corev1.PodSpec{
@@ -152,8 +152,6 @@ func buildSandbox(name string, cfg Config, roomID, tenantID, chatType string, cr
 							Image: cfg.Image,
 							Env: []corev1.EnvVar{
 								{Name: "ROOM_ID", Value: roomID},
-								{Name: "TENANT_ID", Value: tenantID},
-								{Name: "CHAT_TYPE", Value: chatType},
 								{Name: "REDIS_ADDR", Value: cfg.RedisAddr},
 								{Name: "REDIS_USERNAME", Value: cred.Username},
 								{Name: "REDIS_PASSWORD", Value: cred.Password},

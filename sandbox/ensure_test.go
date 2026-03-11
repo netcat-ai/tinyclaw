@@ -10,7 +10,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stesting "k8s.io/client-go/testing"
-	sandboxv1alpha1 "sigs.k8s.io/agent-sandbox/api/v1alpha1"
 	sandboxfake "sigs.k8s.io/agent-sandbox/clients/k8s/clientset/versioned/fake"
 )
 
@@ -44,7 +43,10 @@ func TestEnsure_CreatesSandbox(t *testing.T) {
 	orch, _ := newTestOrchestrator(t, client)
 	ctx := context.Background()
 
-	orch.Ensure(ctx, "test-room-123", "corp1", "group")
+	created := orch.Ensure(ctx, "test-room-123")
+	if !created {
+		t.Fatal("expected Ensure to return created=true for new sandbox")
+	}
 
 	list, err := client.AgentsV1alpha1().Sandboxes("claw").List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -69,15 +71,8 @@ func TestEnsure_CreatesSandbox(t *testing.T) {
 
 	// Verify pod template labels
 	ptLabels := sbx.Spec.PodTemplate.ObjectMeta.Labels
-	wantLabels := map[string]string{
-		"tinyclaw/room-id":   "test-room-123",
-		"tinyclaw/tenant-id": "corp1",
-		"tinyclaw/chat-type": "group",
-	}
-	for k, v := range wantLabels {
-		if ptLabels[k] != v {
-			t.Errorf("pod template label %s = %q, want %q", k, ptLabels[k], v)
-		}
+	if ptLabels["tinyclaw/room-id"] != "test-room-123" {
+		t.Errorf("pod template label tinyclaw/room-id = %q, want %q", ptLabels["tinyclaw/room-id"], "test-room-123")
 	}
 
 	// Verify env vars
@@ -88,8 +83,6 @@ func TestEnsure_CreatesSandbox(t *testing.T) {
 	}
 	wantEnv := map[string]string{
 		"ROOM_ID":            "test-room-123",
-		"TENANT_ID":          "corp1",
-		"CHAT_TYPE":          "group",
 		"REDIS_ADDR":         "redis:6379",
 		"REDIS_USERNAME":     "sb:test-room-123",
 		"REDIS_PASSWORD":     "test-password",
@@ -114,7 +107,7 @@ func TestEnsure_DebounceLock(t *testing.T) {
 	ctx := context.Background()
 
 	// First call creates the sandbox
-	orch.Ensure(ctx, "test-room-123", "corp1", "group")
+	orch.Ensure(ctx, "test-room-123")
 
 	// Track create calls
 	createCount := 0
@@ -124,7 +117,10 @@ func TestEnsure_DebounceLock(t *testing.T) {
 	})
 
 	// Second call within 3s should be debounced by Redis lock
-	orch.Ensure(ctx, "test-room-123", "corp1", "group")
+	created := orch.Ensure(ctx, "test-room-123")
+	if created {
+		t.Error("expected Ensure to return created=false when debounced")
+	}
 
 	if createCount != 0 {
 		t.Errorf("expected 0 create calls (debounced), got %d", createCount)
@@ -132,19 +128,24 @@ func TestEnsure_DebounceLock(t *testing.T) {
 }
 
 func TestEnsure_AlreadyExists(t *testing.T) {
-	existing := &sandboxv1alpha1.Sandbox{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      sandboxName("user-abc"),
-			Namespace: "claw",
-		},
-	}
-
-	client := sandboxfake.NewSimpleClientset(existing)
+	client := sandboxfake.NewSimpleClientset()
 	orch, _ := newTestOrchestrator(t, client)
 	ctx := context.Background()
 
-	// Should not panic — AlreadyExists is silently handled
-	orch.Ensure(ctx, "user-abc", "corp1", "dm")
+	// First call creates the sandbox
+	created := orch.Ensure(ctx, "user-abc")
+	if !created {
+		t.Fatal("expected first Ensure to return created=true")
+	}
+
+	// Expire the lock so the second call isn't debounced
+	orch.redis.Del(ctx, lockPrefix+"user-abc")
+
+	// Second call hits AlreadyExists — should return false
+	created = orch.Ensure(ctx, "user-abc")
+	if created {
+		t.Error("expected Ensure to return created=false for already-existing sandbox")
+	}
 
 	list, err := client.AgentsV1alpha1().Sandboxes("claw").List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -164,7 +165,7 @@ func TestEnsure_K8sError_NoPanic(t *testing.T) {
 	ctx := context.Background()
 
 	// Should log but not panic
-	orch.Ensure(ctx, "test-room-123", "corp1", "group")
+	orch.Ensure(ctx, "test-room-123")
 }
 
 func TestSandboxName_Deterministic(t *testing.T) {
@@ -194,7 +195,7 @@ func TestEnsure_LockExpiry(t *testing.T) {
 	orch, mr := newTestOrchestrator(t, client)
 	ctx := context.Background()
 
-	orch.Ensure(ctx, "test-room-123", "corp1", "group")
+	orch.Ensure(ctx, "test-room-123")
 
 	// Fast-forward miniredis past the lock TTL
 	mr.FastForward(lockTTL)
@@ -205,7 +206,7 @@ func TestEnsure_LockExpiry(t *testing.T) {
 		return false, nil, nil
 	})
 
-	orch.Ensure(ctx, "test-room-123", "corp1", "group")
+	orch.Ensure(ctx, "test-room-123")
 
 	// After lock expiry, should attempt create again (will get AlreadyExists)
 	if createCount != 1 {

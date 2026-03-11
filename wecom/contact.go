@@ -50,3 +50,24 @@ func (c *Client) GetGroupChat(ctx context.Context, chatID string) (*GroupChat, e
 	}
 	return &res.GroupChat, nil
 }
+
+// GetArchiveGroupChat 通过会话存档接口获取内部群信息
+func (c *Client) GetArchiveGroupChat(ctx context.Context, roomID string) (*GroupChat, error) {
+	req := map[string]any{
+		"roomid": roomID,
+	}
+	res := &struct {
+		APIRes
+		RoomName string `json:"roomname"`
+	}{}
+	if err := c.Post(ctx, "/cgi-bin/msgaudit/groupchat/get", req, res); err != nil {
+		return nil, err
+	}
+	if err := res.Error(); err != nil {
+		return nil, err
+	}
+	return &GroupChat{
+		ChatID: roomID,
+		Name:   res.RoomName,
+	}, nil
+}

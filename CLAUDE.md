@@ -26,7 +26,7 @@ WeChat Work Finance SDK → Clawman (3s poll loop) → Redis Stream per room →
 
 - `main.go` — entry point: Redis client, Resolver, Clawman init, signal handling
 - `clawman.go` — ingress service: pulls messages via Finance SDK, decrypts, parses, dispatches to Redis Streams
-- `resolver.go` — resolves WeChat Work IDs to identities (employee/external/guest) with 24h Redis cache
+- `clawman.go` — resolves direct-message identities and group metadata via WeCom APIs with 1h Redis cache
 - `config.go` — all config from env vars with `envOrDefault` pattern
 - `wecom/client.go` — minimal WeChat Work API client with mutex-guarded token refresh
 - `wecom/contact.go` — external contact and group chat resolution APIs
@@ -38,8 +38,10 @@ WeChat Work Finance SDK → Clawman (3s poll loop) → Redis Stream per room →
 |---------|---------|
 | `stream:room:{roomID}` | Per-room message stream |
 | `msg:seq` | Last processed WeChat Work sequence number |
-| `wecom:id2name:{id}` | Identity cache (24h TTL) |
-| `wecom:group:owner:{roomID}` | Group owner cache (24h TTL) |
+| `wecom:contact:external:{id}` | External contact cache (1h TTL) |
+| `wecom:user:internal:{id}` | Internal user cache (1h TTL) |
+| `wecom:group:detail:{roomID}` | Group detail cache (1h TTL) |
+| `wecom:group:owner:{roomID}` | Group owner cache (1h TTL) |
 | `lock:ensure:{room_id}` | Ensure-once lock (3s TTL) |
 
 ### Message flow
@@ -50,9 +52,11 @@ WeChat Work Finance SDK → Clawman (3s poll loop) → Redis Stream per room →
 4. Sequence is persisted to Redis after each successful dispatch
 5. Invalid/undecryptable messages are skipped with a log line
 
-### WeChat Work ID routing
+### WeChat Work detail routing
 
-IDs prefixed with `wm` or `wo` → external contact API lookup. All others → treated as internal employee.
+- Direct message sender IDs prefixed with `wm` or `wo` → external contact API lookup.
+- Other direct message sender IDs → internal user API lookup.
+- Group `roomid` values try archive-group lookup first, then fall back to customer-group lookup.
 
 ## Deployment
 
