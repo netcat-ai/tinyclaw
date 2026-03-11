@@ -5,8 +5,11 @@ import { ackMessage, readNextMessage } from './redis.js';
 import type { AgentEnv } from './types.js';
 import type { AgentRuntime } from './runtime.js';
 
+const MAX_RETRIES = 3;
+
 export class AgentConsumer {
   private stopRequested = false;
+  private readonly retryCount = new Map<string, number>();
 
   constructor(
     private readonly redis: RedisClientType,
@@ -44,6 +47,7 @@ export class AgentConsumer {
         const result = await this.runtime.run(message);
         await this.egress.sendReply(message, result);
         await ackMessage(this.redis, this.env, message.id);
+        this.retryCount.delete(message.id);
 
         console.log(
           JSON.stringify({
@@ -55,15 +59,35 @@ export class AgentConsumer {
         );
       } catch (error) {
         const details = error instanceof Error ? error.message : String(error);
-        console.error(
-          JSON.stringify({
-            level: 'error',
-            msg: 'message_processing_failed',
-            room_id: this.env.roomId,
-            stream_id: message.id,
-            error: details,
-          }),
-        );
+        const retries = (this.retryCount.get(message.id) ?? 0) + 1;
+        this.retryCount.set(message.id, retries);
+
+        if (retries >= MAX_RETRIES) {
+          // Exceeded retry limit — ACK to prevent infinite reprocessing
+          await ackMessage(this.redis, this.env, message.id);
+          this.retryCount.delete(message.id);
+          console.error(
+            JSON.stringify({
+              level: 'error',
+              msg: 'message_dropped_max_retries',
+              room_id: this.env.roomId,
+              stream_id: message.id,
+              retries,
+              error: details,
+            }),
+          );
+        } else {
+          console.error(
+            JSON.stringify({
+              level: 'error',
+              msg: 'message_processing_failed',
+              room_id: this.env.roomId,
+              stream_id: message.id,
+              retries,
+              error: details,
+            }),
+          );
+        }
       }
     }
   }
