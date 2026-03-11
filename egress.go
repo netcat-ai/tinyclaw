@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	targetPrefix   = "wecom:target:"
-	egressGroup    = "cg:egress"
-	egressConsumer = "clawman"
+	targetPrefix    = "wecom:target:"
+	egressGroup     = "cg:egress"
+	egressConsumer  = "clawman"
+	egressMaxRetries = 3
 )
 
 // EgressConsumer reads agent replies from per-room egress streams and sends them via WorkTool.
@@ -22,8 +23,9 @@ type EgressConsumer struct {
 	worktool *worktool.Client
 	pollInterval time.Duration
 
-	mu    sync.Mutex
-	rooms map[string]bool // registered room IDs
+	mu       sync.Mutex
+	rooms    map[string]bool // registered room IDs
+	failures map[string]int  // message ID -> consecutive failure count
 }
 
 func NewEgressConsumer(rdb *redis.Client, wt *worktool.Client) *EgressConsumer {
@@ -32,6 +34,7 @@ func NewEgressConsumer(rdb *redis.Client, wt *worktool.Client) *EgressConsumer {
 		worktool:     wt,
 		pollInterval: 500 * time.Millisecond,
 		rooms:        make(map[string]bool),
+		failures:     make(map[string]int),
 	}
 }
 
@@ -132,11 +135,26 @@ func (c *EgressConsumer) processMessage(ctx context.Context, streamKey string, m
 	}
 
 	if err := c.worktool.SendTextMessage(target, text, nil); err != nil {
-		slog.Error("egress send failed", "room_id", roomID, "target", target, "err", err)
-		// Don't ACK — will be retried on next read
+		c.mu.Lock()
+		c.failures[msg.ID]++
+		retries := c.failures[msg.ID]
+		c.mu.Unlock()
+
+		if retries >= egressMaxRetries {
+			slog.Error("egress send failed max retries, dropping", "room_id", roomID, "retries", retries, "err", err)
+			c.redis.XAck(ctx, streamKey, egressGroup, msg.ID)
+			c.mu.Lock()
+			delete(c.failures, msg.ID)
+			c.mu.Unlock()
+		} else {
+			slog.Error("egress send failed", "room_id", roomID, "target", target, "retries", retries, "err", err)
+		}
 		return
 	}
 
+	c.mu.Lock()
+	delete(c.failures, msg.ID)
+	c.mu.Unlock()
 	c.redis.XAck(ctx, streamKey, egressGroup, msg.ID)
 	slog.Info("egress sent", "room_id", roomID, "target", target)
 }
