@@ -11,6 +11,8 @@ import { createClient } from 'redis';
 const SHOULD_RUN = process.env.TINYCLAW_RUN_LIVE === '1';
 const TEST_TIMEOUT_MS = 60_000;
 const TEST_READ_BLOCK_MS = '250';
+const activeRedisContainers = new Set();
+let cleanupHandlersInstalled = false;
 
 async function runCommand(command, args) {
   const child = spawn(command, args, {
@@ -38,6 +40,32 @@ async function runCommand(command, args) {
   return { stdout, stderr };
 }
 
+function installCleanupHandlers() {
+  if (cleanupHandlersInstalled) {
+    return;
+  }
+  cleanupHandlersInstalled = true;
+
+  const cleanup = () => {
+    for (const name of activeRedisContainers) {
+      spawn('docker', ['rm', '-f', name], {
+        stdio: 'ignore',
+        detached: true,
+      }).unref();
+    }
+  };
+
+  process.on('SIGINT', () => {
+    cleanup();
+    process.exit(130);
+  });
+  process.on('SIGTERM', () => {
+    cleanup();
+    process.exit(143);
+  });
+  process.on('exit', cleanup);
+}
+
 async function waitFor(condition, timeoutMs, intervalMs = 100) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -61,6 +89,7 @@ async function waitForWithDiagnostics(condition, timeoutMs, buildDetails) {
 }
 
 async function startRedisContainer() {
+  installCleanupHandlers();
   const name = `tinyclaw-agent-live-${randomUUID().slice(0, 8)}`;
 
   await runCommand('docker', [
@@ -73,6 +102,7 @@ async function startRedisContainer() {
     '127.0.0.1::6379',
     'redis:7-alpine',
   ]);
+  activeRedisContainers.add(name);
 
   try {
     const port = await waitFor(async () => {
@@ -97,12 +127,14 @@ async function startRedisContainer() {
     return { name, port, redis };
   } catch (error) {
     await runCommand('docker', ['rm', '-f', name]).catch(() => undefined);
+    activeRedisContainers.delete(name);
     throw error;
   }
 }
 
 async function stopRedisContainer(name) {
   await runCommand('docker', ['rm', '-f', name]).catch(() => undefined);
+  activeRedisContainers.delete(name);
 }
 
 async function waitForStreamMessage(redis, streamKey, timeoutMs, buildDetails) {
