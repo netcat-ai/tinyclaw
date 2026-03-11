@@ -60,11 +60,6 @@ jobs:
           MANUAL_IMAGE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.image_tag || '' }}
           REDIS_ADDR: ${{ vars.REDIS_ADDR }}
           WECOM_CORP_ID: ${{ vars.WECOM_CORP_ID }}
-          WECOM_SEQ_KEY: ${{ vars.WECOM_SEQ_KEY }}
-          WECOM_BOT_ID: ${{ vars.WECOM_BOT_ID }}
-          SANDBOX_ENABLED: ${{ vars.SANDBOX_ENABLED }}
-          SANDBOX_NAMESPACE: ${{ vars.SANDBOX_NAMESPACE }}
-          SANDBOX_IMAGE: ${{ vars.SANDBOX_IMAGE }}
           ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
           WECOM_CORP_SECRET: ${{ secrets.WECOM_CORP_SECRET }}
@@ -76,17 +71,14 @@ jobs:
           IMAGE_TAG="${MANUAL_IMAGE_TAG:-$DEFAULT_IMAGE_TAG}"
           : "${REDIS_ADDR:=redis:6379}"
           : "${WECOM_SEQ_KEY:=msg:seq}"
-          : "${SANDBOX_ENABLED:=true}"
-          : "${SANDBOX_NAMESPACE:=claw}"
-          : "${SANDBOX_IMAGE:=ghcr.io/${{ github.repository_owner }}/tinyclaw-agent:${IMAGE_TAG}}"
+          : "${WECOM_BOT_ID:=}"
+          SANDBOX_IMAGE="ghcr.io/${{ github.repository_owner }}/tinyclaw-agent:${IMAGE_TAG}"
           : "${ANTHROPIC_BASE_URL:=https://api.anthropic.com}"
           kubectl -n claw create configmap tinyclaw-config \
             --from-literal=REDIS_ADDR="${REDIS_ADDR}" \
             --from-literal=WECOM_CORP_ID="${WECOM_CORP_ID}" \
             --from-literal=WECOM_SEQ_KEY="${WECOM_SEQ_KEY}" \
             --from-literal=WECOM_BOT_ID="${WECOM_BOT_ID}" \
-            --from-literal=SANDBOX_ENABLED="${SANDBOX_ENABLED}" \
-            --from-literal=SANDBOX_NAMESPACE="${SANDBOX_NAMESPACE}" \
             --from-literal=SANDBOX_IMAGE="${SANDBOX_IMAGE}" \
             --from-literal=ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL}" \
             --dry-run=client -o yaml | kubectl apply -f -

@@ -19,8 +19,8 @@ const (
 
 // EgressConsumer reads agent replies from per-room egress streams and sends them via WorkTool.
 type EgressConsumer struct {
-	redis    *redis.Client
-	worktool *worktool.Client
+	redis        *redis.Client
+	worktool     *worktool.Client
 	pollInterval time.Duration
 
 	mu    sync.Mutex

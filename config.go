@@ -6,8 +6,8 @@ import (
 )
 
 const (
-	defaultRedisAddr    = "127.0.0.1:6379"
-	defaultWeComSeqKey  = "msg:seq"
+	defaultRedisAddr   = "127.0.0.1:6379"
+	defaultWeComSeqKey = "msg:seq"
 )
 
 type Config struct {
@@ -22,7 +22,6 @@ type Config struct {
 	WeComContactSecret string
 	WeComBotID         string
 
-	SandboxEnabled   bool
 	SandboxNamespace string
 	SandboxImage     string
 
@@ -39,11 +38,6 @@ func LoadConfig() (Config, error) {
 			redisDB = n
 		}
 	}
-	sandboxEnabled := false
-	if v := os.Getenv("SANDBOX_ENABLED"); v != "" {
-		sandboxEnabled, _ = strconv.ParseBool(v)
-	}
-
 	cfg := Config{
 		RedisAddr:     envOrDefault("REDIS_ADDR", defaultRedisAddr),
 		RedisPassword: os.Getenv("REDIS_PASSWORD"),
@@ -56,8 +50,7 @@ func LoadConfig() (Config, error) {
 		WeComContactSecret: os.Getenv("WECOM_CONTACT_SECRET"),
 		WeComBotID:         os.Getenv("WECOM_BOT_ID"),
 
-		SandboxEnabled:   sandboxEnabled,
-		SandboxNamespace: envOrDefault("SANDBOX_NAMESPACE", "claw"),
+		SandboxNamespace: "claw",
 		SandboxImage:     os.Getenv("SANDBOX_IMAGE"),
 
 		WorkToolRobotID: os.Getenv("WORKTOOL_ROBOT_ID"),

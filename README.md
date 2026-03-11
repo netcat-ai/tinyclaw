@@ -80,12 +80,10 @@
 - 需要在 GitHub 仓库 variables 中配置：
   - `WECOM_CORP_ID`（必需）
   - `REDIS_ADDR`（可选，默认 `redis:6379`）
-  - `WECOM_SEQ_KEY`（可选，默认 `msg:seq`）
-  - `WECOM_BOT_ID`（可选，但建议配置以过滤 bot 自发私聊消息）
-  - `SANDBOX_ENABLED`（可选，默认 `true`）
-  - `SANDBOX_NAMESPACE`（可选，默认 `claw`）
-  - `SANDBOX_IMAGE`（可选，默认 `ghcr.io/<owner>/tinyclaw-agent:<sha>`）
   - `ANTHROPIC_BASE_URL`（可选，默认 `https://api.anthropic.com`）
 - 目前仓库内默认值：
   - `REDIS_ADDR=redis:6379`
   - `WECOM_SEQ_KEY=msg:seq`
+  - `WECOM_BOT_ID=`（默认不设置）
+  - `SANDBOX_NAMESPACE=claw`
+  - `SANDBOX_IMAGE=ghcr.io/<owner>/tinyclaw-agent:<deploy_sha>`

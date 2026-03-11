@@ -8,7 +8,5 @@ data:
   WECOM_CORP_ID: "replace-me"
   WECOM_SEQ_KEY: "msg:seq"
   WECOM_BOT_ID: ""
-  SANDBOX_ENABLED: "true"
-  SANDBOX_NAMESPACE: "claw"
   SANDBOX_IMAGE: "ghcr.io/fishioon/tinyclaw-agent:latest"
   ANTHROPIC_BASE_URL: "https://api.anthropic.com"

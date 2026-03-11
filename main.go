@@ -40,26 +40,24 @@ func main() {
 	cancel()
 
 	var orch *sandbox.Orchestrator
-	if cfg.SandboxEnabled {
-		k8sCfg, err := rest.InClusterConfig()
-		if err != nil {
-			slog.Error("k8s in-cluster config failed", "err", err)
-			os.Exit(1)
-		}
-		clientset, err := sandboxclient.NewForConfig(k8sCfg)
-		if err != nil {
-			slog.Error("k8s clientset init failed", "err", err)
-			os.Exit(1)
-		}
-		orch = sandbox.NewOrchestrator(clientset, redisClient, sandbox.Config{
-			Namespace:       cfg.SandboxNamespace,
-			Image:           cfg.SandboxImage,
-			RedisAddr:       cfg.RedisAddr,
-			ModelAPIBaseURL: cfg.ModelAPIBaseURL,
-			ModelAPIKey:     cfg.ModelAPIKey,
-		})
-		slog.Info("sandbox orchestrator enabled", "namespace", cfg.SandboxNamespace, "image", cfg.SandboxImage)
+	k8sCfg, err := rest.InClusterConfig()
+	if err != nil {
+		slog.Error("k8s in-cluster config failed", "err", err)
+		os.Exit(1)
 	}
+	clientset, err := sandboxclient.NewForConfig(k8sCfg)
+	if err != nil {
+		slog.Error("k8s clientset init failed", "err", err)
+		os.Exit(1)
+	}
+	orch = sandbox.NewOrchestrator(clientset, redisClient, sandbox.Config{
+		Namespace:       cfg.SandboxNamespace,
+		Image:           cfg.SandboxImage,
+		RedisAddr:       cfg.RedisAddr,
+		ModelAPIBaseURL: cfg.ModelAPIBaseURL,
+		ModelAPIKey:     cfg.ModelAPIKey,
+	})
+	slog.Info("sandbox orchestrator enabled", "namespace", cfg.SandboxNamespace, "image", cfg.SandboxImage)
 
 	// Create egress consumer (nil if worktool not configured)
 	var egress *EgressConsumer
