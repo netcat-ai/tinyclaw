@@ -285,3 +285,72 @@ SLO（MVP）建议：
 - 企业数据源可读写且可审计。
 
 在此基础上，再逐步增强 agent 能力，而不牺牲稳定性与安全边界。
+
+## 13. 多 Agent 协作机制
+
+### 13.1 设计原则
+
+- **渐进性披露**：完成一个任务需要多步验证，禁止单 agent 跳步执行最终操作。
+- **上下文隔离**：每个 agent 只获得完成其任务所需的最小信息，避免长上下文导致幻觉。
+- **交叉验证**：下一个 agent 必须检查/复核上一个 agent 的输出，降低错误率。
+- **无中心编排**：不引入 Orchestrator，agent 通过 `sessions_spawn` 工具自行发起子会话。
+
+### 13.2 子会话 Key 格式
+
+```text
+主会话:     stream:session:{session_key}
+子会话:     stream:session:{session_key}:subagent:{id}
+```
+
+子会话继承父会话的隔离边界（同一 tenant、同一权限域），但拥有独立 stream。
+
+### 13.3 sessions_spawn 工具
+
+父 agent 通过调用 `sessions_spawn` 工具创建子会话：
+
+```json
+{
+  "parent_session_key": "room-123",
+  "agent_id": "sql-agent",
+  "task": "查询本月订单总额",
+  "model": "gpt-3.5-turbo",
+  "context": {"user_id": "u001"}
+}
+```
+
+执行流程：
+1. 生成子会话 key：`{parent_key}:subagent:{random_id}`
+2. 将任务写入子会话 stream（event_type: `subagent.task`）
+3. 调用 `ensure` 启动子 agent sandbox
+
+### 13.4 结果自动通知
+
+子 agent 完成任务后，自动将结果写入父会话 stream（event_type: `subagent.result`）。父 agent 无需主动轮询，通过正常 `XREADGROUP BLOCK` 即可收到子 agent 的结果。
+
+```text
+Parent Agent                    Child Agent (sql-agent)
+    |                                   |
+    |--- sessions_spawn(task) --------->|
+    |    (创建子stream + ensure)         |
+    |                                   |--- 执行任务
+    |                                   |--- 验证结果
+    |<--- subagent.result --------------|
+    |    (写入父stream)                  |
+    |--- 使用结果继续处理                  |
+```
+
+### 13.5 Agent 注册表
+
+可用 agent 类型通过注册表管理，每种 agent 定义：
+
+| 字段 | 说明 |
+|------|------|
+| `id` | 唯一标识（如 `sql-agent`） |
+| `model` | 默认使用的模型（可用更廉价模型降低成本） |
+| `tools` | 该 agent 可使用的工具列表 |
+
+### 13.6 成本优化
+
+- 子 agent 可使用比父 agent 更廉价的模型（如 gpt-3.5-turbo）。
+- 上下文隔离减少每次调用的 token 数。
+- 无 Orchestrator 意味着零额外 LLM 调用开销。

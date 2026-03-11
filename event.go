@@ -6,7 +6,11 @@ import (
 	"time"
 )
 
-const eventTypeMessageReceived = "message.received"
+const (
+	eventTypeMessageReceived = "message.received"
+	eventTypeSubagentTask    = "subagent.task"
+	eventTypeSubagentResult  = "subagent.result"
+)
 
 type IngressEvent struct {
 	EventID     string
