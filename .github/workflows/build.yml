@@ -31,12 +31,15 @@ jobs:
 
       - name: Unit Test
         run: go test ./...
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/wecom/finance/lib
 
       - name: Integration Test
         run: |
           go test ./sandbox/ -tags integration -v -count=1
           go test . -tags integration -v -count=1 -run TestEgress
         env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/wecom/finance/lib
           REDIS_ADDR: localhost:6379
 
   build-image:
