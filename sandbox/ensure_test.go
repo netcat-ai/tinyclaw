@@ -181,6 +181,14 @@ func TestSandboxName_Deterministic(t *testing.T) {
 	}
 }
 
+func TestSandboxName_LowercasesRoomID(t *testing.T) {
+	got := sandboxName("wrg-oKJwAA6siw1rBtGAKgpPhDzwmdOA")
+	want := "tinyclaw-agent-wrg-okjwaa6siw1rbtgakgpphdzwmdoa"
+	if got != want {
+		t.Errorf("sandboxName = %q, want %q", got, want)
+	}
+}
+
 func TestEnsure_LockExpiry(t *testing.T) {
 	client := sandboxfake.NewSimpleClientset()
 	orch, mr := newTestOrchestrator(t, client)

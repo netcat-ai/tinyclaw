@@ -64,7 +64,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build Image
+      - name: Build Service Image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -73,4 +73,15 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/tinyclaw:${{ github.sha }}
             ghcr.io/${{ github.repository_owner }}/tinyclaw:latest
+          platforms: linux/amd64
+
+      - name: Build Agent Image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./agent
+          file: ./agent/Dockerfile
+          push: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/tinyclaw-agent:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/tinyclaw-agent:latest
           platforms: linux/amd64

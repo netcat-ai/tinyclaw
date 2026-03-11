@@ -56,6 +56,8 @@ jobs:
 
       - name: Apply runtime secret
         env:
+          DEFAULT_IMAGE_TAG: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          MANUAL_IMAGE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.image_tag || '' }}
           REDIS_ADDR: ${{ secrets.REDIS_ADDR }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
           WECOM_CORP_ID: ${{ secrets.WECOM_CORP_ID }}
@@ -71,10 +73,12 @@ jobs:
           MODEL_API_BASE_URL: ${{ secrets.MODEL_API_BASE_URL }}
           MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
         run: |
+          IMAGE_TAG="${MANUAL_IMAGE_TAG:-$DEFAULT_IMAGE_TAG}"
           : "${REDIS_ADDR:=redis:6379}"
           : "${WECOM_SEQ_KEY:=msg:seq}"
           : "${SANDBOX_ENABLED:=true}"
           : "${SANDBOX_NAMESPACE:=claw}"
+          : "${SANDBOX_IMAGE:=ghcr.io/${{ github.repository_owner }}/tinyclaw-agent:${IMAGE_TAG}}"
           kubectl -n claw create secret generic tinyclaw-env \
             --from-literal=REDIS_ADDR="${REDIS_ADDR}" \
             --from-literal=REDIS_PASSWORD="${REDIS_PASSWORD}" \
