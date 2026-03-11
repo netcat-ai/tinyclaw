@@ -68,8 +68,8 @@ export function loadEnv(): AgentEnv {
   loadLocalEnvFiles();
 
   const roomId = requireEnv('ROOM_ID');
-  const tenantId = requireEnv('TENANT_ID');
-  const chatType = requireEnv('CHAT_TYPE');
+  const tenantId = process.env.TENANT_ID?.trim() || '';
+  const chatType = process.env.CHAT_TYPE?.trim() || '';
   const consumerGroupPrefix =
     process.env.CONSUMER_GROUP_PREFIX?.trim() || 'cg:room';
 

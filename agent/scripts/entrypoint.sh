@@ -2,8 +2,6 @@
 set -eu
 
 : "${ROOM_ID:?missing ROOM_ID}"
-: "${TENANT_ID:?missing TENANT_ID}"
-: "${CHAT_TYPE:?missing CHAT_TYPE}"
 : "${REDIS_ADDR:?missing REDIS_ADDR}"
 
 runtime_mode="${AGENT_RUNTIME_MODE:-claude_agent_sdk}"
