@@ -181,9 +181,34 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 
 func streamValues(msg WeComMessage) map[string]any {
 	return map[string]any{
-		"msgid": msg.MsgID,
-		"raw":   msg.RawContent,
+		"msgid":   msg.MsgID,
+		"from":    msg.From,
+		"msgtime": msg.MsgTime,
+		"msgtype": msg.MsgType,
+		"text":    extractText(msg.RawContent, msg.MsgType),
+		"raw":     msg.RawContent,
 	}
+}
+
+// extractText pulls the human-readable text out of the raw WeCom message JSON.
+// Falls back to the raw content string so the agent always has something to work with.
+func extractText(raw, msgType string) string {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return raw
+	}
+	switch msgType {
+	case "text":
+		var t struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(m["text"], &t); err == nil && t.Content != "" {
+			return t.Content
+		}
+	case "image", "voice", "video", "file":
+		return "[" + msgType + "]"
+	}
+	return raw
 }
 
 // cacheTarget resolves and caches the display name for a room/user so egress
