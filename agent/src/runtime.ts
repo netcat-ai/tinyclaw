@@ -32,11 +32,8 @@ function buildClaudePrompt(message: RoomStreamMessage): string {
     `room_id: ${message.roomId}`,
     `tenant_id: ${message.tenantId}`,
     `chat_type: ${message.chatType}`,
+    `msgid: ${message.msgid}`,
   ];
-
-  if (message.traceId) {
-    lines.push(`trace_id: ${message.traceId}`);
-  }
 
   lines.push('', 'User message:', message.text);
   return lines.join('\n');

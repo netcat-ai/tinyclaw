@@ -88,9 +88,9 @@ func TestEgress_SendText(t *testing.T) {
 	rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: streamKey,
 		Values: map[string]any{
-			"room_id":   roomID,
-			"text":      "hello from agent",
-			"source_id": "1234-0",
+			"room_id": roomID,
+			"text":    "hello from agent",
+			"msgid":   "1234-0",
 		},
 	})
 
@@ -153,9 +153,9 @@ func TestEgress_TargetNotFound(t *testing.T) {
 	rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: streamKey,
 		Values: map[string]any{
-			"room_id":   roomID,
-			"text":      "hello",
-			"source_id": "1234-0",
+			"room_id": roomID,
+			"text":    "hello",
+			"msgid":   "1234-0",
 		},
 	})
 
@@ -201,9 +201,9 @@ func TestEgress_RecoversExistingStreamOnStartup(t *testing.T) {
 	rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: streamKey,
 		Values: map[string]any{
-			"room_id":   roomID,
-			"text":      "recover existing egress stream",
-			"source_id": "recover-1234-0",
+			"room_id": roomID,
+			"text":    "recover existing egress stream",
+			"msgid":   "recover-1234-0",
 		},
 	})
 

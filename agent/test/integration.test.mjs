@@ -179,6 +179,23 @@ function spawnAgent({
   });
 }
 
+function buildWecomIngressMessage(msgId, roomId, content) {
+  return {
+    msgid: msgId,
+    kind: 'wecom',
+    raw: JSON.stringify({
+      msgid: msgId,
+      from: 'wm-test-user',
+      tolist: ['tinyclaw'],
+      roomid: roomId,
+      msgtype: 'text',
+      text: {
+        content,
+      },
+    }),
+  };
+}
+
 test(
   'agent consumes a stream message, posts egress, and clears pending entries',
   { timeout: TEST_TIMEOUT_MS },
@@ -208,10 +225,11 @@ test(
     try {
       await waitFor(() => stdout.includes('"msg":"agent_ready"') || stderr.includes('"msg":"agent_ready"'), 10_000);
 
-      const messageId = await redis.xAdd(inStreamKey, '*', {
-        text: 'hello from integration test',
-        trace_id: 'trace-integration-1',
-      });
+      await redis.xAdd(
+        inStreamKey,
+        '*',
+        buildWecomIngressMessage('msg-integration-1', roomId, 'hello from integration test'),
+      );
 
       const egressMessage = await waitForStreamMessage(
         redis,
@@ -224,7 +242,7 @@ test(
         egressMessage.message.text,
         'Echo from tinyclaw-agent: hello from integration test',
       );
-      assert.equal(egressMessage.message.source_id, messageId);
+      assert.equal(egressMessage.message.msgid, 'msg-integration-1');
 
       const pending = await waitFor(async () => {
         const summary = await redis.xPending(inStreamKey, consumerGroup);
@@ -279,10 +297,15 @@ test(
         10_000,
       );
 
-      const messageId = await redis.xAdd(inStreamKey, '*', {
-        text: 'this claude run should fail before execution',
-        trace_id: 'trace-claude-auth-missing-1',
-      });
+      const messageId = await redis.xAdd(
+        inStreamKey,
+        '*',
+        buildWecomIngressMessage(
+          'msg-claude-auth-missing-1',
+          roomId,
+          'this claude run should fail before execution',
+        ),
+      );
 
       await waitFor(
         () =>
@@ -311,6 +334,70 @@ test(
         stdout + stderr,
         /claude_agent_sdk runtime requires ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN/,
       );
+    } finally {
+      await stopProcess(agent);
+      await redis.quit().catch(() => undefined);
+      await stopRedisContainer(redisContainerName);
+    }
+  },
+);
+
+test(
+  'agent leaves malformed ingress messages pending',
+  { timeout: TEST_TIMEOUT_MS },
+  async () => {
+    const roomId = `room-${randomUUID().slice(0, 8)}`;
+    const tenantId = 'tenant-test';
+    const chatType = 'group';
+    const inStreamKey = `stream:i:${roomId}`;
+    const outStreamKey = `stream:o:${roomId}`;
+    const consumerGroup = `cg:room:${roomId}`;
+
+    const { name: redisContainerName, redis, port } = await startRedisContainer();
+    const agent = spawnAgent({ roomId, tenantId, chatType, port });
+
+    let stdout = '';
+    let stderr = '';
+    agent.stdout.setEncoding('utf8');
+    agent.stderr.setEncoding('utf8');
+    agent.stdout.on('data', chunk => {
+      stdout += chunk;
+    });
+    agent.stderr.on('data', chunk => {
+      stderr += chunk;
+    });
+
+    try {
+      await waitFor(
+        () =>
+          stdout.includes('"msg":"agent_ready"') ||
+          stderr.includes('"msg":"agent_ready"'),
+        10_000,
+      );
+
+      const messageId = await redis.xAdd(inStreamKey, '*', {
+        text: 'legacy message shape should fail',
+      });
+
+      await waitFor(
+        () =>
+          stdout.includes('"msg":"message_processing_failed"') ||
+          stderr.includes('"msg":"message_processing_failed"'),
+        10_000,
+      );
+
+      const pending = await waitFor(async () => {
+        const summary = await redis.xPending(inStreamKey, consumerGroup);
+        return summary.pending === 1 ? summary : null;
+      }, 10_000);
+
+      assert.equal(pending.firstId, messageId);
+      assert.equal(pending.lastId, messageId);
+      const egressMessages = await redis.xRange(outStreamKey, '-', '+', {
+        COUNT: 10,
+      });
+      assert.equal(egressMessages.length, 0);
+      assert.match(stdout + stderr, /ingress message missing msgid/);
     } finally {
       await stopProcess(agent);
       await redis.quit().catch(() => undefined);

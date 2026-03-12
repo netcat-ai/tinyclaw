@@ -19,7 +19,7 @@ export class WecomEgressClient {
     await this.redis.xAdd(this.streamKey, '*', {
       room_id: this.env.roomId,
       text: result.text,
-      source_id: message.id,
+      msgid: message.msgid,
     });
   }
 }

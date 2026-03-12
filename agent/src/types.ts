@@ -29,14 +29,13 @@ export interface AgentEnv {
 }
 
 export interface RoomStreamMessage {
-  id: string;
+  streamEntryId: string;
+  msgid: string;
   streamKey: string;
   roomId: string;
   tenantId: string;
   chatType: string;
-  traceId?: string;
   text: string;
-  rawFields: Record<string, string>;
 }
 
 export interface RuntimeResult {

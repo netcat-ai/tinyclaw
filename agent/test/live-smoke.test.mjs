@@ -150,6 +150,23 @@ async function waitForStreamMessage(redis, streamKey, timeoutMs, buildDetails) {
   );
 }
 
+function buildWecomIngressMessage(msgId, roomId, content) {
+  return {
+    msgid: msgId,
+    kind: 'wecom',
+    raw: JSON.stringify({
+      msgid: msgId,
+      from: 'wm-live-user',
+      tolist: ['tinyclaw'],
+      roomid: roomId,
+      msgtype: 'text',
+      text: {
+        content,
+      },
+    }),
+  };
+}
+
 async function stopProcess(child) {
   if (child.exitCode !== null) {
     return;
@@ -225,10 +242,11 @@ liveTest(
         async () => `agent stdout:\n${stdout || '(empty)'}\nagent stderr:\n${stderr || '(empty)'}`,
       );
 
-      const messageId = await redis.xAdd(inStreamKey, '*', {
-        text: 'Reply with exactly: tinyclaw-live-ok',
-        trace_id: 'trace-live-smoke-1',
-      });
+      await redis.xAdd(
+        inStreamKey,
+        '*',
+        buildWecomIngressMessage('msg-live-smoke-1', roomId, 'Reply with exactly: tinyclaw-live-ok'),
+      );
 
       await waitForWithDiagnostics(
         () =>
@@ -262,7 +280,7 @@ liveTest(
       );
 
       assert.equal(egressMessage.message.room_id, roomId);
-      assert.equal(egressMessage.message.source_id, messageId);
+      assert.equal(egressMessage.message.msgid, 'msg-live-smoke-1');
       assert.match(egressMessage.message.text, /tinyclaw-live-ok/);
 
       const pending = await waitFor(async () => {

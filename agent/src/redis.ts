@@ -2,6 +2,16 @@ import { createClient, type RedisClientType } from 'redis';
 
 import type { AgentEnv, RoomStreamMessage } from './types.js';
 
+export class InvalidIngressMessageError extends Error {
+  constructor(
+    readonly streamId: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'InvalidIngressMessageError';
+  }
+}
+
 function parseRedisAddress(addr: string): { host: string; port: number } {
   if (addr.startsWith('redis://') || addr.startsWith('rediss://')) {
     const url = new URL(addr);
@@ -42,12 +52,61 @@ function flattenFields(
   return record;
 }
 
-function selectText(fields: Record<string, string>): string {
-  const direct = fields.text || fields.content || fields.prompt || fields.body;
-  if (direct) {
-    return direct;
+function parseIngressMessage(fields: Record<string, string>): {
+  msgid: string;
+  text: string;
+} {
+  const msgid = fields.msgid?.trim();
+  const kind = fields.kind?.trim();
+  const raw = fields.raw?.trim();
+
+  if (!msgid) {
+    throw new Error('ingress message missing msgid');
   }
-  return JSON.stringify(fields);
+  if (kind !== 'wecom') {
+    throw new Error(`unsupported ingress kind: ${kind || '(empty)'}`);
+  }
+  if (!raw) {
+    throw new Error('ingress message missing raw payload');
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as {
+      text?: { content?: unknown };
+      markdown?: { content?: unknown };
+      image?: { url?: unknown };
+      file?: { name?: unknown };
+      msgtype?: unknown;
+    };
+
+    const text =
+      selectString(parsed.text?.content) ||
+      selectString(parsed.markdown?.content) ||
+      selectString(parsed.image?.url) ||
+      selectString(parsed.file?.name);
+    if (text) {
+      return {
+        msgid,
+        text,
+      };
+    }
+
+    const msgType = selectString(parsed.msgtype);
+    if (msgType) {
+      return {
+        msgid,
+        text: `[${msgType}]`,
+      };
+    }
+  } catch {
+    throw new Error('invalid wecom raw payload');
+  }
+
+  throw new Error('unsupported wecom message payload');
+}
+
+function selectString(value: unknown): string {
+  return typeof value === 'string' ? value : '';
 }
 
 export function createRedisClient(env: AgentEnv): RedisClientType {
@@ -124,16 +183,22 @@ export async function readNextMessage(
   const rawFields = flattenFields(
     entry.message as Map<string, string> | Record<string, string>,
   );
+  let ingress;
+  try {
+    ingress = parseIngressMessage(rawFields);
+  } catch (error) {
+    const details = error instanceof Error ? error.message : String(error);
+    throw new InvalidIngressMessageError(entry.id, details);
+  }
 
   return {
-    id: entry.id,
+    streamEntryId: entry.id,
+    msgid: ingress.msgid,
     streamKey: env.streamKey,
     roomId: env.roomId,
     tenantId: env.tenantId,
     chatType: env.chatType,
-    traceId: rawFields.trace_id,
-    text: selectText(rawFields),
-    rawFields,
+    text: ingress.text,
   };
 }
 

@@ -47,7 +47,7 @@ WeChat Work Finance SDK → Clawman (3s poll loop) → Redis Stream per room →
 
 1. Finance SDK returns encrypted `ChatData` batches starting from stored `seq`
 2. Each message is RSA-decrypted, JSON-parsed, validated (must have `from` + `tolist`)
-3. Valid messages are `XADD`'d to the room stream with fields `msgid` and `raw`
+3. Valid messages are `XADD`'d to the room stream with fields `msgid`, `kind`, and `raw`
 4. Sequence is persisted to Redis after each successful dispatch
 5. Invalid/undecryptable messages are skipped with a log line
 

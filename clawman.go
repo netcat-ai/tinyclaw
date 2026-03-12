@@ -170,9 +170,9 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 		if err := r.redis.XAdd(ctx, &redis.XAddArgs{
 			Stream: stream,
 			Values: map[string]any{
-				"id":   msg.MsgID,
-				"kind": "wecom",
-				"raw":  msg.RawContent,
+				"msgid": msg.MsgID,
+				"kind":  "wecom",
+				"raw":   msg.RawContent,
 			},
 		}).Err(); err != nil {
 			return seq, fmt.Errorf("xadd %s failed: %w", stream, err)
