@@ -18,7 +18,9 @@ const (
 	externalContactCachePrefix = "wecom:contact:external:"
 	internalUserCachePrefix    = "wecom:user:internal:"
 	groupDetailCachePrefix     = "wecom:group:detail:"
+	primeSenderFailCachePrefix = "wecom:user:prime_fail:"
 	detailCacheTTL             = time.Hour
+	primeSenderFailTTL         = 5 * time.Second
 )
 
 // Identity represents a resolved WeCom user identity.
@@ -188,7 +190,7 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 		// Register egress stream for this room
 		if r.egress != nil {
 			r.egress.RegisterRoom(ctx, roomID)
-		    r.cacheTarget(ctx, &msg, roomID)
+			r.cacheTarget(ctx, &msg, roomID)
 		}
 	}
 
@@ -196,7 +198,12 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 }
 
 func (r *Clawman) primeSenderIdentity(ctx context.Context, msg *WeComMessage) bool {
+	failKey := primeSenderFailCachePrefix + msg.From
+	if exists, err := r.redis.Exists(ctx, failKey).Result(); err == nil && exists > 0 {
+		return false
+	}
 	if _, err := r.Resolve(ctx, msg.From); err != nil {
+		r.redis.Set(ctx, failKey, err.Error(), primeSenderFailTTL)
 		slog.Error("resolve sender on receive failed", "from", msg.From, "msgid", msg.MsgID, "err", err)
 		return false
 	}

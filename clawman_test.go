@@ -256,11 +256,18 @@ func TestPrimeSenderIdentityFailureReturnsFalse(t *testing.T) {
 	if ok := clawman.primeSenderIdentity(ctx, msg); ok {
 		t.Fatal("primeSenderIdentity = true, want false")
 	}
+	if ok := clawman.primeSenderIdentity(ctx, msg); ok {
+		t.Fatal("primeSenderIdentity second call = true, want false")
+	}
 	if externalCalls != 1 {
 		t.Fatalf("external contact API calls = %d, want 1", externalCalls)
 	}
 	if ttl := rdb.TTL(ctx, externalContactCachePrefix+"wm123").Val(); ttl != -2 {
 		t.Fatalf("cache ttl = %s, want missing key", ttl)
+	}
+	ttl := rdb.TTL(ctx, primeSenderFailCachePrefix+"wm123").Val()
+	if ttl <= 0 || ttl > primeSenderFailTTL {
+		t.Fatalf("prime sender fail cache ttl = %s, want within 0-%s", ttl, primeSenderFailTTL)
 	}
 }
 

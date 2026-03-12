@@ -142,6 +142,9 @@ func (c *EgressConsumer) buildStreamArgs() []string {
 func (c *EgressConsumer) processMessage(ctx context.Context, streamKey string, msg redis.XMessage) {
 	roomID, _ := msg.Values["room_id"].(string)
 	text, _ := msg.Values["text"].(string)
+	replyMsgID, _ := msg.Values["msgid"].(string)
+
+	slog.Info("egress consumed response from redis", "stream", streamKey, "entry_id", msg.ID, "room_id", roomID, "msgid", replyMsgID)
 
 	if roomID == "" || text == "" {
 		slog.Warn("egress skip invalid message", "id", msg.ID, "stream", streamKey)
