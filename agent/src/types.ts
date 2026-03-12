@@ -16,6 +16,7 @@ export interface AgentEnv {
   agentIdleAfterSec: number;
   agentLogLevel: string;
   agentReadBlockMs: number;
+  claudeRuntimeTimeoutMs: number;
   agentWorkdir: string;
   agentTmpdir: string;
   agentRuntimeMode: AgentRuntimeMode;

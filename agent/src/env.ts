@@ -90,6 +90,7 @@ export function loadEnv(): AgentEnv {
     agentIdleAfterSec: parseInteger('AGENT_IDLE_AFTER_SEC', 300),
     agentLogLevel: process.env.AGENT_LOG_LEVEL?.trim() || 'info',
     agentReadBlockMs: parseInteger('AGENT_READ_BLOCK_MS', 5000),
+    claudeRuntimeTimeoutMs: parseInteger('CLAUDE_RUNTIME_TIMEOUT_MS', 120000),
     agentWorkdir: process.env.AGENT_WORKDIR?.trim() || '/workspace',
     agentTmpdir: process.env.AGENT_TMPDIR?.trim() || '/tmp',
     agentRuntimeMode: parseRuntimeMode(process.env.AGENT_RUNTIME_MODE?.trim()),

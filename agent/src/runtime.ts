@@ -15,6 +15,18 @@ export interface AgentRuntime {
   run(message: RoomStreamMessage): Promise<RuntimeResult>;
 }
 
+type ClaudeQuery = ReturnType<typeof query>;
+
+type RuntimeDeps = {
+  createQuery: typeof query;
+  now: () => number;
+};
+
+const runtimeDeps: RuntimeDeps = {
+  createQuery: query,
+  now: () => Date.now(),
+};
+
 class EchoRuntime implements AgentRuntime {
   async run(message: RoomStreamMessage): Promise<RuntimeResult> {
     return {
@@ -82,8 +94,11 @@ function resolveClaudeCodeExecutable(): string {
   }
 }
 
-class ClaudeAgentSdkRuntime implements AgentRuntime {
-  constructor(private readonly env: AgentEnv) {}
+export class ClaudeAgentSdkRuntime implements AgentRuntime {
+  constructor(
+    private readonly env: AgentEnv,
+    private readonly deps: RuntimeDeps = runtimeDeps,
+  ) {}
 
   async run(message: RoomStreamMessage): Promise<RuntimeResult> {
     if (!this.env.anthropicApiKey && !this.env.claudeCodeOauthToken) {
@@ -97,57 +112,112 @@ class ClaudeAgentSdkRuntime implements AgentRuntime {
       );
     }
 
+    const startedAt = this.deps.now();
+    const abortController = new AbortController();
+    let timedOut = false;
     let finalResult: RuntimeResult | null = null;
     let finalError: string | null = null;
+    let queryHandle: ClaudeQuery | null = null;
+    const timeoutHandle = setTimeout(() => {
+      timedOut = true;
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          msg: 'claude_runtime_timeout',
+          room_id: message.roomId,
+          msgid: message.msgid,
+          timeout_ms: this.env.claudeRuntimeTimeoutMs,
+          model: this.env.claudeModel,
+        }),
+      );
+      abortController.abort();
+      queryHandle?.close();
+    }, this.env.claudeRuntimeTimeoutMs);
 
-    for await (const sdkMessage of query({
-      prompt: buildClaudePrompt(message),
-      options: {
-        cwd: this.env.agentWorkdir,
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        msg: 'claude_runtime_started',
+        room_id: message.roomId,
+        msgid: message.msgid,
+        timeout_ms: this.env.claudeRuntimeTimeoutMs,
         model: this.env.claudeModel,
-        maxTurns: this.env.claudeMaxTurns,
-        pathToClaudeCodeExecutable: resolveClaudeCodeExecutable(),
-        tools: {
-          type: 'preset',
-          preset: 'claude_code',
-        },
-        allowedTools: this.env.claudeAllowedTools,
-        disallowedTools: this.env.claudeDisallowedTools,
-        systemPrompt: this.env.claudeSystemPromptAppend
-          ? {
-              type: 'preset',
-              preset: 'claude_code',
-              append: this.env.claudeSystemPromptAppend,
-            }
-          : undefined,
-        permissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
-        env: buildClaudeEnv(this.env),
-      },
-    })) {
-      if (sdkMessage.type !== 'result') {
-        continue;
-      }
+      }),
+    );
 
-      if (sdkMessage.subtype === 'success') {
-        finalResult = {
-          text: sdkMessage.result.trim(),
-          metadata: {
-            runtime_mode: 'claude_agent_sdk',
-            model: this.env.claudeModel,
-            session_id: sdkMessage.session_id,
-            sdk_result_uuid: sdkMessage.uuid,
-            total_cost_usd: sdkMessage.total_cost_usd,
-            duration_ms: sdkMessage.duration_ms,
+    try {
+      queryHandle = this.deps.createQuery({
+        prompt: buildClaudePrompt(message),
+        options: {
+          abortController,
+          cwd: this.env.agentWorkdir,
+          model: this.env.claudeModel,
+          maxTurns: this.env.claudeMaxTurns,
+          pathToClaudeCodeExecutable: resolveClaudeCodeExecutable(),
+          tools: {
+            type: 'preset',
+            preset: 'claude_code',
           },
-        };
-        continue;
-      }
+          allowedTools: this.env.claudeAllowedTools,
+          disallowedTools: this.env.claudeDisallowedTools,
+          systemPrompt: this.env.claudeSystemPromptAppend
+            ? {
+                type: 'preset',
+                preset: 'claude_code',
+                append: this.env.claudeSystemPromptAppend,
+              }
+            : undefined,
+          permissionMode: 'bypassPermissions',
+          allowDangerouslySkipPermissions: true,
+          env: buildClaudeEnv(this.env),
+        },
+      });
 
-      finalError = sdkMessage.errors.join('; ') || sdkMessage.subtype;
+      for await (const sdkMessage of queryHandle) {
+        if (sdkMessage.type !== 'result') {
+          continue;
+        }
+
+        if (sdkMessage.subtype === 'success') {
+          finalResult = {
+            text: sdkMessage.result.trim(),
+            metadata: {
+              runtime_mode: 'claude_agent_sdk',
+              model: this.env.claudeModel,
+              session_id: sdkMessage.session_id,
+              sdk_result_uuid: sdkMessage.uuid,
+              total_cost_usd: sdkMessage.total_cost_usd,
+              duration_ms: sdkMessage.duration_ms,
+            },
+          };
+          continue;
+        }
+
+        finalError = sdkMessage.errors.join('; ') || sdkMessage.subtype;
+      }
+    } catch (error) {
+      if (timedOut) {
+        throw new Error(
+          `claude agent sdk timed out after ${this.env.claudeRuntimeTimeoutMs}ms`,
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
+      queryHandle?.close();
     }
 
     if (finalResult && finalResult.text) {
+      console.log(
+        JSON.stringify({
+          level: 'info',
+          msg: 'claude_runtime_completed',
+          room_id: message.roomId,
+          msgid: message.msgid,
+          duration_ms: this.deps.now() - startedAt,
+          model: this.env.claudeModel,
+        }),
+      );
       return finalResult;
     }
 
