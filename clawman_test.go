@@ -197,6 +197,73 @@ func TestResolveFailureDoesNotCachePlaceholder(t *testing.T) {
 	}
 }
 
+func TestPrimeSenderIdentityUsesResolveCache(t *testing.T) {
+	var userCalls int
+
+	server := newWeComTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/user/get":
+			userCalls++
+			if got := r.URL.Query().Get("userid"); got != "zhangsan" {
+				t.Fatalf("userid = %q, want zhangsan", got)
+			}
+			writeJSON(t, w, map[string]any{
+				"errcode": 0,
+				"errmsg":  "ok",
+				"userid":  "zhangsan",
+				"name":    "张三",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	clawman, _ := newTestClawman(t, server.URL)
+	ctx := context.Background()
+	msg := &WeComMessage{MsgID: "msg-1", From: "zhangsan"}
+
+	if ok := clawman.primeSenderIdentity(ctx, msg); !ok {
+		t.Fatal("primeSenderIdentity first call = false, want true")
+	}
+	if ok := clawman.primeSenderIdentity(ctx, msg); !ok {
+		t.Fatal("primeSenderIdentity second call = false, want true")
+	}
+	if userCalls != 1 {
+		t.Fatalf("internal user API calls = %d, want 1", userCalls)
+	}
+}
+
+func TestPrimeSenderIdentityFailureReturnsFalse(t *testing.T) {
+	var externalCalls int
+
+	server := newWeComTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/externalcontact/get":
+			externalCalls++
+			writeJSON(t, w, map[string]any{
+				"errcode": 40001,
+				"errmsg":  "temporary failure",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	clawman, rdb := newTestClawman(t, server.URL)
+	ctx := context.Background()
+	msg := &WeComMessage{MsgID: "msg-2", From: "wm123"}
+
+	if ok := clawman.primeSenderIdentity(ctx, msg); ok {
+		t.Fatal("primeSenderIdentity = true, want false")
+	}
+	if externalCalls != 1 {
+		t.Fatalf("external contact API calls = %d, want 1", externalCalls)
+	}
+	if ttl := rdb.TTL(ctx, externalContactCachePrefix+"wm123").Val(); ttl != -2 {
+		t.Fatalf("cache ttl = %s, want missing key", ttl)
+	}
+}
+
 func TestResolveGroupUsesArchiveFirstThenFallsBackToCustomerGroup(t *testing.T) {
 	var customerGroupCalls int
 	var archiveGroupCalls int

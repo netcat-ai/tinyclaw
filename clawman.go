@@ -156,6 +156,9 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 		if msg.RoomID == "" && r.cfg.WeComBotID != "" && msg.From == r.cfg.WeComBotID {
 			continue
 		}
+		if !r.primeSenderIdentity(ctx, &msg) {
+			continue
+		}
 
 		roomID := msg.RoomID
 		if msg.RoomID == "" {
@@ -185,13 +188,19 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 		// Register egress stream for this room
 		if r.egress != nil {
 			r.egress.RegisterRoom(ctx, roomID)
+		    r.cacheTarget(ctx, &msg, roomID)
 		}
-
-		// Cache room target name for egress lookup
-		r.cacheTarget(ctx, &msg, roomID)
 	}
 
 	return seq, nil
+}
+
+func (r *Clawman) primeSenderIdentity(ctx context.Context, msg *WeComMessage) bool {
+	if _, err := r.Resolve(ctx, msg.From); err != nil {
+		slog.Error("resolve sender on receive failed", "from", msg.From, "msgid", msg.MsgID, "err", err)
+		return false
+	}
+	return true
 }
 
 // cacheTarget resolves and caches the display name for a room/user so egress
