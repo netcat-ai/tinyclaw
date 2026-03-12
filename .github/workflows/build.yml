@@ -8,12 +8,12 @@ on:
 jobs:
   test:
     name: Go Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    container:
+      image: golang:1.25.8-bookworm
     services:
       redis:
         image: redis:7
-        ports:
-          - 6379:6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s
@@ -23,11 +23,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Setup Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+      - name: Go Version
+        run: go version
 
       - name: Unit Test
         run: go test ./...
@@ -40,11 +37,11 @@ jobs:
           go test . -tags integration -v -count=1 -run TestEgress
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/wecom/finance/lib
-          REDIS_ADDR: localhost:6379
+          REDIS_ADDR: redis:6379
 
   build-image:
     name: Docker Build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: test
     permissions:
       contents: read
