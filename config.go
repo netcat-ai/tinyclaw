@@ -6,8 +6,9 @@ import (
 )
 
 const (
-	defaultRedisAddr   = "127.0.0.1:6379"
-	defaultWeComSeqKey = "msg:seq"
+	defaultRedisAddr        = "127.0.0.1:6379"
+	defaultWeComSeqKey      = "msg:seq"
+	defaultSandboxNamespace = "claw"
 )
 
 type Config struct {
@@ -22,22 +23,17 @@ type Config struct {
 	WeComContactSecret string
 	WeComBotID         string
 
-	SandboxNamespace string
-	SandboxImage     string
+	SandboxNamespace       string
+	SandboxTemplateName    string
+	SandboxRouterURL       string
+	SandboxServerPort      int
+	SandboxReadyTimeoutSec int
 
 	WorkToolRobotID string
-
-	ModelAPIBaseURL string
-	ModelAPIKey     string
 }
 
 func LoadConfig() (Config, error) {
-	redisDB := 0
-	if v := os.Getenv("REDIS_DB"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			redisDB = n
-		}
-	}
+	redisDB := parseIntEnv("REDIS_DB", 0)
 	cfg := Config{
 		RedisAddr:     envOrDefault("REDIS_ADDR", defaultRedisAddr),
 		RedisPassword: os.Getenv("REDIS_PASSWORD"),
@@ -50,16 +46,25 @@ func LoadConfig() (Config, error) {
 		WeComContactSecret: os.Getenv("WECOM_CONTACT_SECRET"),
 		WeComBotID:         os.Getenv("WECOM_BOT_ID"),
 
-		SandboxNamespace: "claw",
-		SandboxImage:     os.Getenv("SANDBOX_IMAGE"),
+		SandboxNamespace:       envOrDefault("SANDBOX_NAMESPACE", defaultSandboxNamespace),
+		SandboxTemplateName:    os.Getenv("SANDBOX_TEMPLATE_NAME"),
+		SandboxRouterURL:       os.Getenv("SANDBOX_ROUTER_URL"),
+		SandboxServerPort:      parseIntEnv("SANDBOX_SERVER_PORT", 8888),
+		SandboxReadyTimeoutSec: parseIntEnv("SANDBOX_READY_TIMEOUT_SEC", 180),
 
 		WorkToolRobotID: os.Getenv("WORKTOOL_ROBOT_ID"),
-
-		ModelAPIBaseURL: os.Getenv("ANTHROPIC_BASE_URL"),
-		ModelAPIKey:     os.Getenv("ANTHROPIC_API_KEY"),
 	}
 
 	return cfg, nil
+}
+
+func parseIntEnv(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
 }
 
 func envOrDefault(key, def string) string {

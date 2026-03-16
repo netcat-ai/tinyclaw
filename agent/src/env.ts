@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
 import type { AgentEnv, AgentRuntimeMode } from './types.js';
@@ -21,14 +20,6 @@ function loadLocalEnvFiles(): void {
     }
     process.loadEnvFile(filename);
   }
-}
-
-function requireEnv(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) {
-    throw new Error(`missing required env: ${name}`);
-  }
-  return value;
 }
 
 function parseInteger(name: string, fallback: number): number {
@@ -67,31 +58,16 @@ function parseCsv(raw?: string): string[] | undefined {
 export function loadEnv(): AgentEnv {
   loadLocalEnvFiles();
 
-  const roomId = requireEnv('ROOM_ID');
-  const tenantId = process.env.TENANT_ID?.trim() || '';
-  const chatType = process.env.CHAT_TYPE?.trim() || '';
-  const consumerGroupPrefix =
-    process.env.CONSUMER_GROUP_PREFIX?.trim() || 'cg:room';
-
   return {
-    roomId,
-    tenantId,
-    chatType,
-    redisAddr: requireEnv('REDIS_ADDR'),
-    redisUsername: process.env.REDIS_USERNAME?.trim() || undefined,
-    redisPassword: process.env.REDIS_PASSWORD?.trim() || undefined,
-    redisDb: parseInteger('REDIS_DB', 0),
-    consumerGroupPrefix,
-    consumerName: process.env.CONSUMER_NAME?.trim() || os.hostname(),
+    serverPort: parseInteger('AGENT_SERVER_PORT', 8888),
     anthropicApiKey: process.env.ANTHROPIC_API_KEY?.trim() || undefined,
     anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL?.trim() || undefined,
     claudeCodeOauthToken:
       process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim() || undefined,
     agentIdleAfterSec: parseInteger('AGENT_IDLE_AFTER_SEC', 300),
     agentLogLevel: process.env.AGENT_LOG_LEVEL?.trim() || 'info',
-    agentReadBlockMs: parseInteger('AGENT_READ_BLOCK_MS', 5000),
     claudeRuntimeTimeoutMs: parseInteger('CLAUDE_RUNTIME_TIMEOUT_MS', 120000),
-    agentWorkdir: process.env.AGENT_WORKDIR?.trim() || '/workspace',
+    agentWorkdir: process.env.AGENT_WORKDIR?.trim() || process.cwd(),
     agentTmpdir: process.env.AGENT_TMPDIR?.trim() || '/tmp',
     agentRuntimeMode: parseRuntimeMode(process.env.AGENT_RUNTIME_MODE?.trim()),
     claudeModel:
@@ -103,7 +79,5 @@ export function loadEnv(): AgentEnv {
     claudeAllowedTools: parseCsv(process.env.CLAUDE_ALLOWED_TOOLS?.trim()),
     claudeDisallowedTools: parseCsv(process.env.CLAUDE_DISALLOWED_TOOLS?.trim()),
     claudeMaxTurns: parseInteger('CLAUDE_MAX_TURNS', 16),
-    streamKey: `stream:i:${roomId}`,
-    consumerGroup: `${consumerGroupPrefix}:${roomId}`,
   };
 }

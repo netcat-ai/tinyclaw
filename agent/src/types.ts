@@ -1,21 +1,12 @@
 export type AgentRuntimeMode = 'echo' | 'claude_agent_sdk';
 
 export interface AgentEnv {
-  roomId: string;
-  tenantId: string;
-  chatType: string;
-  redisAddr: string;
-  redisUsername?: string;
-  redisPassword?: string;
-  redisDb: number;
-  consumerGroupPrefix: string;
-  consumerName: string;
+  serverPort: number;
   anthropicApiKey?: string;
   anthropicBaseUrl?: string;
   claudeCodeOauthToken?: string;
   agentIdleAfterSec: number;
   agentLogLevel: string;
-  agentReadBlockMs: number;
   claudeRuntimeTimeoutMs: number;
   agentWorkdir: string;
   agentTmpdir: string;
@@ -25,14 +16,10 @@ export interface AgentEnv {
   claudeAllowedTools?: string[];
   claudeDisallowedTools?: string[];
   claudeMaxTurns: number;
-  streamKey: string;
-  consumerGroup: string;
 }
 
-export interface RoomStreamMessage {
-  streamEntryId: string;
+export interface AgentChatRequest {
   msgid: string;
-  streamKey: string;
   roomId: string;
   tenantId: string;
   chatType: string;
@@ -43,3 +30,5 @@ export interface RuntimeResult {
   text: string;
   metadata?: Record<string, unknown>;
 }
+
+export interface AgentChatResponse extends RuntimeResult {}

@@ -1,9 +1,6 @@
 #!/bin/sh
 set -eu
 
-: "${ROOM_ID:?missing ROOM_ID}"
-: "${REDIS_ADDR:?missing REDIS_ADDR}"
-
 runtime_mode="${AGENT_RUNTIME_MODE:-claude_agent_sdk}"
 if [ "$runtime_mode" != "echo" ]; then
   if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then

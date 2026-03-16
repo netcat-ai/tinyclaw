@@ -11,21 +11,12 @@ function buildEnv(overrides = {}) {
 
   return {
     env: {
-      roomId: 'room-test',
-      tenantId: 'tenant-test',
-      chatType: 'group',
-      redisAddr: '127.0.0.1:6379',
-      redisUsername: undefined,
-      redisPassword: undefined,
-      redisDb: 0,
-      consumerGroupPrefix: 'cg:room',
-      consumerName: 'agent-test',
+      serverPort: 8888,
       anthropicApiKey: 'test-key',
       anthropicBaseUrl: 'https://example.test',
       claudeCodeOauthToken: undefined,
       agentIdleAfterSec: 300,
       agentLogLevel: 'info',
-      agentReadBlockMs: 250,
       claudeRuntimeTimeoutMs: 50,
       agentWorkdir: workdir,
       agentTmpdir: os.tmpdir(),
@@ -35,8 +26,6 @@ function buildEnv(overrides = {}) {
       claudeAllowedTools: undefined,
       claudeDisallowedTools: undefined,
       claudeMaxTurns: 4,
-      streamKey: 'stream:i:room-test',
-      consumerGroup: 'cg:room:room-test',
       ...overrides,
     },
     cleanup: () => fs.rmSync(workdir, { recursive: true, force: true }),
@@ -45,9 +34,7 @@ function buildEnv(overrides = {}) {
 
 function buildMessage() {
   return {
-    streamEntryId: '1-0',
     msgid: 'msg-test-1',
-    streamKey: 'stream:i:room-test',
     roomId: 'room-test',
     tenantId: 'tenant-test',
     chatType: 'group',
@@ -101,4 +88,3 @@ test('claude runtime times out and closes the query', async () => {
     cleanup();
   }
 });
-

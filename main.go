@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,7 +11,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"k8s.io/client-go/rest"
-	sandboxclient "sigs.k8s.io/agent-sandbox/clients/k8s/clientset/versioned"
+	extensionsclient "sigs.k8s.io/agent-sandbox/clients/k8s/extensions/clientset/versioned"
 	"tinyclaw/sandbox"
 	"tinyclaw/worktool"
 )
@@ -25,6 +26,14 @@ func main() {
 	}
 	if cfg.WeComBotID == "" {
 		slog.Warn("WECOM_BOT_ID is empty; bot-sent direct messages will be ingested as room_id=<bot_id> and may create self-loop sandboxes")
+	}
+	if cfg.SandboxTemplateName == "" {
+		slog.Error("SANDBOX_TEMPLATE_NAME is required")
+		os.Exit(1)
+	}
+	if cfg.SandboxRouterURL == "" {
+		slog.Error("SANDBOX_ROUTER_URL is required")
+		os.Exit(1)
 	}
 
 	redisClient := redis.NewClient(&redis.Options{
@@ -43,24 +52,34 @@ func main() {
 	cancel()
 
 	var orch *sandbox.Orchestrator
+	var routerClient *sandbox.RouterClient
 	k8sCfg, err := rest.InClusterConfig()
 	if err != nil {
 		slog.Error("k8s in-cluster config failed", "err", err)
 		os.Exit(1)
 	}
-	clientset, err := sandboxclient.NewForConfig(k8sCfg)
+	clientset, err := extensionsclient.NewForConfig(k8sCfg)
 	if err != nil {
-		slog.Error("k8s clientset init failed", "err", err)
+		slog.Error("agent sandbox extensions clientset init failed", "err", err)
 		os.Exit(1)
 	}
 	orch = sandbox.NewOrchestrator(clientset, redisClient, sandbox.Config{
-		Namespace:       cfg.SandboxNamespace,
-		Image:           cfg.SandboxImage,
-		RedisAddr:       cfg.RedisAddr,
-		ModelAPIBaseURL: cfg.ModelAPIBaseURL,
-		ModelAPIKey:     cfg.ModelAPIKey,
+		Namespace:    cfg.SandboxNamespace,
+		TemplateName: cfg.SandboxTemplateName,
+		ReadyTimeout: time.Duration(cfg.SandboxReadyTimeoutSec) * time.Second,
 	})
-	slog.Info("sandbox orchestrator enabled", "namespace", cfg.SandboxNamespace, "image", cfg.SandboxImage)
+	routerClient = sandbox.NewRouterClient(http.DefaultClient, sandbox.RouterConfig{
+		BaseURL:    cfg.SandboxRouterURL,
+		Namespace:  cfg.SandboxNamespace,
+		ServerPort: cfg.SandboxServerPort,
+	})
+	slog.Info(
+		"sandbox integration enabled",
+		"namespace", cfg.SandboxNamespace,
+		"template", cfg.SandboxTemplateName,
+		"router_url", cfg.SandboxRouterURL,
+		"server_port", cfg.SandboxServerPort,
+	)
 
 	// Create egress consumer (nil if worktool not configured)
 	var egress *EgressConsumer
@@ -69,7 +88,7 @@ func main() {
 		egress = NewEgressConsumer(redisClient, wt)
 	}
 
-	clawman, err := NewClawman(cfg, redisClient, orch, egress)
+	clawman, err := NewClawman(cfg, redisClient, orch, routerClient, egress)
 	if err != nil {
 		slog.Error("init clawman failed", "err", err)
 		os.Exit(1)

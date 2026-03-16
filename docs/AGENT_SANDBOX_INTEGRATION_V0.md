@@ -2,269 +2,266 @@
 
 ## 1. 目标
 
-把 `kubernetes-sigs/agent-sandbox` 作为 TinyClaw 的执行层底座，并明确 `agent` 容器内部镜像的运行契约，实现：
-- 每个 `room_id` 对应独立可控 sandbox。
-- Ingress 收到新消息后写入对应 room stream，并调用 `ensure` 保证 sandbox 可用。
-- Agent 在 sandbox 内自行持续拉取 Redis Stream，处理并回发。
-- v0 先采用软休眠，agent 在无消息时阻塞等待，不在镜像内实现硬休眠恢复。
+把 `kubernetes-sigs/agent-sandbox` 作为 TinyClaw 的执行层底座，并且对齐官方扩展接口：
+- 用 `SandboxTemplate` 描述统一 agent 运行环境。
+- 用 `SandboxClaim` 按 `room_id` 动态申请和复用 sandbox。
+- 用 `sandbox-router` 将主服务请求转发到 sandbox 内 HTTP runtime。
+- 不再使用“sandbox 自拉 Redis ingress”的旧链路。
 
 非目标：
-- 不在 v0 引入跨会话共享 sandbox。
-- 不在 v0 做中断恢复（仍使用 `append` 策略）。
-- 不在 v0 处理 tailnet / Tailscale 接入。
-- 不建设独立 room registry 表。
+- v0 不引入 `SandboxWarmPool`。
+- v0 不做 snapshot / restore。
+- v0 不在镜像内实现 supervisor。
+- v0 不引入跨会话共享 sandbox。
 
 ## 2. 组件划分
 
 1. `Ingress Service`
    - 拉取企业微信消息并标准化。
-   - 按 `stream:i:{room_id}` 写入 ingress 消息流。
-   - 调用 `ensure`，保证目标 sandbox 存在或被唤醒。
+   - 调用 `ensure(room_id)`，保证对应 `SandboxClaim` ready。
+   - 通过 router 调用 sandbox 内 HTTP runtime。
+   - 将回复写入 egress stream，由统一回发服务处理。
 
 2. `Sandbox Orchestrator`
-   - 调用 K8s API 创建/更新 `Sandbox`。
-   - 生命周期操作：`create/get/terminate`。
-   - 运行态以 K8s `Sandbox` / Pod 状态为准。
+   - 调用 extensions client 创建或查询 `SandboxClaim`。
+   - 以 `SandboxClaim Ready=True` 作为可调用条件。
+   - 使用 `lock:ensure:{room_id}` 抑制 ensure 风暴。
 
 3. `Agent Runtime (in Sandbox)`
-   - 使用 `XREADGROUP BLOCK` 持续拉取 `stream:i:{room_id}`。
-   - 串行处理消息、调用模型与工具、回发企业微信。
-   - 容器内只负责 agent 运行时初始化、消息消费和优雅退出。
+   - 暴露 `GET /healthz` 与 `POST /v1/chat`。
+   - 调用 Claude runtime 或 echo runtime。
+   - 管理本地工作目录与临时文件，不直接读写 Redis ingress。
 
 ## 3. 资源映射
 
-建议命名规范（K8s）：
+命名规范：
 
 ```text
-Sandbox.name = clawagent-{room_id_lower}
+SandboxTemplate.name = tinyclaw-agent-template
+SandboxClaim.name    = clawagent-{room_id_lower}
+Sandbox.name         = clawagent-{room_id_lower}
+```
+
+标签建议：
+
+```text
 labels:
-  tinyclaw/room_id: "{room_id}"
-  tinyclaw/tenant_id: "{tenant_id}"
-  tinyclaw/chat_type: "{chat_type}"
-annotations:
-  tinyclaw/idle_after_sec: "300"
-  tinyclaw/terminate_after_sec: "86400"  # v1 再自动化
+  app: tinyclaw-sandbox
+  tinyclaw/room-id: "{room_id}"
 ```
 
 说明：
-- v0 直接使用 `Sandbox` 作为控制面对象，不要求 `SandboxClaim`。
-- 使用确定性命名，`ensure` 采用 create-or-get。
-- 不单独维护 `room_runtime` 表。
+- `SandboxClaim` 与底层 `Sandbox` 同名，方便 router 直接按 claim 名路由。
+- v0 不单独维护 `room_runtime` 表。
 
-## 4. Agent 镜像设计目标
+## 4. 控制面契约
 
-agent 镜像应满足以下约束：
-- 单镜像可直接作为 sandbox 的 `PodTemplate.spec.containers[0].image`。
-- 容器启动后可自行完成运行时初始化和消息消费。
-- 容器关闭时可优雅停止 agent 进程。
-- 镜像尽量不要求额外 Linux capability、`/dev/net/tun` 或特权模式。
-- 允许后续替换内部 agent runtime 实现，但外部契约保持稳定。
+### 4.1 SandboxTemplate
+`SandboxTemplate` 由平台预先部署，负责固化：
+- 镜像
+- 监听端口
+- readiness / liveness
+- Claude 凭据注入方式
+- 运行目录
 
-建议镜像内包含的基础组件：
-- `bash` / `sh`
-- `ca-certificates`
-- `curl`
-- `git`
-- `jq`
-- `redis-cli` 或等价调试工具
-- `tini` 或等价 PID 1 init
-- agent runtime 所需解释器和 CLI（例如 Node.js、Claude Code runtime、辅助脚本）
+推荐最小模板：
+- 容器端口：`8888`
+- readiness：`GET /healthz`
+- liveness：`GET /healthz`
+- `AGENT_SERVER_PORT=8888`
+- `AGENT_RUNTIME_MODE=claude_agent_sdk`
+- `AGENT_WORKDIR=/workspace`
 
-## 5. Agent 进程模型
+### 4.2 SandboxClaim
+主服务按 `room_id` create-or-get：
 
-v0 采用“单容器、双进程”模型：
-
-```text
-PID 1: tini / entrypoint
-  └─ agent-runtime
+```yaml
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
+kind: SandboxClaim
+metadata:
+  name: clawagent-room-123
+spec:
+  sandboxTemplateRef:
+    name: tinyclaw-agent-template
 ```
 
-启动顺序：
-1. entrypoint 创建运行目录、校验必需环境变量。
-2. 初始化 agent runtime 所需本地目录和配置。
-3. agent runtime 确保 Redis consumer group 存在。
-4. agent runtime 进入 `XREADGROUP BLOCK` 循环。
+ready 判定：
+- `status.conditions[type=Ready].status == True`
 
-关闭顺序：
-1. `SIGTERM` 先发给 agent runtime，等待其停止接单并完成当前清理。
-2. entrypoint 以非零码传播启动失败，以零码传播正常退出。
+### 4.3 Router
+主服务需要一个固定 router 地址，例如：
 
-约束：
-- v0 不在镜像内实现 supervisor 重启策略；进程异常退出后由 sandbox / K8s 拉起。
-- v0 不在镜像内做 hibernate / resume；空闲即阻塞等待。
+```text
+http://sandbox-router-svc.claw.svc.cluster.local:8080
+```
+
+转发头：
+- `X-Sandbox-ID`
+- `X-Sandbox-Namespace`
+- `X-Sandbox-Port`
+
+## 5. 数据面契约
+
+### 5.1 主服务 -> sandbox
+
+请求：
+
+```http
+POST /v1/chat
+X-Sandbox-ID: clawagent-room-123
+X-Sandbox-Namespace: claw
+X-Sandbox-Port: 8888
+Content-Type: application/json
+```
+
+请求体：
+
+```json
+{
+  "msgid": "wecom_msg_abc",
+  "room_id": "room-123",
+  "tenant_id": "corp-id",
+  "chat_type": "group",
+  "text": "hello"
+}
+```
+
+响应体：
+
+```json
+{
+  "text": "agent reply",
+  "metadata": {
+    "runtime_mode": "claude_agent_sdk"
+  }
+}
+```
+
+### 5.2 sandbox -> 主服务
+- v0 不走主动回调。
+- sandbox 直接同步返回 HTTP 响应。
+- 主服务收到结果后写入 `stream:o:{room_id}`。
 
 ## 6. Runtime 环境变量契约
 
-必需环境变量：
+必需：
 
 ```text
-ROOM_ID
-TENANT_ID
-CHAT_TYPE
-
-REDIS_ADDR
-REDIS_PASSWORD           # 可空
-REDIS_DB                 # 默认 0
-CONSUMER_GROUP_PREFIX    # 默认 cg:room
-CONSUMER_NAME            # 默认 hostname
-
-ANTHROPIC_API_KEY         # 与 CLAUDE_CODE_OAUTH_TOKEN 二选一
-CLAUDE_CODE_OAUTH_TOKEN   # 与 ANTHROPIC_API_KEY 二选一
+AGENT_SERVER_PORT          # 默认 8888
+ANTHROPIC_API_KEY          # 与 CLAUDE_CODE_OAUTH_TOKEN 二选一（echo 模式可省略）
+CLAUDE_CODE_OAUTH_TOKEN
 ```
 
-可选环境变量：
+可选：
 
 ```text
-ANTHROPIC_BASE_URL        # 可选，自定义 Claude API Base URL
-CLAUDE_MODEL              # 默认 claude-sonnet-4-5
-CLAUDE_SYSTEM_PROMPT_APPEND
-CLAUDE_ALLOWED_TOOLS      # 逗号分隔
-CLAUDE_DISALLOWED_TOOLS   # 逗号分隔
-CLAUDE_MAX_TURNS          # 默认 16
-
-AGENT_IDLE_AFTER_SEC     # 默认 300，仅用于状态打点，不触发硬休眠
+ANTHROPIC_BASE_URL
+AGENT_RUNTIME_MODE         # echo | claude_agent_sdk
+AGENT_WORKDIR
+AGENT_TMPDIR
+AGENT_IDLE_AFTER_SEC
 AGENT_LOG_LEVEL
-AGENT_READ_BLOCK_MS      # 默认 5000，测试和优雅退出可调小
-AGENT_WORKDIR            # 默认 /workspace
-AGENT_TMPDIR             # 默认 /tmp
+CLAUDE_MODEL
+CLAUDE_SYSTEM_PROMPT_APPEND
+CLAUDE_ALLOWED_TOOLS
+CLAUDE_DISALLOWED_TOOLS
+CLAUDE_MAX_TURNS
+CLAUDE_RUNTIME_TIMEOUT_MS
 ```
 
 说明：
-- 配置守则：Claude 相关配置统一使用 `ANTHROPIC_API_KEY` 和 `ANTHROPIC_BASE_URL`，默认不兼容 `MODEL_API_*` 别名。
-- 当前实现固定使用：
-  - ingress stream: `stream:i:{ROOM_ID}`
-  - egress stream: `stream:o:{ROOM_ID}`
-- consumer group 名称可由 `CONSUMER_GROUP_PREFIX + ":" + ROOM_ID` 推导。
-- agent 只负责把回复写入 Redis egress stream，由主服务统一回发企业微信。
+- `ROOM_ID`、`REDIS_ADDR`、`CONSUMER_GROUP_*` 不再属于 agent runtime 契约。
+- room 级上下文从每次 HTTP 请求体中传入。
 
 ## 7. 文件系统与卷布局
 
-建议目录约定：
+建议目录：
 
 ```text
-/workspace                 # agent 工作目录
-/var/lib/tinyclaw          # agent 本地状态、临时缓存
-/var/log/tinyclaw          # 可选，默认仍输出 stdout/stderr
-/tmp                       # 临时文件
+/workspace
+/var/lib/tinyclaw
+/tmp
 ```
 
 卷建议：
-- `/workspace`：`emptyDir`，v0 默认即可。
-- `/var/lib/tinyclaw`：`emptyDir`，用于摘要缓存、下载中的临时文件。
+- `/workspace`：`emptyDir`
+- `/var/lib/tinyclaw`：`emptyDir`
 
 说明：
-- v0 不依赖 PVC，不要求跨 Pod 保留 agent 本地状态。
-- 长期记忆不放在镜像本地文件系统，仍应写回外部存储。
+- v0 不依赖 PVC。
+- 运行中产生的长期记忆不保存在容器本地。
 
 ## 8. 启动、就绪与退出
 
 ### 8.1 启动检查
-
-entrypoint 应至少检查：
-- `ROOM_ID`
-- `REDIS_ADDR`
-- `ANTHROPIC_API_KEY` 或 `CLAUDE_CODE_OAUTH_TOKEN`
+entrypoint 至少检查：
+- `AGENT_RUNTIME_MODE`
+- `ANTHROPIC_API_KEY` 或 `CLAUDE_CODE_OAUTH_TOKEN`（非 echo 模式）
 
 ### 8.2 Readiness
-
-agent 容器可认定为 ready 的条件：
-1. Redis 可连通。
-2. consumer group 可创建或已存在。
-3. agent runtime 主循环已进入阻塞消费态。
+agent 容器 ready 条件：
+1. HTTP server 已启动。
+2. `/healthz` 返回 200。
 
 ### 8.3 Liveness
-
-推荐最小策略：
-- agent 主进程存活。
-- 最近一次 Redis ping 在阈值内成功。
+最小策略：
+- 主进程存活。
+- `/healthz` 可响应。
 
 ### 8.4 优雅退出
-
 收到 `SIGTERM` 后：
-1. 停止接收新任务。
-2. 尽量完成当前消息的本地清理。
-3. 未成功回发的消息不 `XACK`，交由 pending/retry 机制处理。
+1. 停止接受新 HTTP 请求。
+2. 等待当前请求完成。
+3. 由 sandbox / K8s 负责后续拉起。
 
-## 9. 消息消费与 ACK 契约
+## 9. 端到端时序
 
-stream 约定：
-- Ingress Stream: `stream:i:{room_id}`
-- Egress Stream: `stream:o:{room_id}`
-- Consumer Group: `cg:room:{room_id}`
-
-ACK 规则（简化版）：
-- `XACK` 是队列完成的唯一提交点。
-- 仅在“业务处理成功 + 回发成功”后 `XACK`。
-- 任一环节失败不 `XACK`，由重试机制接管。
-
-消费规则：
-1. 启动时确保 consumer group 存在。
-2. 使用 `XREADGROUP BLOCK` 持续消费。
-3. 同一容器内严格串行处理同一 `room_id` 的消息。
-4. v0 固定 `append` 策略，不实现任务中断。
-
-## 10. 端到端时序
-
-### 10.1 首条消息触发
-
+### 9.1 首条消息
 1. Ingress 拉到企业微信消息并标准化。
-2. `XADD stream:i:{room_id}`。
-3. Ingress 同步调用 `POST /internal/room-runtime/ensure`。
-4. Orchestrator create-or-get `Sandbox`。
-5. sandbox 就绪后，容器内 entrypoint 启动 agent runtime。
-6. agent 确保 consumer group 存在，再 `XREADGROUP BLOCK` 拉到消息并处理。
-7. agent 将回复写入 `stream:o:{room_id}`。
-8. 主服务消费 egress stream 并统一回发企业微信。
-9. 回发成功后 `XACK`。
+2. 根据 `room_id` 调用 `ensure(room_id)`。
+3. Orchestrator create-or-get `SandboxClaim`。
+4. `SandboxClaim` ready 后，主服务通过 router 调用 `/v1/chat`。
+5. agent 返回回复。
+6. 主服务写入 `stream:o:{room_id}`。
+7. egress consumer 统一回发企业微信。
 
-### 10.2 活跃会话
+### 9.2 活跃会话
+1. 新消息到达。
+2. 主服务直接复用现有 `SandboxClaim`。
+3. 通过 router 再次调用 `/v1/chat`。
+4. 不再等待 Redis ingress 被 sandbox 消费。
 
-1. 新消息持续 `XADD` 到该 room ingress stream。
-2. 同一 `room_id` 的 agent 串行消费，保持顺序。
-3. 无新消息时保持阻塞等待，不主动退出。
+## 10. 失败处理
 
-## 11. 失败处理
+1. `SandboxClaim` 创建失败
+   - 当前消息不推进 `msg:seq`，下一轮重试。
+2. `SandboxClaim` 长时间未 ready
+   - 视为当前消息失败，记日志并重试。
+3. router 调用失败
+   - 视为当前消息失败，不推进 `msg:seq`。
+4. agent 运行失败
+   - router 返回 5xx，主服务记录并重试。
+5. egress 回发失败
+   - 保留在 egress stream 中，按 consumer 逻辑重试。
 
-1. Sandbox 启动失败
-   - 重试 3 次（指数退避），仍失败进入 `runtime_dlq`。
-2. Agent 启动失败
-   - 缺少必需环境变量或 bootstrap 失败时直接启动失败，由 sandbox 重试。
-3. Agent 执行失败
-   - 记录失败消息，支持重试或人工重放。
-4. Egress 回发失败
-   - 进入重试队列，超阈值进入 `dlq:reply`。
-5. 重复执行（可接受）
-   - 由于不引入额外幂等设计，极端故障下可能出现重复处理或重复回发。
-
-## 12. 观测与告警
+## 11. 观测与告警
 
 核心指标：
-- `sandbox_start_latency_ms`
-- `agent_bootstrap_latency_ms`
-- `room_stream_pending_depth`
-- `room_cold_start_ratio`
+- `sandbox_claim_ready_latency_ms`
+- `sandbox_http_request_latency_ms`
+- `sandbox_http_error_rate`
 - `reply_e2e_ms`
+- `egress_retry_count`
 
 告警建议：
-- `sandbox.ready` 超时率 > 2%（5 分钟窗口）
-- `runtime_dlq` 持续增长
-- `room_stream_pending_depth` 持续超过阈值
+- `SandboxClaim Ready` 超时率持续升高
+- router 5xx 持续升高
+- `stream:o:{room_id}` backlog 持续累积
 
-## 13. 推荐落地顺序
+## 12. 本轮确认约束
 
-1. 定义 agent image 的 entrypoint 和环境变量契约。
-2. 在 agent runtime 内实现 `XREADGROUP BLOCK` 消费循环。
-3. 接入统一 egress API、重试和基础健康检查。
-4. 完成镜像最小化、启动速度和可观测性优化。
-5. 需要访问内网能力时，再单独设计 Tailscale / tailnet 接入。
-
-## 14. 本轮确认约束
-
-1. 不引入 `stream:dispatch`。
-2. 由 Ingress 在消息到达时直接触发 `ensure`。
-3. 增加 `lock:ensure:{room_id}`（`SET NX EX 3`）防止 ensure 风暴。
-4. 不建设独立 `room registry` 表。
-5. 暂不维护 `last_seen_at` 等中心化时间戳字段。
-6. agent 在 sandbox 内自行拉取并消费 room stream。
-7. v0 默认软休眠，不启用自动销毁。
-8. v0 agent 镜像先不考虑 Tailscale，聚焦消息消费、回发和运行时契约。
+1. 官方控制面接口统一使用 `SandboxTemplate` 与 `SandboxClaim`。
+2. 官方通信接口统一使用 router + HTTP runtime。
+3. 不再给 sandbox 注入 per-room Redis ingress 配置。
+4. Redis 只保留主服务状态、缓存和 egress 职责。
+5. v0 默认软休眠，不启用 warm pool。

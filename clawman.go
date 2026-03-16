@@ -46,6 +46,7 @@ type Clawman struct {
 	contactAPI *wecom.Client
 	archiveAPI *wecom.Client
 	orch       *sandbox.Orchestrator
+	sandboxAPI *sandbox.RouterClient
 	egress     *EgressConsumer
 	seq        uint64
 }
@@ -61,7 +62,13 @@ type WeComMessage struct {
 	RawContent string   `json:"-"`
 }
 
-func NewClawman(cfg Config, rdb *redis.Client, orch *sandbox.Orchestrator, egress *EgressConsumer) (*Clawman, error) {
+func NewClawman(
+	cfg Config,
+	rdb *redis.Client,
+	orch *sandbox.Orchestrator,
+	sandboxAPI *sandbox.RouterClient,
+	egress *EgressConsumer,
+) (*Clawman, error) {
 	if cfg.WeComCorpID == "" || cfg.WeComCorpSecret == "" || cfg.WeComPrivateKey == "" {
 		return nil, fmt.Errorf("WECOM_CORP_ID/WECOM_CORP_SECRET/WECOM_RSA_PRIVATE_KEY are required")
 	}
@@ -91,6 +98,7 @@ func NewClawman(cfg Config, rdb *redis.Client, orch *sandbox.Orchestrator, egres
 		contactAPI: contactAPI,
 		archiveAPI: archiveAPI,
 		orch:       orch,
+		sandboxAPI: sandboxAPI,
 		egress:     egress,
 	}, nil
 }
@@ -167,31 +175,44 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 			roomID = msg.From
 		}
 
-		if r.orch != nil {
-			r.orch.Ensure(ctx, roomID)
+		if r.egress != nil {
+			r.egress.RegisterRoom(ctx, roomID)
+			r.cacheTarget(ctx, &msg, roomID)
 		}
 
-		stream := "stream:i:" + roomID
-		if err := r.redis.XAdd(ctx, &redis.XAddArgs{
-			Stream: stream,
-			Values: map[string]any{
-				"msgid": msg.MsgID,
-				"kind":  "wecom",
-				"raw":   msg.RawContent,
-			},
-		}).Err(); err != nil {
-			return seq, fmt.Errorf("xadd %s failed: %w", stream, err)
+		text, err := extractWeComMessageText(msg.RawContent)
+		if err != nil {
+			slog.Warn("skip unsupported wecom message payload", "msgid", msg.MsgID, "room_id", roomID, "err", err)
+			continue
+		}
+
+		if r.orch == nil || r.sandboxAPI == nil {
+			return seq, fmt.Errorf("sandbox integration not configured")
+		}
+
+		sandboxID, err := r.orch.EnsureReady(ctx, roomID)
+		if err != nil {
+			return seq, fmt.Errorf("ensure sandbox ready for room %s: %w", roomID, err)
+		}
+
+		reply, err := r.sandboxAPI.Invoke(ctx, sandboxID, sandbox.ChatRequest{
+			MsgID:    msg.MsgID,
+			RoomID:   roomID,
+			TenantID: r.cfg.WeComCorpID,
+			ChatType: chatTypeForRoom(msg.RoomID),
+			Text:     text,
+		})
+		if err != nil {
+			return seq, fmt.Errorf("invoke sandbox %s for room %s: %w", sandboxID, roomID, err)
+		}
+
+		if err := r.enqueueReply(ctx, roomID, msg.MsgID, reply.Text); err != nil {
+			return seq, fmt.Errorf("enqueue sandbox reply for room %s: %w", roomID, err)
 		}
 		if err := r.redis.Set(ctx, r.cfg.WeComSeqKey, chatData.Seq, 0).Err(); err != nil {
 			return seq, fmt.Errorf("set seq in redis: %w", err)
 		}
 		seq = chatData.Seq
-
-		// Register egress stream for this room
-		if r.egress != nil {
-			r.egress.RegisterRoom(ctx, roomID)
-			r.cacheTarget(ctx, &msg, roomID)
-		}
 	}
 
 	return seq, nil
@@ -354,4 +375,23 @@ func (r *Clawman) resolveGroup(ctx context.Context, roomID string) (*GroupDetail
 
 func isExternalUserID(id string) bool {
 	return strings.HasPrefix(id, "wm") || strings.HasPrefix(id, "wo")
+}
+
+func chatTypeForRoom(roomID string) string {
+	if roomID == "" {
+		return "direct"
+	}
+	return "group"
+}
+
+func (r *Clawman) enqueueReply(ctx context.Context, roomID, msgID, text string) error {
+	stream := "stream:o:" + roomID
+	return r.redis.XAdd(ctx, &redis.XAddArgs{
+		Stream: stream,
+		Values: map[string]any{
+			"room_id": roomID,
+			"msgid":   msgID,
+			"text":    text,
+		},
+	}).Err()
 }

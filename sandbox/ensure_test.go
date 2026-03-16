@@ -4,168 +4,168 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stesting "k8s.io/client-go/testing"
-	sandboxfake "sigs.k8s.io/agent-sandbox/clients/k8s/clientset/versioned/fake"
+	sandboxv1alpha1 "sigs.k8s.io/agent-sandbox/api/v1alpha1"
+	extensionsfake "sigs.k8s.io/agent-sandbox/clients/k8s/extensions/clientset/versioned/fake"
+	extensionsv1alpha1 "sigs.k8s.io/agent-sandbox/extensions/api/v1alpha1"
 )
 
-// stubProvisioner returns a fixed credential without calling Redis ACL.
-func stubProvisioner(_ context.Context, roomID string) (RedisCredential, error) {
-	return RedisCredential{
-		Username: "sb:" + roomID,
-		Password: "test-password",
-	}, nil
-}
-
-func newTestOrchestrator(t *testing.T, client *sandboxfake.Clientset) (*Orchestrator, *miniredis.Miniredis) {
+func newTestOrchestrator(t *testing.T, client *extensionsfake.Clientset) (*Orchestrator, *miniredis.Miniredis) {
 	t.Helper()
+
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { rdb.Close() })
 
 	orch := NewOrchestrator(client, rdb, Config{
-		Namespace:       "claw",
-		Image:           "ghcr.io/test/agent:latest",
-		RedisAddr:       "redis:6379",
-		ModelAPIBaseURL: "http://llm:4000",
-		ModelAPIKey:     "sk-test",
+		Namespace:    "claw",
+		TemplateName: "tinyclaw-agent-template",
+		ReadyTimeout: 2 * time.Second,
+		PollInterval: 10 * time.Millisecond,
 	})
-	orch.provisionFn = stubProvisioner
+
 	return orch, mr
 }
 
-func TestEnsure_CreatesSandbox(t *testing.T) {
-	client := sandboxfake.NewSimpleClientset()
+func markClaimReady(
+	t *testing.T,
+	ctx context.Context,
+	client *extensionsfake.Clientset,
+	namespace string,
+	roomID string,
+) {
+	t.Helper()
+
+	go func() {
+		deadline := time.Now().Add(time.Second)
+		name := sandboxName(roomID)
+		for time.Now().Before(deadline) {
+			claim, err := client.ExtensionsV1alpha1().SandboxClaims(namespace).Get(ctx, name, metav1.GetOptions{})
+			if err == nil {
+				claim = claim.DeepCopy()
+				claim.Status.Conditions = []metav1.Condition{
+					{
+						Type:   string(sandboxv1alpha1.SandboxConditionReady),
+						Status: metav1.ConditionTrue,
+						Reason: "SandboxReady",
+					},
+				}
+				claim.Status.SandboxStatus.Name = claim.Name
+				if _, updateErr := client.ExtensionsV1alpha1().SandboxClaims(namespace).Update(ctx, claim, metav1.UpdateOptions{}); updateErr != nil {
+					t.Errorf("update sandbox claim ready status: %v", updateErr)
+				}
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Errorf("sandbox claim %s was not created before timeout", name)
+	}()
+}
+
+func TestEnsureReady_CreatesSandboxClaim(t *testing.T) {
+	client := extensionsfake.NewSimpleClientset()
 	orch, _ := newTestOrchestrator(t, client)
 	ctx := context.Background()
+	markClaimReady(t, ctx, client, "claw", "test-room-123")
 
-	created := orch.Ensure(ctx, "test-room-123")
-	if !created {
-		t.Fatal("expected Ensure to return created=true for new sandbox")
+	sandboxID, err := orch.EnsureReady(ctx, "test-room-123")
+	if err != nil {
+		t.Fatalf("EnsureReady returned error: %v", err)
 	}
 
-	list, err := client.AgentsV1alpha1().Sandboxes("claw").List(ctx, metav1.ListOptions{})
+	list, err := client.ExtensionsV1alpha1().SandboxClaims("claw").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		t.Fatalf("list sandboxes: %v", err)
+		t.Fatalf("list sandbox claims: %v", err)
 	}
 	if len(list.Items) != 1 {
-		t.Fatalf("expected 1 sandbox, got %d", len(list.Items))
+		t.Fatalf("expected 1 sandbox claim, got %d", len(list.Items))
 	}
 
-	sbx := list.Items[0]
-
-	// Verify deterministic name
+	claim := list.Items[0]
 	expected := sandboxName("test-room-123")
-	if sbx.Name != expected {
-		t.Errorf("sandbox name = %q, want %q", sbx.Name, expected)
+	if claim.Name != expected {
+		t.Errorf("sandbox claim name = %q, want %q", claim.Name, expected)
 	}
-
-	// Verify top-level labels
-	if sbx.Labels["app"] != "tinyclaw-sandbox" {
-		t.Errorf("top-level label app = %q, want %q", sbx.Labels["app"], "tinyclaw-sandbox")
+	if sandboxID != expected {
+		t.Errorf("sandboxID = %q, want %q", sandboxID, expected)
 	}
-
-	// Verify pod template labels
-	ptLabels := sbx.Spec.PodTemplate.ObjectMeta.Labels
-	if ptLabels["tinyclaw/room-id"] != "test-room-123" {
-		t.Errorf("pod template label tinyclaw/room-id = %q, want %q", ptLabels["tinyclaw/room-id"], "test-room-123")
+	if claim.Spec.TemplateRef.Name != "tinyclaw-agent-template" {
+		t.Errorf("template ref = %q, want %q", claim.Spec.TemplateRef.Name, "tinyclaw-agent-template")
 	}
-
-	// Verify env vars
-	c0 := sbx.Spec.PodTemplate.Spec.Containers[0]
-	envMap := make(map[string]string)
-	for _, e := range c0.Env {
-		envMap[e.Name] = e.Value
-	}
-	wantEnv := map[string]string{
-		"ROOM_ID":            "test-room-123",
-		"REDIS_ADDR":         "redis:6379",
-		"REDIS_USERNAME":     "sb:test-room-123",
-		"REDIS_PASSWORD":     "test-password",
-		"ANTHROPIC_BASE_URL": "http://llm:4000",
-		"ANTHROPIC_API_KEY":  "sk-test",
-	}
-	for k, v := range wantEnv {
-		if envMap[k] != v {
-			t.Errorf("env %s = %q, want %q", k, envMap[k], v)
-		}
-	}
-
-	// Verify restartPolicy
-	if sbx.Spec.PodTemplate.Spec.RestartPolicy != "Always" {
-		t.Errorf("restartPolicy = %q, want Always", sbx.Spec.PodTemplate.Spec.RestartPolicy)
+	if claim.Labels["tinyclaw/room-id"] != "test-room-123" {
+		t.Errorf("claim label tinyclaw/room-id = %q, want %q", claim.Labels["tinyclaw/room-id"], "test-room-123")
 	}
 }
 
-func TestEnsure_DebounceLock(t *testing.T) {
-	client := sandboxfake.NewSimpleClientset()
+func TestEnsureReady_DebounceLock(t *testing.T) {
+	client := extensionsfake.NewSimpleClientset()
 	orch, _ := newTestOrchestrator(t, client)
 	ctx := context.Background()
+	markClaimReady(t, ctx, client, "claw", "test-room-123")
 
-	// First call creates the sandbox
-	orch.Ensure(ctx, "test-room-123")
+	if _, err := orch.EnsureReady(ctx, "test-room-123"); err != nil {
+		t.Fatalf("first EnsureReady: %v", err)
+	}
 
-	// Track create calls
 	createCount := 0
-	client.Fake.PrependReactor("create", "sandboxes", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	client.Fake.PrependReactor("create", "sandboxclaims", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		createCount++
 		return false, nil, nil
 	})
 
-	// Second call within 3s should be debounced by Redis lock
-	created := orch.Ensure(ctx, "test-room-123")
-	if created {
-		t.Error("expected Ensure to return created=false when debounced")
+	if _, err := orch.EnsureReady(ctx, "test-room-123"); err != nil {
+		t.Fatalf("second EnsureReady: %v", err)
 	}
-
 	if createCount != 0 {
-		t.Errorf("expected 0 create calls (debounced), got %d", createCount)
+		t.Errorf("expected 0 create calls while lock is active, got %d", createCount)
 	}
 }
 
-func TestEnsure_AlreadyExists(t *testing.T) {
-	client := sandboxfake.NewSimpleClientset()
-	orch, _ := newTestOrchestrator(t, client)
-	ctx := context.Background()
-
-	// First call creates the sandbox
-	created := orch.Ensure(ctx, "user-abc")
-	if !created {
-		t.Fatal("expected first Ensure to return created=true")
-	}
-
-	// Expire the lock so the second call isn't debounced
-	orch.redis.Del(ctx, lockPrefix+"user-abc")
-
-	// Second call hits AlreadyExists — should return false
-	created = orch.Ensure(ctx, "user-abc")
-	if created {
-		t.Error("expected Ensure to return created=false for already-existing sandbox")
-	}
-
-	list, err := client.AgentsV1alpha1().Sandboxes("claw").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		t.Fatalf("list sandboxes: %v", err)
-	}
-	if len(list.Items) != 1 {
-		t.Fatalf("expected 1 sandbox, got %d", len(list.Items))
-	}
-}
-
-func TestEnsure_K8sError_NoPanic(t *testing.T) {
-	client := sandboxfake.NewSimpleClientset()
-	client.Fake.PrependReactor("create", "sandboxes", func(action k8stesting.Action) (bool, runtime.Object, error) {
-		return true, nil, fmt.Errorf("simulated k8s error")
+func TestEnsureReady_AlreadyExists(t *testing.T) {
+	client := extensionsfake.NewSimpleClientset(&extensionsv1alpha1.SandboxClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      sandboxName("user-abc"),
+			Namespace: "claw",
+		},
+		Spec: extensionsv1alpha1.SandboxClaimSpec{
+			TemplateRef: extensionsv1alpha1.SandboxTemplateRef{Name: "tinyclaw-agent-template"},
+		},
+		Status: extensionsv1alpha1.SandboxClaimStatus{
+			Conditions: []metav1.Condition{
+				{Type: string(sandboxv1alpha1.SandboxConditionReady), Status: metav1.ConditionTrue},
+			},
+			SandboxStatus: extensionsv1alpha1.SandboxStatus{Name: sandboxName("user-abc")},
+		},
 	})
 	orch, _ := newTestOrchestrator(t, client)
 	ctx := context.Background()
 
-	// Should log but not panic
-	orch.Ensure(ctx, "test-room-123")
+	sandboxID, err := orch.EnsureReady(ctx, "user-abc")
+	if err != nil {
+		t.Fatalf("EnsureReady returned error: %v", err)
+	}
+	if sandboxID != sandboxName("user-abc") {
+		t.Errorf("sandboxID = %q, want %q", sandboxID, sandboxName("user-abc"))
+	}
+}
+
+func TestEnsureReady_K8sError(t *testing.T) {
+	client := extensionsfake.NewSimpleClientset()
+	client.Fake.PrependReactor("create", "sandboxclaims", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, fmt.Errorf("simulated k8s error")
+	})
+	orch, _ := newTestOrchestrator(t, client)
+
+	_, err := orch.EnsureReady(context.Background(), "test-room-123")
+	if err == nil {
+		t.Fatal("EnsureReady error = nil, want non-nil")
+	}
 }
 
 func TestSandboxName_Deterministic(t *testing.T) {
@@ -175,7 +175,6 @@ func TestSandboxName_Deterministic(t *testing.T) {
 		t.Errorf("sandboxName not deterministic: %q != %q", name1, name2)
 	}
 
-	// Different room IDs produce different names
 	name3 := sandboxName("room-xyz-456")
 	if name1 == name3 {
 		t.Errorf("different room IDs produced same sandbox name: %q", name1)
@@ -190,25 +189,27 @@ func TestSandboxName_LowercasesRoomID(t *testing.T) {
 	}
 }
 
-func TestEnsure_LockExpiry(t *testing.T) {
-	client := sandboxfake.NewSimpleClientset()
+func TestEnsureReady_LockExpiry(t *testing.T) {
+	client := extensionsfake.NewSimpleClientset()
 	orch, mr := newTestOrchestrator(t, client)
 	ctx := context.Background()
+	markClaimReady(t, ctx, client, "claw", "test-room-123")
 
-	orch.Ensure(ctx, "test-room-123")
+	if _, err := orch.EnsureReady(ctx, "test-room-123"); err != nil {
+		t.Fatalf("first EnsureReady: %v", err)
+	}
 
-	// Fast-forward miniredis past the lock TTL
 	mr.FastForward(lockTTL)
 
 	createCount := 0
-	client.Fake.PrependReactor("create", "sandboxes", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	client.Fake.PrependReactor("create", "sandboxclaims", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		createCount++
 		return false, nil, nil
 	})
 
-	orch.Ensure(ctx, "test-room-123")
-
-	// After lock expiry, should attempt create again (will get AlreadyExists)
+	if _, err := orch.EnsureReady(ctx, "test-room-123"); err != nil {
+		t.Fatalf("second EnsureReady: %v", err)
+	}
 	if createCount != 1 {
 		t.Errorf("expected 1 create attempt after lock expiry, got %d", createCount)
 	}

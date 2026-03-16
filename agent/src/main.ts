@@ -1,15 +1,11 @@
 import { bootstrapAgent } from './bootstrap.js';
-import { AgentConsumer } from './consumer.js';
 import { loadEnv } from './env.js';
-import { WecomEgressClient } from './egress.js';
-import { createRedisClient } from './redis.js';
 import { createRuntime } from './runtime.js';
+import { createAgentServer } from './server.js';
 
 const env = loadEnv();
-const redis = createRedisClient(env);
 const runtime = createRuntime(env);
-const egress = new WecomEgressClient(redis, env);
-const consumer = new AgentConsumer(redis, env, runtime, egress);
+const server = createAgentServer(env, runtime);
 
 let shutdownRequested = false;
 
@@ -24,44 +20,64 @@ function requestShutdown(signal: string): void {
       level: 'info',
       msg: 'shutdown_requested',
       signal,
-      room_id: env.roomId,
     }),
   );
-  consumer.requestStop();
+
+  server.close(error => {
+    if (error) {
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          msg: 'agent_shutdown_failed',
+          error: error.message,
+        }),
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        msg: 'agent_shutdown_complete',
+      }),
+    );
+  });
 }
 
 process.on('SIGTERM', () => requestShutdown('SIGTERM'));
 process.on('SIGINT', () => requestShutdown('SIGINT'));
 
 try {
-  await bootstrapAgent(redis, env);
-  console.log(
-    JSON.stringify({
-      level: 'info',
-      msg: 'agent_ready',
-      room_id: env.roomId,
-      stream_key: env.streamKey,
-      consumer_group: env.consumerGroup,
-      consumer_name: env.consumerName,
-      runtime_mode: env.agentRuntimeMode,
-    }),
-  );
-  await consumer.run();
+  await bootstrapAgent(env);
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(env.serverPort, () => {
+      server.off('error', reject);
+      const address = server.address();
+      const port =
+        typeof address === 'object' && address ? address.port : env.serverPort;
+
+      console.log(
+        JSON.stringify({
+          level: 'info',
+          msg: 'agent_ready',
+          server_port: port,
+          runtime_mode: env.agentRuntimeMode,
+        }),
+      );
+      resolve();
+    });
+  });
 } catch (error) {
   const details = error instanceof Error ? error.message : String(error);
   console.error(
     JSON.stringify({
       level: 'error',
       msg: 'agent_fatal',
-      room_id: env.roomId,
       error: details,
     }),
   );
   process.exitCode = 1;
-} finally {
-  try {
-    await redis.quit();
-  } catch {
-    await redis.disconnect();
-  }
 }

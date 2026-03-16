@@ -10,8 +10,8 @@ metadata:
   name: clawman-sandbox-manager
   namespace: claw
 rules:
-  - apiGroups: ["agents.x-k8s.io"]
-    resources: ["sandboxes"]
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxclaims"]
     verbs: ["create", "get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

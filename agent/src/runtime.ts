@@ -5,14 +5,14 @@ import { fileURLToPath } from 'node:url';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
-import type { AgentEnv, RoomStreamMessage, RuntimeResult } from './types.js';
+import type { AgentChatRequest, AgentEnv, RuntimeResult } from './types.js';
 
 const require = createRequire(import.meta.url);
 const runtimeDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(runtimeDir, '..');
 
 export interface AgentRuntime {
-  run(message: RoomStreamMessage): Promise<RuntimeResult>;
+  run(message: AgentChatRequest): Promise<RuntimeResult>;
 }
 
 type ClaudeQuery = ReturnType<typeof query>;
@@ -28,7 +28,7 @@ const runtimeDeps: RuntimeDeps = {
 };
 
 class EchoRuntime implements AgentRuntime {
-  async run(message: RoomStreamMessage): Promise<RuntimeResult> {
+  async run(message: AgentChatRequest): Promise<RuntimeResult> {
     return {
       text: `Echo from tinyclaw-agent: ${message.text}`,
       metadata: {
@@ -38,7 +38,7 @@ class EchoRuntime implements AgentRuntime {
   }
 }
 
-function buildClaudePrompt(message: RoomStreamMessage): string {
+function buildClaudePrompt(message: AgentChatRequest): string {
   const lines = [
     'You are handling a TinyClaw room message.',
     `room_id: ${message.roomId}`,
@@ -100,7 +100,7 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
     private readonly deps: RuntimeDeps = runtimeDeps,
   ) {}
 
-  async run(message: RoomStreamMessage): Promise<RuntimeResult> {
+  async run(message: AgentChatRequest): Promise<RuntimeResult> {
     if (!this.env.anthropicApiKey && !this.env.claudeCodeOauthToken) {
       throw new Error(
         'claude_agent_sdk runtime requires ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN',

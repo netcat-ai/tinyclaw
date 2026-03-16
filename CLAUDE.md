@@ -1,75 +1,74 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code when working with this repository.
 
 ## What is tinyclaw
 
-Cloud-based AI Agent Runtime for WeChat Work (企业微信). The main service (`clawman`) pulls encrypted messages from WeChat Work's Finance SDK, decrypts them, and dispatches to per-room Redis Streams. Agents in isolated K8s sandboxes consume from their room stream via `XREADGROUP BLOCK`.
+Cloud-based AI Agent Runtime for WeChat Work (企业微信).
+
+Current architecture:
+- `clawman` pulls encrypted messages from the WeChat Work Finance SDK.
+- `clawman` ensures a per-room `SandboxClaim` using the official `agent-sandbox` extensions API.
+- `clawman` invokes the sandbox through `sandbox-router` over HTTP.
+- The sandboxed `agent` exposes `/healthz` and `/v1/chat`.
+- Replies are written to `stream:o:{room_id}` and sent out by the egress consumer.
 
 ## Build & Run
 
 ```bash
 go build -o tinyclaw .              # CGO required (Finance SDK is native C)
-go test ./...                       # run all tests
-docker build -t tinyclaw:latest .   # multi-stage: Go 1.24 builder + Debian bookworm-slim runtime
+go test ./...                       # run all Go tests
+cd agent && npm test                # run agent tests
+docker build -t tinyclaw:latest .   # main service image
 ```
 
 The Finance SDK native library only compiles on Linux (`wecom/finance/sdk_linux.go`). Other platforms get a stub (`sdk_unsupport.go`).
 
-Required env vars: `WECOM_CORP_ID`, `WECOM_CORP_SECRET`, `WECOM_RSA_PRIVATE_KEY`. See `config.go` for all options with defaults.
+Required env vars for the main service:
+- `WECOM_CORP_ID`
+- `WECOM_CORP_SECRET`
+- `WECOM_RSA_PRIVATE_KEY`
+
+See `config.go` for the current main-service env contract.
 
 ## Architecture
 
-```
-WeChat Work Finance SDK → Clawman (3s poll loop) → Redis Stream per room → Agent sandbox (XREADGROUP BLOCK)
+```text
+WeChat Work Finance SDK
+  -> Clawman (poll / decrypt / normalize)
+  -> SandboxClaim ensure
+  -> sandbox-router
+  -> agent HTTP runtime (/v1/chat)
+  -> Redis egress stream
+  -> WorkTool / WeCom send
 ```
 
-- `main.go` — entry point: Redis client, Resolver, Clawman init, signal handling
-- `clawman.go` — ingress service: pulls messages via Finance SDK, decrypts, parses, dispatches to Redis Streams
-- `clawman.go` — resolves direct-message identities and group metadata via WeCom APIs with 1h Redis cache
-- `config.go` — all config from env vars with `envOrDefault` pattern
-- `wecom/client.go` — minimal WeChat Work API client with mutex-guarded token refresh
-- `wecom/contact.go` — external contact and group chat resolution APIs
-- `wecom/finance/` — CGO wrapper around native WeChat Work Finance SDK + RSA decryption
+Key files:
+- `main.go` — main service entry point
+- `clawman.go` — ingress pull loop, WeCom metadata resolution, sandbox invocation
+- `sandbox/ensure.go` — `SandboxClaim` create-or-get + ready wait
+- `sandbox/router.go` — router HTTP client
+- `agent/src/main.ts` — sandbox HTTP runtime entry
+- `agent/src/server.ts` — `/healthz` and `/v1/chat`
+- `agent/src/runtime.ts` — echo / `claude_agent_sdk`
 
-### Redis key conventions
+## Redis key conventions
 
 | Pattern | Purpose |
 |---------|---------|
-| `stream:room:{roomID}` | Per-room message stream |
 | `msg:seq` | Last processed WeChat Work sequence number |
 | `wecom:contact:external:{id}` | External contact cache (1h TTL) |
 | `wecom:user:internal:{id}` | Internal user cache (1h TTL) |
 | `wecom:group:detail:{roomID}` | Group detail cache (1h TTL) |
 | `lock:ensure:{room_id}` | Ensure-once lock (3s TTL) |
+| `stream:o:{room_id}` | Egress reply stream |
 
-### Message flow
-
-1. Finance SDK returns encrypted `ChatData` batches starting from stored `seq`
-2. Each message is RSA-decrypted, JSON-parsed, validated (must have `from` + `tolist`)
-3. Valid messages are `XADD`'d to the room stream with fields `msgid`, `kind`, and `raw`
-4. Sequence is persisted to Redis after each successful dispatch
-5. Invalid/undecryptable messages are skipped with a log line
-
-### WeChat Work detail routing
-
-- Direct message sender IDs prefixed with `wm` or `wo` → external contact API lookup.
-- Other direct message sender IDs → internal user API lookup.
-- Group `roomid` values try archive-group lookup first, then fall back to customer-group lookup.
-
-## Deployment
-
-K8s namespace: `claw`. Deployment name: `clawman`. Image pushed to `ghcr.io/<owner>/tinyclaw`.
-
-CI is two workflows:
-- `build.yml` — test + Docker build on every push/PR; image push only on `main`
-- `deploy.yml` — triggered after successful build on `main`; connects via Tailscale OAuth then `kubectl apply`
+Redis no longer carries sandbox ingress.
 
 ## Conventions
 
-- Commit format: `<type>: <summary>` (e.g., `docs: clarify room_id rules`)
+- Commit format: `<type>: <summary>` (for example `docs: clarify sandbox claim flow`)
 - One logical change per commit
-- Filenames: uppercase snake-style with version suffix for docs (e.g., `ARCHITECTURE_V0.md`)
-- Reuse existing terminology from `docs/ARCHITECTURE_V0.md` — don't invent new terms for established concepts
-- Error handling: skip-and-log for individual message failures, return error for infrastructure failures (Redis, SDK init)
-- Keep docs atomic — update existing files rather than creating overlapping documents
+- Prefer updating existing docs over creating overlapping docs
+- Reuse terminology from `docs/ARCHITECTURE_V0.md`
+- For sandbox integration, use `SandboxTemplate`, `SandboxClaim`, and `sandbox-router` terms consistently

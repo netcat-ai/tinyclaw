@@ -1,13 +1,8 @@
-import type { RedisClientType } from 'redis';
+import fs from 'node:fs';
 
 import type { AgentEnv } from './types.js';
-import { ensureConsumerGroup, pingRedis } from './redis.js';
 
-export async function bootstrapAgent(
-  redis: RedisClientType,
-  env: AgentEnv,
-): Promise<void> {
-  await redis.connect();
-  await pingRedis(redis);
-  await ensureConsumerGroup(redis, env.streamKey, env.consumerGroup);
+export async function bootstrapAgent(env: AgentEnv): Promise<void> {
+  fs.mkdirSync(env.agentWorkdir, { recursive: true });
+  fs.mkdirSync(env.agentTmpdir, { recursive: true });
 }
