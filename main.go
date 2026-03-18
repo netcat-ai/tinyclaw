@@ -9,7 +9,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"k8s.io/client-go/rest"
 	extensionsclient "sigs.k8s.io/agent-sandbox/clients/k8s/extensions/clientset/versioned"
 	"tinyclaw/sandbox"
@@ -28,17 +27,17 @@ func main() {
 		slog.Warn("WECOM_BOT_ID is empty; bot-sent direct messages will be ingested as room_id=<bot_id> and may create self-loop sandboxes")
 	}
 
-	redisClient := redis.NewClient(&redis.Options{
-		Addr:     cfg.RedisAddr,
-		Password: cfg.RedisPassword,
-		DB:       cfg.RedisDB,
-	})
-	defer redisClient.Close()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	if err := redisClient.Ping(ctx).Err(); err != nil {
+	store, err := OpenStore(ctx, cfg.DatabaseURL)
+	if err != nil {
 		cancel()
-		slog.Error("redis ping failed", "err", err)
+		slog.Error("open postgres store failed", "err", err)
+		os.Exit(1)
+	}
+	defer store.Close()
+	if err := store.InitSchema(ctx); err != nil {
+		cancel()
+		slog.Error("init postgres schema failed", "err", err)
 		os.Exit(1)
 	}
 	cancel()
@@ -55,7 +54,7 @@ func main() {
 		slog.Error("agent sandbox extensions clientset init failed", "err", err)
 		os.Exit(1)
 	}
-	orch = sandbox.NewOrchestrator(clientset, redisClient, sandbox.Config{
+	orch = sandbox.NewOrchestrator(clientset, sandbox.Config{
 		Namespace:    cfg.SandboxNamespace,
 		TemplateName: cfg.SandboxTemplateName,
 		ReadyTimeout: time.Duration(cfg.SandboxReadyTimeoutSec) * time.Second,
@@ -77,10 +76,10 @@ func main() {
 	var egress *EgressConsumer
 	if cfg.WorkToolRobotID != "" {
 		wt := worktool.NewClient(cfg.WorkToolRobotID)
-		egress = NewEgressConsumer(redisClient, wt)
+		egress = NewEgressConsumer(store, wt)
 	}
 
-	clawman, err := NewClawman(cfg, redisClient, orch, routerClient, egress)
+	clawman, err := NewClawman(cfg, store, orch, routerClient, egress)
 	if err != nil {
 		slog.Error("init clawman failed", "err", err)
 		os.Exit(1)

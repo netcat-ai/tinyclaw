@@ -23,21 +23,21 @@ tinyclaw 是一个面向企业微信会话的 AI Agent Runtime：
 | WeCom Send API            | <-----| - decrypt / normalize            |
 +---------------------------+       | - ensure SandboxClaim            |
                                     | - invoke sandbox via router      |
-                                    | - append egress stream           |
+                                    | - persist messages/outbox        |
                                     +----------------+-----------------+
                                                      |
                                    +-----------------v------------------+
-                                   | Redis                                |
-                                   | - msg:seq                            |
-                                   | - wecom:* cache                      |
-                                   | - lock:ensure:{room_id}              |
-                                   | - stream:o:{room_id}                 |
+                                   | PostgreSQL                           |
+                                   | - ingest_cursors                     |
+                                   | - messages                           |
+                                   | - outbox_deliveries                  |
                                    +-----------------+------------------+
                                                      |
                                    +-----------------v------------------+
                                    | Egress Consumer                     |
+                                   | - poll outbox_deliveries            |
                                    | - WorkTool / WeCom send             |
-                                   | - retry / DLQ                       |
+                                   | - retry / failed                    |
                                    +-------------------------------------+
 
                                                      |
@@ -96,18 +96,18 @@ Sandbox.name      = clawagent-{room_id_lower}
 
 说明：
 - claim 与 sandbox 使用同名，便于 router 直接用 `X-Sandbox-ID` 路由。
-- `lock:ensure:{room_id}` 仍保留，用于抑制 ensure 风暴。
+- 当前版只在单副本进程内做 ensure debounce。
 
 ## 5. 数据面设计
 
 ### 5.1 Ingress 流程
 1. `clawman` 周期拉取企业微信会话存档。
 2. 解密并解析消息，过滤非法或 bot 自发消息。
-3. 根据 `room_id` 解析发送方或群详情，写入 Redis 缓存。
+3. 根据 `room_id` 解析发送方或群详情，并在进程内做短期 TTL cache。
 4. 调用 `ensure(room_id)`，等待 `SandboxClaim` ready。
 5. 通过 router 发送 `POST /agent` 到 sandbox。
-6. 拿到回复后写入 `stream:o:{room_id}`。
-7. egress consumer 统一回发企业微信。
+6. 拿到回复后把入站消息、出站消息和 outbox 记录写入 PostgreSQL。
+7. egress consumer 轮询 outbox 并统一回发企业微信。
 
 ### 5.2 Router 调用契约
 请求路径：
@@ -143,13 +143,11 @@ POST {SANDBOX_ROUTER_URL}/agent
 }
 ```
 
-### 5.3 Redis 职责
-v0 中 Redis 不再承担 sandbox ingress，保留以下职责：
-- `msg:seq`：企业微信拉取游标
-- `wecom:*`：企业微信详情缓存
-- `lock:ensure:{room_id}`：ensure 防抖
-- `stream:o:{room_id}`：回复出站流
-- `dlq:reply`：回发死信
+### 5.3 PostgreSQL 职责
+v0 中主服务只依赖最小 PostgreSQL 事实源：
+- `ingest_cursors`：企业微信拉取游标
+- `messages`：成功处理的入站/出站消息
+- `outbox_deliveries`：待发送、重试中、已发送、失败的回发任务
 
 ## 6. Agent Runtime 设计
 
@@ -198,21 +196,22 @@ PID 1: tini / entrypoint
 - 通过 `SandboxClaim` create-or-get 管理 room sandbox。
 - 等待 claim ready。
 - 不单独维护 room registry 表。
+- 当前只做单副本进程内 debounce，不引入中心化分布式锁。
 
 ### 7.3 Egress
-- 消费 `stream:o:{room_id}`。
+- 轮询 `outbox_deliveries`。
 - 统一回发企业微信。
-- 失败重试，必要时进入 DLQ。
+- 失败重试，超过阈值后标记 `failed`。
 
 ## 8. 失败处理
 - `SandboxClaim` 创建失败：
-  - 主服务不推进 `msg:seq`，在下一轮拉取时重试。
+  - 主服务不推进 `ingest_cursors.cursor`，在下一轮拉取时重试。
 - sandbox 未 ready：
-  - 视为当前消息处理失败，不推进 `msg:seq`。
+  - 视为当前消息处理失败，不推进 cursor。
 - sandbox 返回 5xx：
-  - 当前消息保留重试机会，不推进 `msg:seq`。
+  - 当前消息保留重试机会，不推进 cursor。
 - egress 回发失败：
-  - 保留在 egress stream 中重试，超过阈值进入 `dlq:reply`。
+  - 保留在 `outbox_deliveries` 中重试，超过阈值后标记 `failed`。
 
 ## 9. 可观测性
 核心指标建议：
@@ -223,7 +222,7 @@ PID 1: tini / entrypoint
 - `egress_retry_count`
 
 ## 10. 结论
-v0 方案的重点已经从“Redis 驱动 sandbox 自拉”切换为“官方 agent-sandbox 控制面 + router 驱动 HTTP 调用”：
+v0 方案的重点已经从“Redis 驱动 sandbox 自拉”切换为“官方 agent-sandbox 控制面 + router 驱动 HTTP 调用 + PostgreSQL 最小事实源”：
 - 控制面更贴近官方演进方向。
 - 模板复用能力更强。
 - sandbox 不再依赖 per-room Redis 凭据和 consumer group。

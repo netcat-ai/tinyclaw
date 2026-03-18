@@ -6,8 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stesting "k8s.io/client-go/testing"
@@ -16,21 +14,15 @@ import (
 	extensionsv1alpha1 "sigs.k8s.io/agent-sandbox/extensions/api/v1alpha1"
 )
 
-func newTestOrchestrator(t *testing.T, client *extensionsfake.Clientset) (*Orchestrator, *miniredis.Miniredis) {
+func newTestOrchestrator(t *testing.T, client *extensionsfake.Clientset) *Orchestrator {
 	t.Helper()
 
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { rdb.Close() })
-
-	orch := NewOrchestrator(client, rdb, Config{
+	return NewOrchestrator(client, Config{
 		Namespace:    "claw",
 		TemplateName: "tinyclaw-agent-template",
 		ReadyTimeout: 2 * time.Second,
 		PollInterval: 10 * time.Millisecond,
 	})
-
-	return orch, mr
 }
 
 func markClaimReady(
@@ -70,7 +62,7 @@ func markClaimReady(
 
 func TestEnsureReady_CreatesSandboxClaim(t *testing.T) {
 	client := extensionsfake.NewSimpleClientset()
-	orch, _ := newTestOrchestrator(t, client)
+	orch := newTestOrchestrator(t, client)
 	ctx := context.Background()
 	markClaimReady(t, ctx, client, "claw", "test-room-123")
 
@@ -103,9 +95,9 @@ func TestEnsureReady_CreatesSandboxClaim(t *testing.T) {
 	}
 }
 
-func TestEnsureReady_DebounceLock(t *testing.T) {
+func TestEnsureReady_LocalDebounce(t *testing.T) {
 	client := extensionsfake.NewSimpleClientset()
-	orch, _ := newTestOrchestrator(t, client)
+	orch := newTestOrchestrator(t, client)
 	ctx := context.Background()
 	markClaimReady(t, ctx, client, "claw", "test-room-123")
 
@@ -123,7 +115,7 @@ func TestEnsureReady_DebounceLock(t *testing.T) {
 		t.Fatalf("second EnsureReady: %v", err)
 	}
 	if createCount != 0 {
-		t.Errorf("expected 0 create calls while lock is active, got %d", createCount)
+		t.Errorf("expected 0 create calls while debounce is active, got %d", createCount)
 	}
 }
 
@@ -143,7 +135,7 @@ func TestEnsureReady_AlreadyExists(t *testing.T) {
 			SandboxStatus: extensionsv1alpha1.SandboxStatus{Name: sandboxName("user-abc")},
 		},
 	})
-	orch, _ := newTestOrchestrator(t, client)
+	orch := newTestOrchestrator(t, client)
 	ctx := context.Background()
 
 	sandboxID, err := orch.EnsureReady(ctx, "user-abc")
@@ -160,7 +152,7 @@ func TestEnsureReady_K8sError(t *testing.T) {
 	client.Fake.PrependReactor("create", "sandboxclaims", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, fmt.Errorf("simulated k8s error")
 	})
-	orch, _ := newTestOrchestrator(t, client)
+	orch := newTestOrchestrator(t, client)
 
 	_, err := orch.EnsureReady(context.Background(), "test-room-123")
 	if err == nil {
@@ -189,9 +181,9 @@ func TestSandboxName_LowercasesRoomID(t *testing.T) {
 	}
 }
 
-func TestEnsureReady_LockExpiry(t *testing.T) {
+func TestEnsureReady_DebounceExpiry(t *testing.T) {
 	client := extensionsfake.NewSimpleClientset()
-	orch, mr := newTestOrchestrator(t, client)
+	orch := newTestOrchestrator(t, client)
 	ctx := context.Background()
 	markClaimReady(t, ctx, client, "claw", "test-room-123")
 
@@ -199,7 +191,9 @@ func TestEnsureReady_LockExpiry(t *testing.T) {
 		t.Fatalf("first EnsureReady: %v", err)
 	}
 
-	mr.FastForward(lockTTL)
+	orch.mu.Lock()
+	orch.recent["test-room-123"] = time.Now().Add(-ensureDebounceTTL - time.Millisecond)
+	orch.mu.Unlock()
 
 	createCount := 0
 	client.Fake.PrependReactor("create", "sandboxclaims", func(action k8stesting.Action) (bool, runtime.Object, error) {
@@ -211,6 +205,6 @@ func TestEnsureReady_LockExpiry(t *testing.T) {
 		t.Fatalf("second EnsureReady: %v", err)
 	}
 	if createCount != 1 {
-		t.Errorf("expected 1 create attempt after lock expiry, got %d", createCount)
+		t.Errorf("expected 1 create attempt after debounce expiry, got %d", createCount)
 	}
 }

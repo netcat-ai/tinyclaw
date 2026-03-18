@@ -4,9 +4,7 @@ metadata:
   name: tinyclaw-config
   namespace: claw
 data:
-  REDIS_ADDR: "redis:6379"
   WECOM_CORP_ID: "replace-me"
-  WECOM_SEQ_KEY: "msg:seq"
   WECOM_BOT_ID: "moss"
   SANDBOX_TEMPLATE_NAME: "tinyclaw-agent-template"
   SANDBOX_ROUTER_URL: "http://sandbox-router-svc.claw.svc.cluster.local:8080"

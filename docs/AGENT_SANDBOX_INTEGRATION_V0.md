@@ -20,12 +20,12 @@
    - 拉取企业微信消息并标准化。
    - 调用 `ensure(room_id)`，保证对应 `SandboxClaim` ready。
    - 通过 router 调用 sandbox 内 HTTP runtime。
-   - 将回复写入 egress stream，由统一回发服务处理。
+   - 将成功处理的入站消息、出站消息和 outbox 记录写入 PostgreSQL，由统一回发服务处理。
 
 2. `Sandbox Orchestrator`
    - 调用 extensions client 创建或查询 `SandboxClaim`。
    - 以 `SandboxClaim Ready=True` 作为可调用条件。
-   - 使用 `lock:ensure:{room_id}` 抑制 ensure 风暴。
+   - 当前版使用单副本进程内 debounce 抑制重复 create。
 
 3. `Agent Runtime (in Sandbox)`
    - 暴露 `GET /healthz`、`POST /agent` 与标准 `/execute`、`/upload`、`/download`、`/list`、`/exists`。
@@ -139,7 +139,7 @@ Content-Type: application/json
 ### 5.2 sandbox -> 主服务
 - v0 不走主动回调。
 - sandbox 直接同步返回 HTTP 响应。
-- 主服务收到结果后写入 `stream:o:{room_id}`。
+- 主服务收到结果后写入 PostgreSQL `messages` 与 `outbox_deliveries`。
 
 ## 6. Runtime 环境变量契约
 
@@ -221,7 +221,7 @@ agent 容器 ready 条件：
 3. Orchestrator create-or-get `SandboxClaim`。
 4. `SandboxClaim` ready 后，主服务通过 router 调用 `/agent`。
 5. agent 返回回复。
-6. 主服务写入 `stream:o:{room_id}`。
+6. 主服务写入 PostgreSQL `messages` 与 `outbox_deliveries`。
 7. egress consumer 统一回发企业微信。
 
 ### 9.2 活跃会话
@@ -233,15 +233,15 @@ agent 容器 ready 条件：
 ## 10. 失败处理
 
 1. `SandboxClaim` 创建失败
-   - 当前消息不推进 `msg:seq`，下一轮重试。
+   - 当前消息不推进 `ingest_cursors.cursor`，下一轮重试。
 2. `SandboxClaim` 长时间未 ready
    - 视为当前消息失败，记日志并重试。
 3. router 调用失败
-   - 视为当前消息失败，不推进 `msg:seq`。
+   - 视为当前消息失败，不推进 cursor。
 4. agent 运行失败
    - router 返回 5xx，主服务记录并重试。
 5. egress 回发失败
-   - 保留在 egress stream 中，按 consumer 逻辑重试。
+   - 保留在 `outbox_deliveries` 中，按 consumer 逻辑重试并最终标记 `failed`。
 
 ## 11. 观测与告警
 
@@ -255,12 +255,12 @@ agent 容器 ready 条件：
 告警建议：
 - `SandboxClaim Ready` 超时率持续升高
 - router 5xx 持续升高
-- `stream:o:{room_id}` backlog 持续累积
+- `outbox_deliveries` backlog 持续累积
 
 ## 12. 本轮确认约束
 
 1. 官方控制面接口统一使用 `SandboxTemplate` 与 `SandboxClaim`。
 2. 官方通信接口统一使用 router + HTTP runtime。
 3. 不再给 sandbox 注入 per-room Redis ingress 配置。
-4. Redis 只保留主服务状态、缓存和 egress 职责。
+4. 主服务最小状态统一落 PostgreSQL，不再依赖 Redis。
 5. v0 默认软休眠，不启用 warm pool。

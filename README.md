@@ -11,7 +11,7 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
 - 按 `room_id` 调用 `ensure(room_id)`，通过 `SandboxClaim` 确保对应 sandbox 已就绪。
 - 主服务通过 `sandbox-router` 向 sandbox 内 `agent` 发送 HTTP 请求，不再让 sandbox 自拉 Redis ingress。
 - `agent` 在 sandbox 内提供 `/healthz`、`/agent`、`/execute`、`/upload`、`/download`、`/list`、`/exists` 等官方风格 HTTP 接口，内部使用 `claude_agent_sdk` 或 `echo` runtime 执行。
-- sandbox 返回回复后，主服务写入 `stream:o:{room_id}`，再由 egress consumer 统一回发企业微信。
+- sandbox 返回回复后，主服务把入站消息、出站消息和待发送回执写入 PostgreSQL，再由 egress consumer 从 outbox 统一回发企业微信。
 
 ## Agent Scaffold
 - `agent/`：独立的 TypeScript agent 子工程，当前提供：
@@ -32,9 +32,15 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
 2. 官方控制面接口采用 `SandboxTemplate + SandboxClaim`，不再由业务侧直接创建 `Sandbox`。
 3. 官方通信接口采用 `sandbox-router + HTTP runtime`，不再让 sandbox 自拉 Redis ingress。
 4. `SandboxClaim.name` 使用确定性命名：`clawagent-{room_id_lower}`。
-5. Redis 仍保留在主服务侧，用于 `msg:seq`、企业微信详情缓存、egress stream，以及 `lock:ensure:{room_id}` 防抖锁。
-6. 不建设独立 `room registry` 表，暂不维护中心化 `last_seen_at`。
-7. 空闲策略先采用软休眠；硬休眠、warm pool 和自动销毁后置到后续阶段。
+5. 主服务当前只保留最小 PostgreSQL 事实源：`ingest_cursors`、`messages`、`outbox_deliveries`。
+6. `ensure(room_id)` 当前只做单副本进程内 debounce，不引入额外锁表。
+7. 不建设独立 `room registry` 表，暂不维护中心化 `last_seen_at`。
+8. 空闲策略先采用软休眠；硬休眠、warm pool 和自动销毁后置到后续阶段。
+
+## 当前待办
+- 为进程内 `ttlCache` 增加过期项回收，避免长生命周期进程中缓存键只增不减。
+- 为 `ensure(room_id)` 的本地 debounce map 增加过期项回收，避免历史 `room_id` 持续堆积。
+- 为 `outbox_deliveries` 的发送完成/失败更新增加 attempt fencing，避免租约过期重领后旧 attempt 覆盖新状态。
 
 ## 项目目标
 构建云端 AI Agent Runtime，让企业员工可在企业微信私聊/群聊中与 agent 交互：
@@ -45,12 +51,12 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
 
 ## 企业微信详情解析
 - 私聊消息按 `from` 分流：
-  - 客户：调用 `externalcontact/get` 获取客户详情，Redis 缓存 `1h`
+  - 客户：调用 `externalcontact/get` 获取客户详情
   - 员工：调用 `user/get` 获取内部用户详情
 - 群聊消息按 `roomid` 分流：
   - 先调用 `msgaudit/groupchat/get` 解析内部群详情
   - 若不是内部群，再调用 `externalcontact/groupchat/get` 解析客户群详情
-- 群详情会写入 Redis 短缓存，供 egress 回发目标解析复用。
+- 进程内会做短期 TTL cache，避免同一批消息重复请求企业微信详情接口。
 
 ## K8s 部署
 - 命名空间固定为 `claw`。
@@ -60,7 +66,6 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
   - `k8s/secret.example.yaml`
   - `k8s/rbac.yaml`
   - `k8s/deployment.yaml`
-  - `k8s/redis.yaml`
   - `k8s/sandbox-router.yaml`
   - `k8s/sandboxtemplate.yaml`
 - K8s Deployment 资源名固定为 `clawman`（见 `k8s/deployment.yaml`）。
@@ -69,8 +74,7 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
   - agent-sandbox extensions
   - `sandbox-router`
   - 一个可复用的 `SandboxTemplate`
-- 仓库内提供一个单副本 `redis` Deployment + Service（见 `k8s/redis.yaml`），默认暴露为 `redis.claw.svc.cluster.local:6379`。
-- 当前 Redis 清单使用 `emptyDir` 保存 `/data`，适合开发/起步环境；如果需要持久化或高可用，后续应切到 PVC / 托管 Redis。
+- PostgreSQL 需要由外部服务或平台层提供；仓库当前不内置数据库部署清单。
 
 ## 配置分层
 - 非敏感配置进入 `ConfigMap` / GitHub `vars`
@@ -78,8 +82,7 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
 - Claude 运行时统一只使用 `ANTHROPIC_API_KEY` 与 `ANTHROPIC_BASE_URL`
 
 主服务关键配置：
-- `REDIS_ADDR`
-- `WECOM_SEQ_KEY`
+- `DATABASE_URL`
 - `SANDBOX_NAMESPACE`
 - `SANDBOX_TEMPLATE_NAME`
 - `SANDBOX_ROUTER_URL`
@@ -104,6 +107,7 @@ agent 运行时关键配置：
   - `TS_OAUTH_CLIENT_ID`
   - `TS_OAUTH_SECRET`
   - `KUBE_CONFIG`
+  - `DATABASE_URL`
   - `WECOM_CORP_SECRET`
   - `WECOM_RSA_PRIVATE_KEY`
   - `WECOM_CONTACT_SECRET`
@@ -111,11 +115,9 @@ agent 运行时关键配置：
   - `ANTHROPIC_API_KEY`（供 sandbox template 内 agent 使用）
 - 需要在 GitHub 仓库 variables 中配置：
   - `WECOM_CORP_ID`
-  - `REDIS_ADDR`
   - `WECOM_BOT_ID`
   - `ANTHROPIC_BASE_URL`
 - 可选覆盖的 GitHub variables：
-  - `WECOM_SEQ_KEY`
   - `SANDBOX_TEMPLATE_NAME`
   - `SANDBOX_ROUTER_URL`
   - `SANDBOX_SERVER_PORT`

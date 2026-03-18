@@ -11,7 +11,7 @@ Current architecture:
 - `clawman` ensures a per-room `SandboxClaim` using the official `agent-sandbox` extensions API.
 - `clawman` invokes the sandbox through `sandbox-router` over HTTP.
 - The sandboxed `agent` exposes `/healthz`, `/agent`, `/execute`, and the standard file APIs.
-- Replies are written to `stream:o:{room_id}` and sent out by the egress consumer.
+- Successful conversations are persisted to PostgreSQL and replies are sent by the egress consumer from `outbox_deliveries`.
 
 ## Build & Run
 
@@ -39,7 +39,7 @@ WeChat Work Finance SDK
   -> SandboxClaim ensure
   -> sandbox-router
   -> agent HTTP runtime (/agent)
-  -> Redis egress stream
+  -> PostgreSQL messages/outbox
   -> WorkTool / WeCom send
 ```
 
@@ -52,18 +52,15 @@ Key files:
 - `agent/src/server.ts` — `/healthz`, `/agent`, `/execute`, `/upload`, `/download`, `/list`, `/exists`
 - `agent/src/runtime.ts` — echo / `claude_agent_sdk`
 
-## Redis key conventions
+## Minimal PostgreSQL tables
 
-| Pattern | Purpose |
+| Table | Purpose |
 |---------|---------|
-| `msg:seq` | Last processed WeChat Work sequence number |
-| `wecom:contact:external:{id}` | External contact cache (1h TTL) |
-| `wecom:user:internal:{id}` | Internal user cache (1h TTL) |
-| `wecom:group:detail:{roomID}` | Group detail cache (1h TTL) |
-| `lock:ensure:{room_id}` | Ensure-once lock (3s TTL) |
-| `stream:o:{room_id}` | Egress reply stream |
+| `ingest_cursors` | Last processed WeChat Work sequence number |
+| `messages` | Successful inbound/outbound message records |
+| `outbox_deliveries` | Pending / retry / sent / failed egress jobs |
 
-Redis no longer carries sandbox ingress.
+Short-lived WeCom detail caching and ensure debounce are process-local in the current single-replica version.
 
 ## Conventions
 

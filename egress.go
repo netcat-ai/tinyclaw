@@ -2,173 +2,89 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
-	"strings"
-	"sync"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"tinyclaw/worktool"
 )
 
 const (
-	targetPrefix   = "wecom:target:"
-	egressGroup    = "cg:egress"
-	egressConsumer = "clawman"
+	maxDeliveryAttempts = 5
 )
 
-// EgressConsumer reads agent replies from per-room egress streams and sends them via WorkTool.
+type deliveryStore interface {
+	ClaimNextDelivery(ctx context.Context, lease time.Duration) (*Delivery, error)
+	MarkDeliverySent(ctx context.Context, id int64) error
+	MarkDeliveryRetry(ctx context.Context, id int64, backoff time.Duration, errText string) error
+	MarkDeliveryFailed(ctx context.Context, id int64, errText string) error
+}
+
+// EgressConsumer reads pending outbox rows from PostgreSQL and sends them via WorkTool.
 type EgressConsumer struct {
-	redis        *redis.Client
+	store        deliveryStore
 	worktool     *worktool.Client
 	pollInterval time.Duration
-
-	mu    sync.Mutex
-	rooms map[string]bool // registered room IDs
 }
 
-func NewEgressConsumer(rdb *redis.Client, wt *worktool.Client) *EgressConsumer {
+func NewEgressConsumer(store deliveryStore, wt *worktool.Client) *EgressConsumer {
 	return &EgressConsumer{
-		redis:        rdb,
+		store:        store,
 		worktool:     wt,
 		pollInterval: 500 * time.Millisecond,
-		rooms:        make(map[string]bool),
 	}
 }
 
-// RegisterRoom ensures the egress stream consumer group exists for a room
-// and adds it to the polling set. Safe to call multiple times for the same room.
-func (c *EgressConsumer) RegisterRoom(ctx context.Context, roomID string) {
-	c.mu.Lock()
-	if c.rooms[roomID] {
-		c.mu.Unlock()
-		return
-	}
-	c.rooms[roomID] = true
-	c.mu.Unlock()
-
-	stream := "stream:o:" + roomID
-	err := c.redis.XGroupCreateMkStream(ctx, stream, egressGroup, "0").Err()
-	if err != nil && !isGroupExistsErr(err) {
-		slog.Error("egress group create failed", "stream", stream, "err", err)
-	}
-}
-
-// Run blocks until ctx is cancelled, consuming from all registered egress streams.
+// Run blocks until ctx is cancelled, consuming pending outbox deliveries.
 func (c *EgressConsumer) Run(ctx context.Context) error {
-	c.discoverExistingRooms(ctx)
-
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
 
-		streams := c.buildStreamArgs()
-		if len(streams) == 0 {
-			// No rooms registered yet, wait a bit
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-time.After(500 * time.Millisecond):
-				continue
-			}
-		}
-
-		results, err := c.redis.XReadGroup(ctx, &redis.XReadGroupArgs{
-			Group:    egressGroup,
-			Consumer: egressConsumer,
-			Streams:  streams,
-			Count:    10,
-			Block:    c.pollInterval,
-		}).Result()
+		delivery, err := c.store.ClaimNextDelivery(ctx, defaultDeliveryLease)
 		if err != nil {
-			if err == redis.Nil || ctx.Err() != nil {
-				continue
+			if ctx.Err() != nil {
+				return nil
 			}
-			slog.Error("egress xreadgroup failed", "err", err)
+			slog.Error("egress claim delivery failed", "err", err)
 			time.Sleep(time.Second)
 			continue
 		}
-
-		for _, stream := range results {
-			for _, msg := range stream.Messages {
-				c.processMessage(ctx, stream.Stream, msg)
-			}
-		}
-	}
-}
-
-func (c *EgressConsumer) discoverExistingRooms(ctx context.Context) {
-	var cursor uint64
-	for {
-		keys, next, err := c.redis.Scan(ctx, cursor, "stream:o:*", 100).Result()
-		if err != nil {
-			slog.Error("egress scan streams failed", "err", err)
-			return
-		}
-		for _, key := range keys {
-			roomID := strings.TrimPrefix(key, "stream:o:")
-			if roomID == "" {
+		if delivery == nil {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(c.pollInterval):
 				continue
 			}
-			c.RegisterRoom(ctx, roomID)
 		}
-		if next == 0 {
-			return
+
+		if err := c.processDelivery(ctx, delivery); err != nil {
+			slog.Error("egress process delivery failed", "delivery_id", delivery.ID, "room_id", delivery.RoomID, "err", err)
 		}
-		cursor = next
 	}
 }
 
-// buildStreamArgs returns ["stream:o:room1", "stream:o:room2", ..., ">", ">", ...]
-func (c *EgressConsumer) buildStreamArgs() []string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if len(c.rooms) == 0 {
+func (c *EgressConsumer) processDelivery(ctx context.Context, delivery *Delivery) error {
+	if delivery.RoomID == "" || delivery.TargetName == "" || delivery.Content == "" {
+		errText := fmt.Sprintf("invalid delivery payload: room_id=%q target=%q content_len=%d", delivery.RoomID, delivery.TargetName, len(delivery.Content))
+		if err := c.store.MarkDeliveryFailed(ctx, delivery.ID, errText); err != nil {
+			return err
+		}
 		return nil
 	}
 
-	keys := make([]string, 0, len(c.rooms)*2)
-	for roomID := range c.rooms {
-		keys = append(keys, "stream:o:"+roomID)
-	}
-	for range c.rooms {
-		keys = append(keys, ">")
-	}
-	return keys
-}
-
-func (c *EgressConsumer) processMessage(ctx context.Context, streamKey string, msg redis.XMessage) {
-	roomID, _ := msg.Values["room_id"].(string)
-	text, _ := msg.Values["text"].(string)
-	replyMsgID, _ := msg.Values["msgid"].(string)
-
-	slog.Info("egress consumed response from redis", "stream", streamKey, "entry_id", msg.ID, "room_id", roomID, "msgid", replyMsgID)
-
-	if roomID == "" || text == "" {
-		slog.Warn("egress skip invalid message", "id", msg.ID, "stream", streamKey)
-		c.redis.XAck(ctx, streamKey, egressGroup, msg.ID)
-		return
+	if err := c.worktool.SendTextMessage(delivery.TargetName, delivery.Content, nil); err != nil {
+		if delivery.AttemptCount >= maxDeliveryAttempts {
+			return c.store.MarkDeliveryFailed(ctx, delivery.ID, err.Error())
+		}
+		return c.store.MarkDeliveryRetry(ctx, delivery.ID, defaultDeliveryBackoff, err.Error())
 	}
 
-	target, err := c.redis.Get(ctx, targetPrefix+roomID).Result()
-	if err != nil {
-		slog.Error("egress target lookup failed", "room_id", roomID, "err", err)
-		c.redis.XAck(ctx, streamKey, egressGroup, msg.ID)
-		return
+	if err := c.store.MarkDeliverySent(ctx, delivery.ID); err != nil {
+		return err
 	}
-
-	if err := c.worktool.SendTextMessage(target, text, nil); err != nil {
-		slog.Error("egress send failed", "room_id", roomID, "target", target, "err", err)
-		// Don't ACK — will be retried on next read
-		return
-	}
-
-	c.redis.XAck(ctx, streamKey, egressGroup, msg.ID)
-	slog.Info("egress sent", "room_id", roomID, "target", target)
-}
-
-func isGroupExistsErr(err error) bool {
-	return err != nil && err.Error() == "BUSYGROUP Consumer Group name already exists"
+	slog.Info("egress sent", "room_id", delivery.RoomID, "target", delivery.TargetName, "delivery_id", delivery.ID)
+	return nil
 }

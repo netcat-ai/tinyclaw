@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"tinyclaw/sandbox"
 	"tinyclaw/wecom"
 	"tinyclaw/wecom/finance"
@@ -41,14 +40,14 @@ type GroupDetail struct {
 
 type Clawman struct {
 	cfg        Config
-	redis      *redis.Client
+	store      *Store
 	sdk        *finance.SDK
 	contactAPI *wecom.Client
 	archiveAPI *wecom.Client
 	orch       *sandbox.Orchestrator
 	sandboxAPI *sandbox.RouterClient
 	egress     *EgressConsumer
-	seq        uint64
+	cache      *ttlCache
 }
 
 type WeComMessage struct {
@@ -64,7 +63,7 @@ type WeComMessage struct {
 
 func NewClawman(
 	cfg Config,
-	rdb *redis.Client,
+	store *Store,
 	orch *sandbox.Orchestrator,
 	sandboxAPI *sandbox.RouterClient,
 	egress *EgressConsumer,
@@ -93,13 +92,14 @@ func NewClawman(
 
 	return &Clawman{
 		cfg:        cfg,
-		redis:      rdb,
+		store:      store,
 		sdk:        sdk,
 		contactAPI: contactAPI,
 		archiveAPI: archiveAPI,
 		orch:       orch,
 		sandboxAPI: sandboxAPI,
 		egress:     egress,
+		cache:      newTTLCache(),
 	}, nil
 }
 
@@ -113,9 +113,9 @@ func (r *Clawman) Run(ctx context.Context) error {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 
-	seq, err := r.redis.Get(ctx, r.cfg.WeComSeqKey).Int64()
-	if err != nil && err != redis.Nil {
-		return fmt.Errorf("get seq from redis: %w", err)
+	seq, err := r.store.GetCursor(ctx, wecomCursorSource, r.cfg.WeComCorpID)
+	if err != nil {
+		return fmt.Errorf("get cursor from postgres: %w", err)
 	}
 	for {
 		seq, err = r.pullAndDispatch(ctx, seq, 100)
@@ -175,15 +175,14 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 			roomID = msg.From
 		}
 
-		if r.egress != nil {
-			r.egress.RegisterRoom(ctx, roomID)
-			r.cacheTarget(ctx, &msg, roomID)
-		}
-
 		text, err := extractWeComMessageText(msg.RawContent)
 		if err != nil {
 			slog.Warn("skip unsupported wecom message payload", "msgid", msg.MsgID, "room_id", roomID, "err", err)
 			continue
+		}
+		targetName, senderName, err := r.resolveRoutingTarget(ctx, &msg, roomID)
+		if err != nil {
+			return seq, fmt.Errorf("resolve target for room %s: %w", roomID, err)
 		}
 
 		if r.orch == nil || r.sandboxAPI == nil {
@@ -206,11 +205,35 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 			return seq, fmt.Errorf("invoke sandbox %s for room %s: %w", sandboxID, roomID, err)
 		}
 
-		if err := r.enqueueReply(ctx, roomID, msg.MsgID, reply.Stdout); err != nil {
-			return seq, fmt.Errorf("enqueue sandbox reply for room %s: %w", roomID, err)
+		stored, err := r.store.StoreConversation(ctx,
+			InboundMessageRecord{
+				ID:            "in:" + msg.MsgID,
+				TenantID:      r.cfg.WeComCorpID,
+				RoomID:        roomID,
+				PlatformMsgID: msg.MsgID,
+				SenderID:      msg.From,
+				SenderName:    senderName,
+				Content:       text,
+				RawPayload:    msg.RawContent,
+				CreatedAt:     time.UnixMilli(msg.MsgTime),
+			},
+			OutboundMessageRecord{
+				ID:         "out:" + msg.MsgID,
+				TenantID:   r.cfg.WeComCorpID,
+				RoomID:     roomID,
+				Content:    reply.Stdout,
+				TargetName: targetName,
+				CreatedAt:  time.Now().UTC(),
+			},
+		)
+		if err != nil {
+			return seq, fmt.Errorf("store conversation for room %s: %w", roomID, err)
 		}
-		if err := r.redis.Set(ctx, r.cfg.WeComSeqKey, chatData.Seq, 0).Err(); err != nil {
-			return seq, fmt.Errorf("set seq in redis: %w", err)
+		if !stored {
+			slog.Info("skip duplicate already persisted message", "msgid", msg.MsgID, "room_id", roomID)
+		}
+		if err := r.store.SetCursor(ctx, wecomCursorSource, r.cfg.WeComCorpID, chatData.Seq); err != nil {
+			return seq, fmt.Errorf("set cursor in postgres: %w", err)
 		}
 		seq = chatData.Seq
 	}
@@ -220,49 +243,35 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 
 func (r *Clawman) primeSenderIdentity(ctx context.Context, msg *WeComMessage) bool {
 	failKey := primeSenderFailCachePrefix + msg.From
-	if exists, err := r.redis.Exists(ctx, failKey).Result(); err == nil && exists > 0 {
+	if r.cache.Has(failKey) {
 		return false
 	}
 	if _, err := r.Resolve(ctx, msg.From); err != nil {
-		r.redis.Set(ctx, failKey, err.Error(), primeSenderFailTTL)
+		r.cache.Set(failKey, []byte(err.Error()), primeSenderFailTTL)
 		slog.Error("resolve sender on receive failed", "from", msg.From, "msgid", msg.MsgID, "err", err)
 		return false
 	}
 	return true
 }
 
-// cacheTarget resolves and caches the display name for a room/user so egress
-// can look it up later. Skips if already cached. Errors are logged, never returned.
-func (r *Clawman) cacheTarget(ctx context.Context, msg *WeComMessage, roomID string) {
-	key := targetPrefix + roomID
-	if exists, _ := r.redis.Exists(ctx, key).Result(); exists > 0 {
-		return
-	}
-
-	var target string
+func (r *Clawman) resolveRoutingTarget(ctx context.Context, msg *WeComMessage, roomID string) (targetName string, senderName string, err error) {
 	if msg.RoomID != "" {
-		// Group chat — resolve room metadata from customer-group or internal-group APIs.
 		group, err := r.ResolveGroup(ctx, msg.RoomID)
 		if err != nil {
-			slog.Warn("cache target: resolve group failed", "room_id", msg.RoomID, "err", err)
-			return
+			return "", "", err
 		}
-		target = group.Name
-	} else {
-		// Direct message — resolve sender from external-contact or internal-user API.
-		ident, err := r.Resolve(ctx, msg.From)
+		sender, err := r.Resolve(ctx, msg.From)
 		if err != nil {
-			slog.Warn("cache target: resolve sender failed", "from", msg.From, "err", err)
-			return
+			return group.Name, "", err
 		}
-		target = ident.Name
+		return group.Name, sender.Name, nil
 	}
 
-	if target == "" {
-		return
+	ident, err := r.Resolve(ctx, msg.From)
+	if err != nil {
+		return "", "", err
 	}
-	r.redis.Set(ctx, key, target, detailCacheTTL)
-	slog.Info("cached target", "room_id", roomID, "target", target)
+	return ident.Name, ident.Name, nil
 }
 
 // Resolve resolves a WeCom sender ID to an Identity.
@@ -273,7 +282,7 @@ func (r *Clawman) Resolve(ctx context.Context, id string) (*Identity, error) {
 		cacheKey = externalContactCachePrefix + id
 	}
 
-	if cached, err := r.redis.Get(ctx, cacheKey).Bytes(); err == nil {
+	if cached, ok := r.cache.Get(cacheKey); ok {
 		ident := &Identity{}
 		if json.Unmarshal(cached, ident) == nil {
 			return ident, nil
@@ -285,7 +294,7 @@ func (r *Clawman) Resolve(ctx context.Context, id string) (*Identity, error) {
 		return nil, err
 	}
 	if data, err := json.Marshal(ident); err == nil {
-		r.redis.Set(ctx, cacheKey, data, detailCacheTTL)
+		r.cache.Set(cacheKey, data, detailCacheTTL)
 	}
 	return ident, nil
 }
@@ -330,7 +339,7 @@ func (r *Clawman) resolveInternalUser(ctx context.Context, id string) (*Identity
 
 // ResolveGroup resolves a room ID to customer-group or internal-group metadata.
 func (r *Clawman) ResolveGroup(ctx context.Context, roomID string) (*GroupDetail, error) {
-	if cached, err := r.redis.Get(ctx, groupDetailCachePrefix+roomID).Bytes(); err == nil {
+	if cached, ok := r.cache.Get(groupDetailCachePrefix + roomID); ok {
 		detail := &GroupDetail{}
 		if json.Unmarshal(cached, detail) == nil {
 			return detail, nil
@@ -341,7 +350,7 @@ func (r *Clawman) ResolveGroup(ctx context.Context, roomID string) (*GroupDetail
 		return nil, err
 	}
 	if data, err := json.Marshal(detail); err == nil {
-		r.redis.Set(ctx, groupDetailCachePrefix+roomID, data, detailCacheTTL)
+		r.cache.Set(groupDetailCachePrefix+roomID, data, detailCacheTTL)
 	}
 	return detail, nil
 }
@@ -382,16 +391,4 @@ func chatTypeForRoom(roomID string) string {
 		return "direct"
 	}
 	return "group"
-}
-
-func (r *Clawman) enqueueReply(ctx context.Context, roomID, msgID, text string) error {
-	stream := "stream:o:" + roomID
-	return r.redis.XAdd(ctx, &redis.XAddArgs{
-		Stream: stream,
-		Values: map[string]any{
-			"room_id": roomID,
-			"msgid":   msgID,
-			"text":    text,
-		},
-	}).Err()
 }

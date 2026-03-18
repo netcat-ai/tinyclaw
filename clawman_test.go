@@ -6,31 +6,21 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
 	"tinyclaw/wecom"
 )
 
-func newTestClawman(t *testing.T, serverURL string) (*Clawman, *redis.Client) {
+func newTestClawman(t *testing.T, serverURL string) *Clawman {
 	t.Helper()
-
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() {
-		rdb.Close()
-		mr.Close()
-	})
 
 	wecom.SetBaseURL(serverURL)
 	t.Cleanup(wecom.ResetBaseURL)
 
 	return &Clawman{
-		redis:      rdb,
 		contactAPI: wecom.NewClient("corp-id", "contact-secret"),
 		archiveAPI: wecom.NewClient("corp-id", "corp-secret"),
-	}, rdb
+		cache:      newTTLCache(),
+	}
 }
 
 func newWeComTestServer(t *testing.T, handler func(w http.ResponseWriter, r *http.Request)) *httptest.Server {
@@ -61,7 +51,7 @@ func writeJSON(t *testing.T, w http.ResponseWriter, payload any) {
 	}
 }
 
-func TestResolveExternalContactUsesCustomerAPIAndCachesOneHour(t *testing.T) {
+func TestResolveExternalContactUsesCustomerAPIAndCaches(t *testing.T) {
 	var externalCalls int
 	var userCalls int
 
@@ -89,7 +79,7 @@ func TestResolveExternalContactUsesCustomerAPIAndCachesOneHour(t *testing.T) {
 		}
 	})
 
-	clawman, rdb := newTestClawman(t, server.URL)
+	clawman := newTestClawman(t, server.URL)
 	ctx := context.Background()
 
 	first, err := clawman.Resolve(ctx, "wm123")
@@ -112,11 +102,6 @@ func TestResolveExternalContactUsesCustomerAPIAndCachesOneHour(t *testing.T) {
 	}
 	if userCalls != 0 {
 		t.Fatalf("internal user API calls = %d, want 0", userCalls)
-	}
-
-	ttl := rdb.TTL(ctx, externalContactCachePrefix+"wm123").Val()
-	if ttl < 59*time.Minute || ttl > time.Hour {
-		t.Fatalf("cache ttl = %s, want about 1h", ttl)
 	}
 }
 
@@ -145,7 +130,7 @@ func TestResolveInternalUserUsesUserAPI(t *testing.T) {
 		}
 	})
 
-	clawman, _ := newTestClawman(t, server.URL)
+	clawman := newTestClawman(t, server.URL)
 	ctx := context.Background()
 
 	ident, err := clawman.Resolve(ctx, "zhangsan")
@@ -180,7 +165,7 @@ func TestResolveFailureDoesNotCachePlaceholder(t *testing.T) {
 		}
 	})
 
-	clawman, rdb := newTestClawman(t, server.URL)
+	clawman := newTestClawman(t, server.URL)
 	ctx := context.Background()
 
 	if _, err := clawman.Resolve(ctx, "wm123"); err == nil {
@@ -191,9 +176,6 @@ func TestResolveFailureDoesNotCachePlaceholder(t *testing.T) {
 	}
 	if externalCalls != 2 {
 		t.Fatalf("external contact API calls = %d, want 2", externalCalls)
-	}
-	if ttl := rdb.TTL(ctx, externalContactCachePrefix+"wm123").Val(); ttl != -2 {
-		t.Fatalf("cache ttl = %s, want missing key", ttl)
 	}
 }
 
@@ -218,7 +200,7 @@ func TestPrimeSenderIdentityUsesResolveCache(t *testing.T) {
 		}
 	})
 
-	clawman, _ := newTestClawman(t, server.URL)
+	clawman := newTestClawman(t, server.URL)
 	ctx := context.Background()
 	msg := &WeComMessage{MsgID: "msg-1", From: "zhangsan"}
 
@@ -249,7 +231,7 @@ func TestPrimeSenderIdentityFailureReturnsFalse(t *testing.T) {
 		}
 	})
 
-	clawman, rdb := newTestClawman(t, server.URL)
+	clawman := newTestClawman(t, server.URL)
 	ctx := context.Background()
 	msg := &WeComMessage{MsgID: "msg-2", From: "wm123"}
 
@@ -262,12 +244,8 @@ func TestPrimeSenderIdentityFailureReturnsFalse(t *testing.T) {
 	if externalCalls != 1 {
 		t.Fatalf("external contact API calls = %d, want 1", externalCalls)
 	}
-	if ttl := rdb.TTL(ctx, externalContactCachePrefix+"wm123").Val(); ttl != -2 {
-		t.Fatalf("cache ttl = %s, want missing key", ttl)
-	}
-	ttl := rdb.TTL(ctx, primeSenderFailCachePrefix+"wm123").Val()
-	if ttl <= 0 || ttl > primeSenderFailTTL {
-		t.Fatalf("prime sender fail cache ttl = %s, want within 0-%s", ttl, primeSenderFailTTL)
+	if !clawman.cache.Has(primeSenderFailCachePrefix + "wm123") {
+		t.Fatal("prime sender failure should be cached in memory")
 	}
 }
 
@@ -322,7 +300,7 @@ func TestResolveGroupUsesArchiveFirstThenFallsBackToCustomerGroup(t *testing.T) 
 		}
 	})
 
-	clawman, rdb := newTestClawman(t, server.URL)
+	clawman := newTestClawman(t, server.URL)
 	ctx := context.Background()
 
 	customerGroup, err := clawman.ResolveGroup(ctx, "room-customer")
@@ -353,11 +331,6 @@ func TestResolveGroupUsesArchiveFirstThenFallsBackToCustomerGroup(t *testing.T) 
 	if customerGroupCalls != 1 {
 		t.Fatalf("customer group API calls = %d, want 1", customerGroupCalls)
 	}
-
-	ttl := rdb.TTL(ctx, groupDetailCachePrefix+"room-internal").Val()
-	if ttl < 59*time.Minute || ttl > time.Hour {
-		t.Fatalf("group cache ttl = %s, want about 1h", ttl)
-	}
 }
 
 func TestResolveGroupFailureDoesNotCachePlaceholder(t *testing.T) {
@@ -383,7 +356,7 @@ func TestResolveGroupFailureDoesNotCachePlaceholder(t *testing.T) {
 		}
 	})
 
-	clawman, rdb := newTestClawman(t, server.URL)
+	clawman := newTestClawman(t, server.URL)
 	ctx := context.Background()
 
 	if _, err := clawman.ResolveGroup(ctx, "room-missing"); err == nil {
@@ -397,8 +370,5 @@ func TestResolveGroupFailureDoesNotCachePlaceholder(t *testing.T) {
 	}
 	if customerGroupCalls != 2 {
 		t.Fatalf("customer group API calls = %d, want 2", customerGroupCalls)
-	}
-	if ttl := rdb.TTL(ctx, groupDetailCachePrefix+"room-missing").Val(); ttl != -2 {
-		t.Fatalf("group cache ttl = %s, want missing key", ttl)
 	}
 }

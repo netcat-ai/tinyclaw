@@ -1,54 +1,78 @@
-//go:build integration
-
 package main
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"tinyclaw/worktool"
 )
 
-func integrationRedisForEgress(t *testing.T) *redis.Client {
-	t.Helper()
-	addr := os.Getenv("REDIS_ADDR")
-	if addr == "" {
-		addr = "localhost:6379"
-	}
-	rdb := redis.NewClient(&redis.Options{Addr: addr})
-	ctx := context.Background()
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		t.Skipf("skipping: cannot connect to Redis at %s: %v", addr, err)
-	}
-	t.Cleanup(func() { rdb.Close() })
-	return rdb
+type fakeDeliveryStore struct {
+	mu        sync.Mutex
+	queue     []*Delivery
+	sent      []int64
+	retried   []int64
+	failed    []int64
+	lastError map[int64]string
 }
 
-func setupEgressConsumer(t *testing.T, wtServer *httptest.Server) (*EgressConsumer, *redis.Client) {
-	t.Helper()
-	rdb := integrationRedisForEgress(t)
-
-	worktool.SetBaseURL(wtServer.URL)
-	t.Cleanup(func() { worktool.ResetBaseURL() })
-
-	wt := worktool.NewClient("test-robot")
-	consumer := NewEgressConsumer(rdb, wt)
-	consumer.pollInterval = 100 * time.Millisecond
-	return consumer, rdb
+func newFakeDeliveryStore(deliveries ...*Delivery) *fakeDeliveryStore {
+	return &fakeDeliveryStore{
+		queue:     deliveries,
+		lastError: make(map[int64]string),
+	}
 }
 
-func TestEgress_SendText(t *testing.T) {
+func (s *fakeDeliveryStore) ClaimNextDelivery(ctx context.Context, lease time.Duration) (*Delivery, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.queue) == 0 {
+		return nil, nil
+	}
+	d := s.queue[0]
+	s.queue = s.queue[1:]
+	return d, nil
+}
+
+func (s *fakeDeliveryStore) MarkDeliverySent(ctx context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sent = append(s.sent, id)
+	return nil
+}
+
+func (s *fakeDeliveryStore) MarkDeliveryRetry(ctx context.Context, id int64, backoff time.Duration, errText string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.retried = append(s.retried, id)
+	s.lastError[id] = errText
+	return nil
+}
+
+func (s *fakeDeliveryStore) MarkDeliveryFailed(ctx context.Context, id int64, errText string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failed = append(s.failed, id)
+	s.lastError[id] = errText
+	return nil
+}
+
+func TestEgress_RunSendsPendingDelivery(t *testing.T) {
 	var gotBody worktool.SendMessageRequest
 	called := make(chan struct{}, 1)
 	wtServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&gotBody)
-		json.NewEncoder(w).Encode(worktool.SendMessageResponse{Code: 200, Message: "ok"})
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode worktool request: %v", err)
+		}
+		if err := json.NewEncoder(w).Encode(worktool.SendMessageResponse{Code: 200, Message: "ok"}); err != nil {
+			t.Fatalf("encode worktool response: %v", err)
+		}
 		select {
 		case called <- struct{}{}:
 		default:
@@ -56,51 +80,32 @@ func TestEgress_SendText(t *testing.T) {
 	}))
 	defer wtServer.Close()
 
-	consumer, rdb := setupEgressConsumer(t, wtServer)
+	worktool.SetBaseURL(wtServer.URL)
+	defer worktool.ResetBaseURL()
+
+	store := newFakeDeliveryStore(&Delivery{
+		ID:         1,
+		RoomID:     "room-1",
+		TargetName: "测试群",
+		Content:    "hello from agent",
+	})
+	consumer := NewEgressConsumer(store, worktool.NewClient("test-robot"))
+	consumer.pollInterval = 10 * time.Millisecond
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	roomID := "egress-test-send"
-	streamKey := "stream:o:" + roomID
-	targetKey := "wecom:target:" + roomID
-
-	// Pre-clean
-	rdb.Del(ctx, streamKey, targetKey)
-	t.Cleanup(func() {
-		rdb.Del(context.Background(), streamKey, targetKey)
-	})
-
-	// Set up target mapping
-	rdb.Set(ctx, targetKey, "测试群", 0)
-
-	// Register the room so consumer group exists
-	consumer.RegisterRoom(ctx, roomID)
-
-	// Run consumer in background
 	done := make(chan struct{})
 	go func() {
-		consumer.Run(ctx)
+		_ = consumer.Run(ctx)
 		close(done)
 	}()
 
-	// Add message after consumer is running
-	time.Sleep(50 * time.Millisecond)
-	rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: streamKey,
-		Values: map[string]any{
-			"room_id": roomID,
-			"text":    "hello from agent",
-			"msgid":   "1234-0",
-		},
-	})
-
-	// Wait for WorkTool to be called
 	select {
 	case <-called:
-	case <-time.After(5 * time.Second):
+	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for worktool call")
 	}
-
 	cancel()
 	<-done
 
@@ -108,181 +113,107 @@ func TestEgress_SendText(t *testing.T) {
 		t.Fatalf("worktool got %d items, want 1", len(gotBody.List))
 	}
 	if gotBody.List[0].TitleList[0] != "测试群" {
-		t.Errorf("target = %q, want %q", gotBody.List[0].TitleList[0], "测试群")
+		t.Fatalf("target = %q, want %q", gotBody.List[0].TitleList[0], "测试群")
 	}
 	if gotBody.List[0].ReceivedContent != "hello from agent" {
-		t.Errorf("content = %q, want %q", gotBody.List[0].ReceivedContent, "hello from agent")
+		t.Fatalf("content = %q, want %q", gotBody.List[0].ReceivedContent, "hello from agent")
+	}
+	if len(store.sent) != 1 || store.sent[0] != 1 {
+		t.Fatalf("sent ids = %v, want [1]", store.sent)
 	}
 }
 
-func TestEgress_TargetNotFound(t *testing.T) {
-	wtCalled := make(chan struct{}, 1)
-	wtServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(worktool.SendMessageResponse{Code: 200, Message: "ok"})
-		select {
-		case wtCalled <- struct{}{}:
-		default:
-		}
-	}))
-	defer wtServer.Close()
+func TestEgress_InvalidDeliveryIsMarkedFailed(t *testing.T) {
+	worktool.SetBaseURL("http://127.0.0.1:1")
+	defer worktool.ResetBaseURL()
 
-	consumer, rdb := setupEgressConsumer(t, wtServer)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	roomID := "egress-test-notarget"
-	streamKey := "stream:o:" + roomID
-
-	rdb.Del(ctx, streamKey)
-	t.Cleanup(func() {
-		rdb.Del(context.Background(), streamKey)
+	store := newFakeDeliveryStore(&Delivery{
+		ID:         2,
+		RoomID:     "",
+		TargetName: "缺少 room",
+		Content:    "hello",
 	})
+	consumer := NewEgressConsumer(store, worktool.NewClient("test-robot"))
 
-	// Register room
-	consumer.RegisterRoom(ctx, roomID)
-
-	// Run consumer
-	done := make(chan struct{})
-	go func() {
-		consumer.Run(ctx)
-		close(done)
-	}()
-
-	// No target set — add message
-	time.Sleep(50 * time.Millisecond)
-	rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: streamKey,
-		Values: map[string]any{
-			"room_id": roomID,
-			"text":    "hello",
-			"msgid":   "1234-0",
-		},
-	})
-
-	// Give consumer time to process, then verify worktool was NOT called
-	select {
-	case <-wtCalled:
-		t.Error("worktool was called despite missing target")
-	case <-time.After(500 * time.Millisecond):
-		// Expected: worktool not called
+	if err := consumer.processDelivery(context.Background(), &Delivery{
+		ID:         2,
+		RoomID:     "",
+		TargetName: "缺少 room",
+		Content:    "hello",
+	}); err != nil {
+		t.Fatalf("processDelivery error: %v", err)
 	}
-
-	cancel()
-	<-done
-}
-
-func TestEgress_RecoversExistingStreamOnStartup(t *testing.T) {
-	var gotBody worktool.SendMessageRequest
-	called := make(chan struct{}, 1)
-	wtServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&gotBody)
-		json.NewEncoder(w).Encode(worktool.SendMessageResponse{Code: 200, Message: "ok"})
-		select {
-		case called <- struct{}{}:
-		default:
-		}
-	}))
-	defer wtServer.Close()
-
-	consumer, rdb := setupEgressConsumer(t, wtServer)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	roomID := "egress-test-recover"
-	streamKey := "stream:o:" + roomID
-	targetKey := "wecom:target:" + roomID
-
-	rdb.Del(ctx, streamKey, targetKey)
-	t.Cleanup(func() {
-		rdb.Del(context.Background(), streamKey, targetKey)
-	})
-
-	rdb.Set(ctx, targetKey, "恢复测试群", 0)
-	rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: streamKey,
-		Values: map[string]any{
-			"room_id": roomID,
-			"text":    "recover existing egress stream",
-			"msgid":   "recover-1234-0",
-		},
-	})
-
-	done := make(chan struct{})
-	go func() {
-		consumer.Run(ctx)
-		close(done)
-	}()
-
-	select {
-	case <-called:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for worktool call from recovered egress stream")
-	}
-
-	cancel()
-	<-done
-
-	if len(gotBody.List) != 1 {
-		t.Fatalf("worktool got %d items, want 1", len(gotBody.List))
-	}
-	if gotBody.List[0].TitleList[0] != "恢复测试群" {
-		t.Errorf("target = %q, want %q", gotBody.List[0].TitleList[0], "恢复测试群")
-	}
-	if gotBody.List[0].ReceivedContent != "recover existing egress stream" {
-		t.Errorf("content = %q, want %q", gotBody.List[0].ReceivedContent, "recover existing egress stream")
+	if len(store.failed) != 1 || store.failed[0] != 2 {
+		t.Fatalf("failed ids = %v, want [2]", store.failed)
 	}
 }
 
-func TestEgress_InvalidMessage(t *testing.T) {
-	wtCalled := make(chan struct{}, 1)
+func TestEgress_SendFailureMarksRetry(t *testing.T) {
 	wtServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(worktool.SendMessageResponse{Code: 200, Message: "ok"})
-		select {
-		case wtCalled <- struct{}{}:
-		default:
-		}
+		http.Error(w, "boom", http.StatusBadGateway)
 	}))
 	defer wtServer.Close()
 
-	consumer, rdb := setupEgressConsumer(t, wtServer)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	worktool.SetBaseURL(wtServer.URL)
+	defer worktool.ResetBaseURL()
 
-	roomID := "egress-test-invalid"
-	streamKey := "stream:o:" + roomID
+	store := newFakeDeliveryStore()
+	consumer := NewEgressConsumer(store, worktool.NewClient("test-robot"))
 
-	rdb.Del(ctx, streamKey)
-	t.Cleanup(func() {
-		rdb.Del(context.Background(), streamKey)
+	err := consumer.processDelivery(context.Background(), &Delivery{
+		ID:           3,
+		RoomID:       "room-3",
+		TargetName:   "测试群",
+		Content:      "hello",
+		AttemptCount: 1,
 	})
-
-	// Register room
-	consumer.RegisterRoom(ctx, roomID)
-
-	// Run consumer
-	done := make(chan struct{})
-	go func() {
-		consumer.Run(ctx)
-		close(done)
-	}()
-
-	// Missing room_id field
-	time.Sleep(50 * time.Millisecond)
-	rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: streamKey,
-		Values: map[string]any{
-			"text": "hello",
-		},
-	})
-
-	// Verify worktool was NOT called
-	select {
-	case <-wtCalled:
-		t.Fatal("worktool should not be called for invalid message")
-	case <-time.After(500 * time.Millisecond):
-		// Expected
+	if err != nil {
+		t.Fatalf("processDelivery error: %v", err)
 	}
+	if len(store.retried) != 1 || store.retried[0] != 3 {
+		t.Fatalf("retried ids = %v, want [3]", store.retried)
+	}
+	if store.lastError[3] == "" {
+		t.Fatal("retry should record last error")
+	}
+}
 
+func TestEgress_SendFailureMarksPermanentFailureAtRetryLimit(t *testing.T) {
+	wtServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusBadGateway)
+	}))
+	defer wtServer.Close()
+
+	worktool.SetBaseURL(wtServer.URL)
+	defer worktool.ResetBaseURL()
+
+	store := newFakeDeliveryStore()
+	consumer := NewEgressConsumer(store, worktool.NewClient("test-robot"))
+
+	err := consumer.processDelivery(context.Background(), &Delivery{
+		ID:           4,
+		RoomID:       "room-4",
+		TargetName:   "测试群",
+		Content:      "hello",
+		AttemptCount: maxDeliveryAttempts,
+	})
+	if err != nil {
+		t.Fatalf("processDelivery error: %v", err)
+	}
+	if len(store.failed) != 1 || store.failed[0] != 4 {
+		t.Fatalf("failed ids = %v, want [4]", store.failed)
+	}
+}
+
+func TestEgress_RunReturnsOnContextCancel(t *testing.T) {
+	store := newFakeDeliveryStore()
+	consumer := NewEgressConsumer(store, worktool.NewClient("test-robot"))
+	consumer.pollInterval = 10 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	<-done
+
+	if err := consumer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want nil/context canceled", err)
+	}
 }

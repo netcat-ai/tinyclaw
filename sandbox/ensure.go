@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	sandboxv1alpha1 "sigs.k8s.io/agent-sandbox/api/v1alpha1"
@@ -16,8 +16,7 @@ import (
 )
 
 const (
-	lockPrefix          = "lock:ensure:"
-	lockTTL             = 3 * time.Second
+	ensureDebounceTTL   = 3 * time.Second
 	defaultReadyTimeout = 3 * time.Minute
 	defaultPollInterval = time.Second
 )
@@ -31,11 +30,12 @@ type Config struct {
 
 type Orchestrator struct {
 	client extensionsclient.Interface
-	redis  *redis.Client
 	cfg    Config
+	mu     sync.Mutex
+	recent map[string]time.Time
 }
 
-func NewOrchestrator(client extensionsclient.Interface, rdb *redis.Client, cfg Config) *Orchestrator {
+func NewOrchestrator(client extensionsclient.Interface, cfg Config) *Orchestrator {
 	if cfg.ReadyTimeout <= 0 {
 		cfg.ReadyTimeout = defaultReadyTimeout
 	}
@@ -45,8 +45,8 @@ func NewOrchestrator(client extensionsclient.Interface, rdb *redis.Client, cfg C
 
 	return &Orchestrator{
 		client: client,
-		redis:  rdb,
 		cfg:    cfg,
+		recent: make(map[string]time.Time),
 	}
 }
 
@@ -59,14 +59,9 @@ func (o *Orchestrator) EnsureReady(ctx context.Context, roomID string) (string, 
 	}
 
 	claimName := sandboxName(roomID)
-	locked, err := o.redis.SetNX(ctx, lockPrefix+roomID, "1", lockTTL).Result()
-	if err != nil {
-		return "", fmt.Errorf("ensure lock check failed: %w", err)
-	}
-
-	if locked {
+	if o.shouldCreate(roomID) {
 		claim := buildSandboxClaim(claimName, o.cfg, roomID)
-		_, err = o.client.ExtensionsV1alpha1().SandboxClaims(o.cfg.Namespace).Create(
+		_, err := o.client.ExtensionsV1alpha1().SandboxClaims(o.cfg.Namespace).Create(
 			ctx,
 			claim,
 			metav1.CreateOptions{},
@@ -87,6 +82,18 @@ func (o *Orchestrator) EnsureReady(ctx context.Context, roomID string) (string, 
 	}
 
 	return sandboxID, nil
+}
+
+func (o *Orchestrator) shouldCreate(roomID string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	now := time.Now()
+	if last, ok := o.recent[roomID]; ok && now.Sub(last) < ensureDebounceTTL {
+		return false
+	}
+	o.recent[roomID] = now
+	return true
 }
 
 func (o *Orchestrator) waitUntilReady(ctx context.Context, claimName string) (string, error) {
