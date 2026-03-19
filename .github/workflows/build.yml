@@ -10,7 +10,7 @@ jobs:
     name: Go Test
     runs-on: ubuntu-24.04
     container:
-      image: golang:1.25.8-bookworm
+      image: golang:1.26.1-bookworm
     services:
       redis:
         image: redis:7
