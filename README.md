@@ -9,7 +9,7 @@
 TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
 - `clawman` 从企业微信会话存档拉取消息、解密并标准化。
 - 主服务通过官方 Go SDK 管理 sandbox 生命周期，并在进程内按 `room_id` 复用已打开的 sandbox client。
-- 官方 Go SDK 当前走 direct-url 模式连接 `sandbox-router`，再通过 `/execute` 在 sandbox 内部桥接调用本机 `POST /agent`。
+- 官方 Go SDK 当前走默认的 `port-forward` 模式直连 sandbox，再通过 `/execute` 在 sandbox 内部桥接调用本机 `POST /agent`。
 - `agent` 在 sandbox 内提供 `/healthz`、`/agent`、`/execute`、`/upload`、`/download`、`/list`、`/exists` 等官方风格 HTTP 接口，内部使用 `claude_agent_sdk` 或 `echo` runtime 执行。
 - sandbox 返回回复后，主服务把入站消息、出站消息和待发送回执写入 PostgreSQL，再由 egress consumer 从 outbox 统一回发企业微信。
 
@@ -30,7 +30,7 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
 ## 当前共识（2026-03-16）
 1. 统一房间标识：`room_id = {roomid_or_from}`，群聊取 `roomid`，私聊取 `from`；`tenant_id` 和 `chat_type` 作为独立字段保留。
 2. 官方控制面接口采用 `SandboxTemplate + SandboxClaim`，不再由业务侧直接创建 `Sandbox`。
-3. 官方通信接口采用 `sandbox-router + HTTP runtime`，不再让 sandbox 自拉 Redis ingress。
+3. 官方通信接口采用 Go SDK `port-forward + HTTP runtime`，不再让 sandbox 自拉 Redis ingress。
 4. sandbox 生命周期统一通过官方 Go SDK 管理；当前 SDK 不支持自定义确定性 claim 名称，因此 room 级复用先采用进程内 client cache。
 5. 主服务当前只保留最小 PostgreSQL 事实源：`ingest_cursors`、`messages`、`outbox_deliveries`。
 6. 主服务当前按 `room_id` 维护进程内 sandbox session，并以 SDK `Open()` 作为 session 可调用条件。
@@ -67,13 +67,11 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
   - `k8s/secret.example.yaml`
   - `k8s/rbac.yaml`
   - `k8s/deployment.yaml`
-  - `k8s/sandbox-router.yaml`
   - `k8s/sandboxtemplate.yaml`
 - K8s Deployment 资源名固定为 `clawman`（见 `k8s/deployment.yaml`）。
 - 主服务需要集群内已部署：
   - agent-sandbox core controller
   - agent-sandbox extensions
-  - `sandbox-router`
   - 一个可复用的 `SandboxTemplate`
 - PostgreSQL 需要由外部服务或平台层提供；仓库当前不内置数据库部署清单。
 
@@ -86,13 +84,11 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
 - `DATABASE_URL`
 - `SANDBOX_NAMESPACE`
 - `SANDBOX_TEMPLATE_NAME`
-- `SANDBOX_ROUTER_URL`
 - `SANDBOX_SERVER_PORT`
 
 默认值：
 - `SANDBOX_NAMESPACE=claw`
 - `SANDBOX_TEMPLATE_NAME=tinyclaw-agent-template`
-- `SANDBOX_ROUTER_URL=http://sandbox-router-svc.{namespace}.svc.cluster.local:8080`
 - `SANDBOX_SERVER_PORT=8888`
 
 agent 运行时关键配置：
@@ -120,5 +116,4 @@ agent 运行时关键配置：
   - `ANTHROPIC_BASE_URL`
 - 可选覆盖的 GitHub variables：
   - `SANDBOX_TEMPLATE_NAME`
-  - `SANDBOX_ROUTER_URL`
   - `SANDBOX_SERVER_PORT`

@@ -8,7 +8,7 @@ Cloud-based AI Agent Runtime for WeChat Work (企业微信).
 
 Current architecture:
 - `clawman` pulls encrypted messages from the WeChat Work Finance SDK.
-- `clawman` ensures a per-room `SandboxClaim` using the official `agent-sandbox` extensions API.
+- `clawman` uses the official `agent-sandbox` Go SDK to open and reuse sandbox clients.
 - `clawman` invokes the sandbox through `sandbox-router` over HTTP.
 - The sandboxed `agent` exposes `/healthz`, `/agent`, `/execute`, and the standard file APIs.
 - Successful conversations are persisted to PostgreSQL and replies are sent by the egress consumer from `outbox_deliveries`.
@@ -36,7 +36,7 @@ See `config.go` for the current main-service env contract.
 ```text
 WeChat Work Finance SDK
   -> Clawman (poll / decrypt / normalize)
-  -> SandboxClaim ensure
+  -> agent-sandbox Go SDK open
   -> sandbox-router
   -> agent HTTP runtime (/agent)
   -> PostgreSQL messages/outbox
@@ -46,7 +46,7 @@ WeChat Work Finance SDK
 Key files:
 - `main.go` — main service entry point
 - `clawman.go` — ingress pull loop, WeCom metadata resolution, sandbox invocation
-- `sandbox/ensure.go` — `SandboxClaim` create-or-get + ready wait
+- `sandbox/ensure.go` — official Go SDK room client manager + `/agent` bridge
 - `sandbox/router.go` — router HTTP client
 - `agent/src/main.ts` — sandbox HTTP runtime entry
 - `agent/src/server.ts` — `/healthz`, `/agent`, `/execute`, `/upload`, `/download`, `/list`, `/exists`

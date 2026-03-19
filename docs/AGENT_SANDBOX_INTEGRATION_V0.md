@@ -4,8 +4,7 @@
 
 把 `kubernetes-sigs/agent-sandbox` 作为 TinyClaw 的执行层底座，并且对齐官方扩展接口：
 - 用 `SandboxTemplate` 描述统一 agent 运行环境。
-- 用官方 Go SDK 管理 `SandboxClaim` 生命周期与 router 连接。
-- 用 `sandbox-router` 作为 SDK direct-url 模式的入口。
+- 用官方 Go SDK 管理 `SandboxClaim` 生命周期与 sandbox 连接。
 - 不再使用“sandbox 自拉 Redis ingress”的旧链路。
 
 非目标：
@@ -87,21 +86,15 @@ spec:
 ready 判定：
 - `status.conditions[type=Ready].status == True`
 
-### 4.3 Router
-SDK direct-url 模式需要一个固定 router 地址，例如：
-
-```text
-http://sandbox-router-svc.claw.svc.cluster.local:8080
-```
-
-具体 `X-Sandbox-*` 头由官方 Go SDK 内部注入，业务层不再直接拼装。
+### 4.3 SDK 连接模式
+当前实现不再额外部署 router，官方 Go SDK 直接使用默认 `port-forward` 模式连接 sandbox。
 
 ## 5. 数据面契约
 
 ### 5.1 主服务 -> sandbox
 
-当前实现不是主服务直接调用 router `/agent`，而是：
-1. SDK 调用 router `/execute`
+当前实现不是主服务直接调用 sandbox `/agent`，而是：
+1. SDK 通过 `port-forward` 调用 sandbox `/execute`
 2. sandbox 在本机执行 `curl http://127.0.0.1:8888/agent`
 3. `/agent` 返回的 JSON 再透传回主服务
 
@@ -234,10 +227,10 @@ agent 容器 ready 条件：
    - 当前消息不推进 `ingest_cursors.cursor`，下一轮重试。
 2. `SandboxClaim` 长时间未 ready
    - 视为当前消息失败，记日志并重试。
-3. router 调用失败
+3. SDK 到 sandbox 的调用失败
    - 视为当前消息失败，不推进 cursor。
 4. agent 运行失败
-   - router 返回 5xx，主服务记录并重试。
+   - SDK 返回错误，主服务记录并重试。
 5. egress 回发失败
    - 保留在 `outbox_deliveries` 中，按 consumer 逻辑重试并最终标记 `failed`。
 
@@ -252,13 +245,13 @@ agent 容器 ready 条件：
 
 告警建议：
 - `SandboxClaim Ready` 超时率持续升高
-- router 5xx 持续升高
+- SDK sandbox 调用错误率持续升高
 - `outbox_deliveries` backlog 持续累积
 
 ## 12. 本轮确认约束
 
 1. 官方控制面接口统一使用 `SandboxTemplate` 与 `SandboxClaim`。
-2. 官方通信接口统一使用 router + HTTP runtime。
+2. 官方通信接口统一使用 Go SDK `port-forward` + HTTP runtime。
 3. 不再给 sandbox 注入 per-room Redis ingress 配置。
 4. 主服务最小状态统一落 PostgreSQL，不再依赖 Redis。
 5. v0 默认软休眠，不启用 warm pool。

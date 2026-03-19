@@ -7,6 +7,5 @@ data:
   WECOM_CORP_ID: "replace-me"
   WECOM_BOT_ID: "moss"
   SANDBOX_TEMPLATE_NAME: "tinyclaw-agent-template"
-  SANDBOX_ROUTER_URL: "http://sandbox-router-svc.claw.svc.cluster.local:8080"
   SANDBOX_SERVER_PORT: "8888"
   ANTHROPIC_BASE_URL: "https://api.anthropic.com"

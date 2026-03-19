@@ -48,7 +48,6 @@ func main() {
 	orch := sandbox.NewOrchestrator(sandbox.Config{
 		Namespace:    cfg.SandboxNamespace,
 		TemplateName: cfg.SandboxTemplateName,
-		APIURL:       cfg.SandboxRouterURL,
 		ServerPort:   cfg.SandboxServerPort,
 		ReadyTimeout: time.Duration(cfg.SandboxReadyTimeoutSec) * time.Second,
 		RestConfig:   k8sCfg,
@@ -57,7 +56,7 @@ func main() {
 		"sandbox sdk integration enabled",
 		"namespace", cfg.SandboxNamespace,
 		"template", cfg.SandboxTemplateName,
-		"api_url", cfg.SandboxRouterURL,
+		"connect_mode", "port-forward",
 		"server_port", cfg.SandboxServerPort,
 	)
 

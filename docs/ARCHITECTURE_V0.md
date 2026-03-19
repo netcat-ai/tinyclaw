@@ -44,7 +44,7 @@ tinyclaw 是一个面向企业微信会话的 AI Agent Runtime：
                                                      v
                               +-------------------------------------------+
                               | agent-sandbox extensions                  |
-                              | SandboxTemplate + SandboxClaim + router   |
+                              | SandboxTemplate + SandboxClaim            |
                               +-------------------+-----------------------+
                                                   |
                                                   v
@@ -84,9 +84,6 @@ room_id = {roomid_or_from}
 - `SandboxClaim`
   - 由官方 Go SDK 在 `Open()` 时创建并等待 ready。
   - 当前 SDK 不支持自定义 claim 名称，claim identity 由 SDK 内部生成并保存在进程内 handle。
-- `sandbox-router`
-  - 作为统一入口，根据请求头把流量转发到对应 sandbox service。
-
 ### 4.2 生命周期约定
 
 ```text
@@ -109,8 +106,8 @@ SDK client.Open() -> create SandboxClaim -> wait Sandbox ready
 6. 拿到回复后把入站消息、出站消息和 outbox 记录写入 PostgreSQL。
 7. egress consumer 轮询 outbox 并统一回发企业微信。
 
-### 5.2 Router 调用契约
-当前主服务不再直接从集群外拼接 router 请求头，而是让官方 Go SDK 用 direct-url 模式连接 router，并通过 `/execute` 在 sandbox 内部调用：
+### 5.2 SDK 调用契约
+当前主服务让官方 Go SDK 通过默认 `port-forward` 连接 sandbox，并通过 `/execute` 在 sandbox 内部调用：
 
 ```text
 POST http://127.0.0.1:{AGENT_SERVER_PORT}/agent
@@ -217,8 +214,8 @@ PID 1: tini / entrypoint
 - `egress_retry_count`
 
 ## 10. 结论
-v0 方案的重点已经从“Redis 驱动 sandbox 自拉”切换为“官方 agent-sandbox Go SDK + router/direct-url + PostgreSQL 最小事实源”：
+v0 方案的重点已经从“Redis 驱动 sandbox 自拉”切换为“官方 agent-sandbox Go SDK + port-forward + PostgreSQL 最小事实源”：
 - 控制面更贴近官方演进方向。
 - 模板复用能力更强。
 - sandbox 不再依赖 per-room Redis 凭据和 consumer group。
-- 主服务职责更清晰，后续接 warm pool、snapshot、router gateway 都更顺。 
+- 主服务职责更清晰，后续接 warm pool、snapshot、gateway 都更顺。 

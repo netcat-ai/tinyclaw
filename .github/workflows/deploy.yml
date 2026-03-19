@@ -61,7 +61,6 @@ jobs:
           WECOM_CORP_ID: ${{ vars.WECOM_CORP_ID }}
           WECOM_BOT_ID: ${{ vars.WECOM_BOT_ID }}
           SANDBOX_TEMPLATE_NAME: ${{ vars.SANDBOX_TEMPLATE_NAME }}
-          SANDBOX_ROUTER_URL: ${{ vars.SANDBOX_ROUTER_URL }}
           SANDBOX_SERVER_PORT: ${{ vars.SANDBOX_SERVER_PORT }}
           ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -73,14 +72,12 @@ jobs:
         run: |
           : "${WECOM_BOT_ID:=}"
           : "${SANDBOX_TEMPLATE_NAME:=tinyclaw-agent-template}"
-          : "${SANDBOX_ROUTER_URL:=http://sandbox-router-svc.claw.svc.cluster.local:8080}"
           : "${SANDBOX_SERVER_PORT:=8888}"
           : "${ANTHROPIC_BASE_URL:=https://api.anthropic.com}"
           kubectl -n claw create configmap tinyclaw-config \
             --from-literal=WECOM_CORP_ID="${WECOM_CORP_ID}" \
             --from-literal=WECOM_BOT_ID="${WECOM_BOT_ID}" \
             --from-literal=SANDBOX_TEMPLATE_NAME="${SANDBOX_TEMPLATE_NAME}" \
-            --from-literal=SANDBOX_ROUTER_URL="${SANDBOX_ROUTER_URL}" \
             --from-literal=SANDBOX_SERVER_PORT="${SANDBOX_SERVER_PORT}" \
             --from-literal=ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL}" \
             --dry-run=client -o yaml | kubectl apply -f -
@@ -93,14 +90,10 @@ jobs:
             --from-literal=ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Apply sandbox router
-        env:
-          DEFAULT_IMAGE_TAG: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
-          MANUAL_IMAGE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.image_tag || '' }}
+      - name: Remove sandbox router
         run: |
-          IMAGE_TAG="${MANUAL_IMAGE_TAG:-$DEFAULT_IMAGE_TAG}"
-          ROUTER_IMAGE_REF="ghcr.io/${{ github.repository_owner }}/tinyclaw-sandbox-router:${IMAGE_TAG}"
-          sed "s|IMAGE_PLACEHOLDER|${ROUTER_IMAGE_REF}|g" k8s/sandbox-router.yaml | kubectl apply -f -
+          kubectl -n claw delete deployment sandbox-router --ignore-not-found
+          kubectl -n claw delete service sandbox-router-svc --ignore-not-found
 
       - name: Apply sandbox template
         env:
@@ -125,5 +118,4 @@ jobs:
 
       - name: Wait rollout
         run: |
-          kubectl -n claw rollout status deployment/sandbox-router --timeout=300s
           kubectl -n claw rollout status deployment/clawman --timeout=300s

@@ -22,7 +22,6 @@ const (
 type Config struct {
 	Namespace    string
 	TemplateName string
-	APIURL       string
 	ServerPort   int
 	ReadyTimeout time.Duration
 	RestConfig   *rest.Config
@@ -132,9 +131,6 @@ func (o *Orchestrator) getReadyRoomSession(ctx context.Context, roomID string) (
 	if o.cfg.Namespace == "" {
 		return nil, fmt.Errorf("sandbox namespace is required")
 	}
-	if o.cfg.APIURL == "" {
-		return nil, fmt.Errorf("sandbox api url is required")
-	}
 
 	state := o.getOrCreateRoomSession(roomID)
 	state.mu.Lock()
@@ -144,7 +140,6 @@ func (o *Orchestrator) getReadyRoomSession(ctx context.Context, roomID string) (
 		client, err := o.factory(ctx, sdksandbox.Options{
 			TemplateName:        o.cfg.TemplateName,
 			Namespace:           o.cfg.Namespace,
-			APIURL:              o.cfg.APIURL,
 			ServerPort:          o.cfg.ServerPort,
 			SandboxReadyTimeout: o.cfg.ReadyTimeout,
 			RestConfig:          o.cfg.RestConfig,
