@@ -3,14 +3,12 @@ package main
 import (
 	"context"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"k8s.io/client-go/rest"
-	extensionsclient "sigs.k8s.io/agent-sandbox/clients/k8s/extensions/clientset/versioned"
 	"tinyclaw/sandbox"
 	"tinyclaw/worktool"
 )
@@ -42,33 +40,24 @@ func main() {
 	}
 	cancel()
 
-	var orch *sandbox.Orchestrator
-	var routerClient *sandbox.RouterClient
 	k8sCfg, err := rest.InClusterConfig()
 	if err != nil {
 		slog.Error("k8s in-cluster config failed", "err", err)
 		os.Exit(1)
 	}
-	clientset, err := extensionsclient.NewForConfig(k8sCfg)
-	if err != nil {
-		slog.Error("agent sandbox extensions clientset init failed", "err", err)
-		os.Exit(1)
-	}
-	orch = sandbox.NewOrchestrator(clientset, sandbox.Config{
+	orch := sandbox.NewOrchestrator(sandbox.Config{
 		Namespace:    cfg.SandboxNamespace,
 		TemplateName: cfg.SandboxTemplateName,
+		APIURL:       cfg.SandboxRouterURL,
+		ServerPort:   cfg.SandboxServerPort,
 		ReadyTimeout: time.Duration(cfg.SandboxReadyTimeoutSec) * time.Second,
-	})
-	routerClient = sandbox.NewRouterClient(http.DefaultClient, sandbox.RouterConfig{
-		BaseURL:    cfg.SandboxRouterURL,
-		Namespace:  cfg.SandboxNamespace,
-		ServerPort: cfg.SandboxServerPort,
+		RestConfig:   k8sCfg,
 	})
 	slog.Info(
-		"sandbox integration enabled",
+		"sandbox sdk integration enabled",
 		"namespace", cfg.SandboxNamespace,
 		"template", cfg.SandboxTemplateName,
-		"router_url", cfg.SandboxRouterURL,
+		"api_url", cfg.SandboxRouterURL,
 		"server_port", cfg.SandboxServerPort,
 	)
 
@@ -79,7 +68,7 @@ func main() {
 		egress = NewEgressConsumer(store, wt)
 	}
 
-	clawman, err := NewClawman(cfg, store, orch, routerClient, egress)
+	clawman, err := NewClawman(cfg, store, orch, egress)
 	if err != nil {
 		slog.Error("init clawman failed", "err", err)
 		os.Exit(1)

@@ -45,7 +45,6 @@ type Clawman struct {
 	contactAPI *wecom.Client
 	archiveAPI *wecom.Client
 	orch       *sandbox.Orchestrator
-	sandboxAPI *sandbox.RouterClient
 	egress     *EgressConsumer
 	cache      *ttlCache
 }
@@ -65,7 +64,6 @@ func NewClawman(
 	cfg Config,
 	store *Store,
 	orch *sandbox.Orchestrator,
-	sandboxAPI *sandbox.RouterClient,
 	egress *EgressConsumer,
 ) (*Clawman, error) {
 	if cfg.WeComCorpID == "" || cfg.WeComCorpSecret == "" || cfg.WeComPrivateKey == "" {
@@ -97,7 +95,6 @@ func NewClawman(
 		contactAPI: contactAPI,
 		archiveAPI: archiveAPI,
 		orch:       orch,
-		sandboxAPI: sandboxAPI,
 		egress:     egress,
 		cache:      newTTLCache(),
 	}, nil
@@ -106,6 +103,13 @@ func NewClawman(
 func (r *Clawman) Close() {
 	if r.sdk != nil {
 		r.sdk.Free()
+	}
+	if r.orch != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := r.orch.Close(ctx); err != nil {
+			slog.Error("close sandbox orchestrator failed", "err", err)
+		}
 	}
 }
 
@@ -185,16 +189,11 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 			return seq, fmt.Errorf("resolve target for room %s: %w", roomID, err)
 		}
 
-		if r.orch == nil || r.sandboxAPI == nil {
+		if r.orch == nil {
 			return seq, fmt.Errorf("sandbox integration not configured")
 		}
 
-		sandboxID, err := r.orch.EnsureReady(ctx, roomID)
-		if err != nil {
-			return seq, fmt.Errorf("ensure sandbox ready for room %s: %w", roomID, err)
-		}
-
-		reply, err := r.sandboxAPI.Invoke(ctx, sandboxID, sandbox.AgentRequest{
+		reply, err := r.orch.InvokeAgent(ctx, roomID, sandbox.AgentRequest{
 			Query:    text,
 			MsgID:    msg.MsgID,
 			RoomID:   roomID,
@@ -202,7 +201,7 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 			ChatType: chatTypeForRoom(msg.RoomID),
 		})
 		if err != nil {
-			return seq, fmt.Errorf("invoke sandbox %s for room %s: %w", sandboxID, roomID, err)
+			return seq, fmt.Errorf("invoke sandbox for room %s: %w", roomID, err)
 		}
 
 		stored, err := r.store.StoreConversation(ctx,
