@@ -103,14 +103,15 @@ SDK client.Open() -> create SandboxClaim -> wait Sandbox ready
 3. 若消息发送方满足 `from == WECOM_BOT_ID`，直接跳过，不进入后续详情解析、sandbox 调用和落库流程。
 4. 根据 `room_id = {roomid_or_from}` 标准化会话标识，先解析发送者身份并拿到昵称，再写入一条 inbound `messages(status=received)`。
 5. 私聊消息默认直接触发处理；群聊消息仅在命中 `WECOM_GROUP_TRIGGER_MENTIONS` 的 `@` 提及，或命中 `WECOM_GROUP_TRIGGER_KEYWORDS` 时才触发处理。
-6. 未触发的群聊消息仅推进 archive cursor，不调用 sandbox；它们继续保留在 PostgreSQL，等待后续触发消息一并带入上下文。
-7. 触发处理时，先按 `tenant_id + room_id` 读取所有 `status=received` 的 inbound 消息，作为当前 room 尚未处理的上下文窗口。
-8. 触发阶段只补充解析群详情；发送方身份与昵称已经在入库前解析，并在进程内使用短期 TTL cache 降低企业微信详情接口压力。群详情接口按发送者类型选择：外部联系人走客户群接口，员工走内部群接口。
-9. 通过官方 Go SDK `Open()` 确保该 room 的 sandbox session ready；进程内 room session cache 遇到 `ErrOrphanedClaim` 时会先 `Close()` 再重建。
-10. 通过官方 Go SDK `Run()` 在 sandbox 内部桥接调用本机 `POST /agent`。
-11. agent 成功返回后，在同一事务中写入 outbound `messages`、写入 `outbox_deliveries`，并把本轮参与处理的 inbound 消息标记为 `completed`。
-12. PostgreSQL 事务成功后，才更新 `ingest_cursors.wecom_archive.cursor`。
-13. egress consumer 轮询 outbox 并统一回发企业微信。
+6. 每条消息在 ingest 阶段完成入库或明确跳过后，立即推进 `ingest_cursors.wecom_archive.cursor`；不再等待后续 dispatch 成功。
+7. 未触发的群聊消息不调用 sandbox；它们继续保留在 PostgreSQL，等待后续触发消息一并带入上下文。
+8. dispatch 阶段按 `room_id` 合并，同一个 room 在同一批拉取中只触发一次 agent 调用；同时会把 DB 中遗留的 `status=received` room 一并捞起重试。
+9. 触发处理时，先按 `tenant_id + room_id` 读取所有 `status=received` 的 inbound 消息，作为当前 room 尚未处理的上下文窗口。
+10. 触发阶段只补充解析群详情；发送方身份与昵称已经在入库前解析，并在进程内使用短期 TTL cache 降低企业微信详情接口压力。群详情接口按发送者类型选择：外部联系人走客户群接口，员工走内部群接口。
+11. 通过官方 Go SDK `Open()` 确保该 room 的 sandbox session ready；进程内 room session cache 遇到 `ErrOrphanedClaim` 时会先 `Close()` 再重建。
+12. 通过官方 Go SDK `Run()` 在 sandbox 内部桥接调用本机 `POST /agent`。
+13. agent 成功返回后，在同一事务中写入 outbound `messages`、写入 `outbox_deliveries`，并把本轮参与处理的 inbound 消息标记为 `completed`。
+14. egress consumer 轮询 outbox 并统一回发企业微信。
 
 ### 5.2 Router 调用契约
 当前主服务不再直接从业务层拼接 router 请求头，而是让官方 Go SDK 通过 direct-url 模式连接 `sandbox-router`，并通过 `/execute` 在 sandbox 内部调用：
@@ -150,7 +151,7 @@ v0 中主服务只依赖最小 PostgreSQL 事实源：
 补充语义：
 - inbound `messages` 会先以 `status=received` 写入；当该 room 发生一次有效触发并成功产出回复后，这批 inbound 会被更新为 `status=completed`。
 - 群聊未触发的消息保持 `status=received`，用于后续触发时补齐上下文。
-- `ingest_cursors` 只在当前 archive item 的入库与必要的状态迁移完成后推进。
+- `ingest_cursors` 在当前 archive item 的 ingest 成功后立即推进；dispatch/outbox 失败不会回滚 cursor。
 - 因此，只要消息在 sandbox 打开、agent 执行或事务提交前失败，后续轮询仍可基于已持久化的 `received` 消息继续重放，而不会丢失上下文。
 
 ## 6. Agent Runtime 设计
@@ -218,15 +219,15 @@ PID 1: tini / entrypoint
 
 ## 8. 失败处理
 - `SandboxClaim` 创建失败：
-  - 当前触发消息已经写入 inbound，但主服务不推进 `ingest_cursors.cursor`；下一轮会复用同一批 `received` 消息重试。
+  - 当前触发消息通常已经在 ingest 阶段推进过 cursor；dispatch 会在后续轮询中基于 `received` 消息重试。
 - sandbox 未 ready：
-  - 视为当前触发消息处理失败，不推进 cursor。
+  - 视为当前触发消息 dispatch 失败，但不影响已经推进的 ingest cursor。
 - sandbox 返回 5xx：
-  - 当前触发消息保留重试机会，不推进 cursor。
+  - 当前触发消息保留重试机会，但不回滚已经推进的 ingest cursor。
 - 企业微信详情解析失败：
-  - 当前消息已在 inbound 落库，但不会推进 cursor。
+  - 若失败发生在入库前，则当前消息不会推进 cursor；若失败发生在 dispatch 阶段，则由 pending inbound 重试。
 - bot 自发消息：
-  - 在 ingress 侧直接跳过，也不会推进 cursor；后续 archive 若再次拉到该条消息，仍会再次命中 skip 分支。
+  - 在 ingress 侧直接跳过，并推进 cursor，避免重复回放同一条 bot 消息。
 - egress 回发失败：
   - 保留在 `outbox_deliveries` 中重试，超过阈值后标记 `failed`。
 
