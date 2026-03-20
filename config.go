@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -14,11 +15,13 @@ const (
 type Config struct {
 	DatabaseURL string
 
-	WeComCorpID        string
-	WeComCorpSecret    string
-	WeComPrivateKey    string
-	WeComContactSecret string
-	WeComBotID         string
+	WeComCorpID               string
+	WeComCorpSecret           string
+	WeComPrivateKey           string
+	WeComContactSecret        string
+	WeComBotID                string
+	WeComGroupTriggerMentions []string
+	WeComGroupTriggerKeywords []string
 
 	SandboxNamespace       string
 	SandboxTemplateName    string
@@ -43,6 +46,11 @@ func LoadConfig() (Config, error) {
 		WeComPrivateKey:    os.Getenv("WECOM_RSA_PRIVATE_KEY"),
 		WeComContactSecret: os.Getenv("WECOM_CONTACT_SECRET"),
 		WeComBotID:         os.Getenv("WECOM_BOT_ID"),
+		WeComGroupTriggerMentions: parseListEnvWithFallback(
+			"WECOM_GROUP_TRIGGER_MENTIONS",
+			os.Getenv("WECOM_BOT_ID"),
+		),
+		WeComGroupTriggerKeywords: parseListEnv("WECOM_GROUP_TRIGGER_KEYWORDS"),
 
 		SandboxNamespace:       sandboxNamespace,
 		SandboxTemplateName:    envOrDefault("SANDBOX_TEMPLATE_NAME", defaultSandboxTemplate),
@@ -70,4 +78,36 @@ func envOrDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func parseListEnv(key string) []string {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return nil
+	}
+
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			continue
+		}
+		values = append(values, value)
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	return values
+}
+
+func parseListEnvWithFallback(key, fallback string) []string {
+	if values := parseListEnv(key); len(values) > 0 {
+		return values
+	}
+	fallback = strings.TrimSpace(fallback)
+	if fallback == "" {
+		return nil
+	}
+	return []string{fallback}
 }

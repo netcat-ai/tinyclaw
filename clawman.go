@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -47,6 +49,9 @@ type Clawman struct {
 	orch       *sandbox.Orchestrator
 	egress     *EgressConsumer
 	cache      *ttlCache
+
+	groupTriggerKeywords []string
+	groupMentionPattern  *regexp.Regexp
 }
 
 type WeComMessage struct {
@@ -89,14 +94,16 @@ func NewClawman(
 	archiveAPI := wecom.NewClient(cfg.WeComCorpID, cfg.WeComCorpSecret)
 
 	return &Clawman{
-		cfg:        cfg,
-		store:      store,
-		sdk:        sdk,
-		contactAPI: contactAPI,
-		archiveAPI: archiveAPI,
-		orch:       orch,
-		egress:     egress,
-		cache:      newTTLCache(),
+		cfg:                  cfg,
+		store:                store,
+		sdk:                  sdk,
+		contactAPI:           contactAPI,
+		archiveAPI:           archiveAPI,
+		orch:                 orch,
+		egress:               egress,
+		cache:                newTTLCache(),
+		groupTriggerKeywords: normalizeTriggerTerms(cfg.WeComGroupTriggerKeywords),
+		groupMentionPattern:  buildGroupMentionPattern(cfg.WeComGroupTriggerMentions),
 	}, nil
 }
 
@@ -169,10 +176,6 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 		if r.shouldSkipArchivedMessage(&msg) {
 			continue
 		}
-		if !r.primeSenderIdentity(ctx, &msg) {
-			continue
-		}
-
 		roomID := msg.RoomID
 		if msg.RoomID == "" {
 			roomID = msg.From
@@ -183,17 +186,56 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 			slog.Warn("skip unsupported wecom message payload", "msgid", msg.MsgID, "room_id", roomID, "err", err)
 			continue
 		}
-		targetName, senderName, err := r.resolveRoutingTarget(ctx, &msg, roomID)
+
+		sender, err := r.resolveSenderIdentity(ctx, &msg)
+		if err != nil {
+			continue
+		}
+
+		stored, err := r.store.StoreInboundMessage(ctx, InboundMessageRecord{
+			ID:            "in:" + msg.MsgID,
+			TenantID:      r.cfg.WeComCorpID,
+			RoomID:        roomID,
+			PlatformMsgID: msg.MsgID,
+			SenderID:      msg.From,
+			SenderName:    sender.Name,
+			Content:       text,
+			RawPayload:    msg.RawContent,
+			CreatedAt:     time.UnixMilli(msg.MsgTime),
+		})
+		if err != nil {
+			return seq, fmt.Errorf("store inbound message for room %s: %w", roomID, err)
+		}
+
+		if !r.shouldProcessStoredMessage(&msg, text) {
+			if err := r.store.SetCursor(ctx, wecomCursorSource, r.cfg.WeComCorpID, chatData.Seq); err != nil {
+				return seq, fmt.Errorf("set cursor in postgres: %w", err)
+			}
+			seq = chatData.Seq
+			continue
+		}
+
+		pendingMessages, err := r.store.ListPendingInboundMessages(ctx, r.cfg.WeComCorpID, roomID)
+		if err != nil {
+			return seq, fmt.Errorf("list pending inbound messages for room %s: %w", roomID, err)
+		}
+		if len(pendingMessages) == 0 {
+			slog.Info("skip duplicate already completed message", "msgid", msg.MsgID, "room_id", roomID, "stored", stored)
+			if err := r.store.SetCursor(ctx, wecomCursorSource, r.cfg.WeComCorpID, chatData.Seq); err != nil {
+				return seq, fmt.Errorf("set cursor in postgres: %w", err)
+			}
+			seq = chatData.Seq
+			continue
+		}
+
+		targetName, err := r.resolveRoutingTarget(ctx, &msg, sender)
 		if err != nil {
 			return seq, fmt.Errorf("resolve target for room %s: %w", roomID, err)
 		}
 
-		if r.orch == nil {
-			return seq, fmt.Errorf("sandbox integration not configured")
-		}
-
+		query := formatInboundMessagesForAgent(pendingMessages)
 		reply, err := r.orch.InvokeAgent(ctx, roomID, sandbox.AgentRequest{
-			Query:    text,
+			Query:    query,
 			MsgID:    msg.MsgID,
 			RoomID:   roomID,
 			TenantID: r.cfg.WeComCorpID,
@@ -203,32 +245,19 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 			return seq, fmt.Errorf("invoke sandbox for room %s: %w", roomID, err)
 		}
 
-		stored, err := r.store.StoreConversation(ctx,
-			InboundMessageRecord{
-				ID:            "in:" + msg.MsgID,
-				TenantID:      r.cfg.WeComCorpID,
-				RoomID:        roomID,
-				PlatformMsgID: msg.MsgID,
-				SenderID:      msg.From,
-				SenderName:    senderName,
-				Content:       text,
-				RawPayload:    msg.RawContent,
-				CreatedAt:     time.UnixMilli(msg.MsgTime),
-			},
-			OutboundMessageRecord{
-				ID:         "out:" + msg.MsgID,
-				TenantID:   r.cfg.WeComCorpID,
-				RoomID:     roomID,
-				Content:    reply.Stdout,
-				TargetName: targetName,
-				CreatedAt:  time.Now().UTC(),
-			},
-		)
-		if err != nil {
-			return seq, fmt.Errorf("store conversation for room %s: %w", roomID, err)
+		pendingIDs := make([]string, 0, len(pendingMessages))
+		for _, pending := range pendingMessages {
+			pendingIDs = append(pendingIDs, pending.ID)
 		}
-		if !stored {
-			slog.Info("skip duplicate already persisted message", "msgid", msg.MsgID, "room_id", roomID)
+		if err := r.store.StoreOutboundMessage(ctx, pendingIDs, OutboundMessageRecord{
+			ID:         "out:" + msg.MsgID,
+			TenantID:   r.cfg.WeComCorpID,
+			RoomID:     roomID,
+			Content:    reply.Stdout,
+			TargetName: targetName,
+			CreatedAt:  time.Now().UTC(),
+		}); err != nil {
+			return seq, fmt.Errorf("store outbound message for room %s: %w", roomID, err)
 		}
 		if err := r.store.SetCursor(ctx, wecomCursorSource, r.cfg.WeComCorpID, chatData.Seq); err != nil {
 			return seq, fmt.Errorf("set cursor in postgres: %w", err)
@@ -237,6 +266,34 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 	}
 
 	return seq, nil
+}
+
+func (r *Clawman) shouldProcessStoredMessage(msg *WeComMessage, text string) bool {
+	if msg == nil {
+		return false
+	}
+	if msg.RoomID == "" {
+		return true
+	}
+	return r.matchesGroupTrigger(text)
+}
+
+func (r *Clawman) matchesGroupTrigger(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	if r.groupMentionPattern != nil && r.groupMentionPattern.MatchString(trimmed) {
+		return true
+	}
+
+	normalized := strings.ToLower(trimmed)
+	for _, keyword := range r.groupTriggerKeywords {
+		if strings.Contains(normalized, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Clawman) shouldSkipArchivedMessage(msg *WeComMessage) bool {
@@ -249,37 +306,101 @@ func (r *Clawman) shouldSkipArchivedMessage(msg *WeComMessage) bool {
 	return false
 }
 
-func (r *Clawman) primeSenderIdentity(ctx context.Context, msg *WeComMessage) bool {
-	failKey := primeSenderFailCachePrefix + msg.From
-	if r.cache.Has(failKey) {
-		return false
+func normalizeTriggerTerms(values []string) []string {
+	if len(values) == 0 {
+		return nil
 	}
-	if _, err := r.Resolve(ctx, msg.From); err != nil {
-		r.cache.Set(failKey, []byte(err.Error()), primeSenderFailTTL)
-		slog.Error("resolve sender on receive failed", "from", msg.From, "msgid", msg.MsgID, "err", err)
-		return false
+
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			continue
+		}
+		if slices.Contains(normalized, value) {
+			continue
+		}
+		normalized = append(normalized, value)
 	}
-	return true
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
 }
 
-func (r *Clawman) resolveRoutingTarget(ctx context.Context, msg *WeComMessage, roomID string) (targetName string, senderName string, err error) {
-	if msg.RoomID != "" {
-		group, err := r.ResolveGroup(ctx, msg.RoomID)
-		if err != nil {
-			return "", "", err
+func buildGroupMentionPattern(values []string) *regexp.Regexp {
+	normalized := normalizeTriggerTerms(values)
+	if len(normalized) == 0 {
+		return nil
+	}
+
+	parts := make([]string, 0, len(normalized))
+	for _, value := range normalized {
+		parts = append(parts, regexp.QuoteMeta(value))
+	}
+	return regexp.MustCompile(`(?i)(?:^|[\s\p{P}])@(?:` + strings.Join(parts, "|") + `)(?:$|[\s\p{P}])`)
+}
+
+func formatInboundMessagesForAgent(messages []InboundMessageRecord) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	if len(messages) == 1 {
+		return messages[0].Content
+	}
+
+	var b strings.Builder
+	b.WriteString("以下是当前会话自上次处理以来的未处理消息，请结合上下文回复最后的用户请求：\n")
+	for _, message := range messages {
+		sender := strings.TrimSpace(message.SenderName)
+		if sender == "" {
+			sender = message.SenderID
 		}
-		sender, err := r.Resolve(ctx, msg.From)
-		if err != nil {
-			return group.Name, "", err
-		}
-		return group.Name, sender.Name, nil
+		b.WriteString("[")
+		b.WriteString(message.CreatedAt.UTC().Format(time.RFC3339))
+		b.WriteString("] ")
+		b.WriteString(sender)
+		b.WriteString(": ")
+		b.WriteString(message.Content)
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func (r *Clawman) resolveSenderIdentity(ctx context.Context, msg *WeComMessage) (*Identity, error) {
+	if msg == nil {
+		return nil, fmt.Errorf("message is nil")
+	}
+
+	failKey := primeSenderFailCachePrefix + msg.From
+	if r.cache.Has(failKey) {
+		return nil, fmt.Errorf("sender identity for %s is temporarily suppressed after previous failure", msg.From)
 	}
 
 	ident, err := r.Resolve(ctx, msg.From)
 	if err != nil {
-		return "", "", err
+		r.cache.Set(failKey, []byte(err.Error()), primeSenderFailTTL)
+		slog.Error("resolve sender on receive failed", "from", msg.From, "msgid", msg.MsgID, "err", err)
+		return nil, err
 	}
-	return ident.Name, ident.Name, nil
+	return ident, nil
+}
+
+func (r *Clawman) primeSenderIdentity(ctx context.Context, msg *WeComMessage) bool {
+	_, err := r.resolveSenderIdentity(ctx, msg)
+	return err == nil
+}
+
+func (r *Clawman) resolveRoutingTarget(ctx context.Context, msg *WeComMessage, sender *Identity) (targetName string, err error) {
+	if msg.RoomID != "" {
+		group, err := r.ResolveGroup(ctx, msg.RoomID, sender)
+		if err != nil {
+			return "", err
+		}
+		return group.Name, nil
+	}
+
+	return sender.Name, nil
 }
 
 // Resolve resolves a WeCom sender ID to an Identity.
@@ -346,14 +467,15 @@ func (r *Clawman) resolveInternalUser(ctx context.Context, id string) (*Identity
 }
 
 // ResolveGroup resolves a room ID to customer-group or internal-group metadata.
-func (r *Clawman) ResolveGroup(ctx context.Context, roomID string) (*GroupDetail, error) {
+// When sender is known, it uses sender type to select the matching WeCom API.
+func (r *Clawman) ResolveGroup(ctx context.Context, roomID string, sender *Identity) (*GroupDetail, error) {
 	if cached, ok := r.cache.Get(groupDetailCachePrefix + roomID); ok {
 		detail := &GroupDetail{}
 		if json.Unmarshal(cached, detail) == nil {
 			return detail, nil
 		}
 	}
-	detail, err := r.resolveGroup(ctx, roomID)
+	detail, err := r.resolveGroup(ctx, roomID, sender)
 	if err != nil {
 		return nil, err
 	}
@@ -363,7 +485,24 @@ func (r *Clawman) ResolveGroup(ctx context.Context, roomID string) (*GroupDetail
 	return detail, nil
 }
 
-func (r *Clawman) resolveGroup(ctx context.Context, roomID string) (*GroupDetail, error) {
+func (r *Clawman) resolveGroup(ctx context.Context, roomID string, sender *Identity) (*GroupDetail, error) {
+	if sender != nil {
+		switch sender.Type {
+		case "external", "guest":
+			return r.resolveCustomerGroup(ctx, roomID)
+		default:
+			return r.resolveInternalGroup(ctx, roomID)
+		}
+	}
+
+	internalGroup, internalErr := r.resolveInternalGroup(ctx, roomID)
+	if internalErr == nil {
+		return internalGroup, nil
+	}
+	return r.resolveCustomerGroup(ctx, roomID)
+}
+
+func (r *Clawman) resolveInternalGroup(ctx context.Context, roomID string) (*GroupDetail, error) {
 	if r.archiveAPI != nil {
 		group, err := r.archiveAPI.GetArchiveGroupChat(ctx, roomID)
 		if err == nil {
@@ -373,14 +512,18 @@ func (r *Clawman) resolveGroup(ctx context.Context, roomID string) (*GroupDetail
 				Type:   "internal_group",
 			}, nil
 		}
+		return nil, fmt.Errorf("resolve internal group %s: %w", roomID, err)
 	}
+	return nil, fmt.Errorf("archive api not configured")
+}
 
+func (r *Clawman) resolveCustomerGroup(ctx context.Context, roomID string) (*GroupDetail, error) {
 	if r.contactAPI == nil {
 		return nil, fmt.Errorf("contact api not configured")
 	}
 	group, err := r.contactAPI.GetGroupChat(ctx, roomID)
 	if err != nil {
-		return nil, fmt.Errorf("resolve group %s: %w", roomID, err)
+		return nil, fmt.Errorf("resolve customer group %s: %w", roomID, err)
 	}
 	return &GroupDetail{
 		ChatID: group.ChatID,

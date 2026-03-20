@@ -126,6 +126,10 @@ func (s *Store) InitSchema(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_outbox_deliveries_ready
 		ON outbox_deliveries (status, available_at, id)
 		`,
+		`
+		CREATE INDEX IF NOT EXISTS idx_messages_pending_inbound
+		ON messages (tenant_id, room_id, direction, status, created_at, id)
+		`,
 	}
 
 	for _, stmt := range statements {
@@ -172,21 +176,15 @@ func (s *Store) SetCursor(ctx context.Context, source, tenantID string, cursor i
 	return nil
 }
 
-func (s *Store) StoreConversation(ctx context.Context, inbound InboundMessageRecord, outbound OutboundMessageRecord) (bool, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
+func (s *Store) StoreInboundMessage(ctx context.Context, inbound InboundMessageRecord) (bool, error) {
 	var insertedID string
-	err = tx.QueryRowContext(
+	err := s.db.QueryRowContext(
 		ctx,
 		`
 		INSERT INTO messages (
-			id, tenant_id, room_id, platform_msg_id, direction, sender_id, sender_name, content, raw_payload, created_at
+			id, tenant_id, room_id, platform_msg_id, direction, sender_id, sender_name, content, raw_payload, status, created_at
 		)
-		VALUES ($1, $2, $3, $4, 'inbound', $5, $6, $7, $8, $9)
+		VALUES ($1, $2, $3, $4, 'inbound', $5, $6, $7, $8, 'received', $9)
 		ON CONFLICT (platform_msg_id) DO NOTHING
 		RETURNING id
 		`,
@@ -208,13 +206,84 @@ func (s *Store) StoreConversation(ctx context.Context, inbound InboundMessageRec
 		return false, fmt.Errorf("insert inbound message: %w", err)
 	}
 
+	return true, nil
+}
+
+func (s *Store) ListPendingInboundMessages(ctx context.Context, tenantID, roomID string) ([]InboundMessageRecord, error) {
+	rows, err := s.db.QueryContext(
+		ctx,
+		`
+		SELECT id, tenant_id, room_id, platform_msg_id, sender_id, sender_name, content, raw_payload, created_at
+		FROM messages
+		WHERE tenant_id = $1
+		  AND room_id = $2
+		  AND direction = 'inbound'
+		  AND status = 'received'
+		ORDER BY created_at, id
+		`,
+		tenantID,
+		roomID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list pending inbound messages: %w", err)
+	}
+	defer rows.Close()
+
+	var records []InboundMessageRecord
+	for rows.Next() {
+		var record InboundMessageRecord
+		if err := rows.Scan(
+			&record.ID,
+			&record.TenantID,
+			&record.RoomID,
+			&record.PlatformMsgID,
+			&record.SenderID,
+			&record.SenderName,
+			&record.Content,
+			&record.RawPayload,
+			&record.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan pending inbound message: %w", err)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending inbound messages: %w", err)
+	}
+	return records, nil
+}
+
+func (s *Store) StoreOutboundMessage(ctx context.Context, inboundIDs []string, outbound OutboundMessageRecord) error {
+	if len(inboundIDs) == 0 {
+		return fmt.Errorf("store outbound message: inboundIDs is empty")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(
+		ctx,
+		`
+		UPDATE messages
+		SET status = 'completed'
+		WHERE direction = 'inbound'
+		  AND id = ANY($1)
+		`,
+		inboundIDs,
+	); err != nil {
+		return fmt.Errorf("mark inbound messages completed: %w", err)
+	}
+
 	if _, err := tx.ExecContext(
 		ctx,
 		`
 		INSERT INTO messages (
-			id, tenant_id, room_id, direction, target_name, content, created_at
+			id, tenant_id, room_id, direction, target_name, content, status, created_at
 		)
-		VALUES ($1, $2, $3, 'outbound', $4, $5, $6)
+		VALUES ($1, $2, $3, 'outbound', $4, $5, 'completed', $6)
 		`,
 		outbound.ID,
 		outbound.TenantID,
@@ -223,7 +292,7 @@ func (s *Store) StoreConversation(ctx context.Context, inbound InboundMessageRec
 		outbound.Content,
 		outbound.CreatedAt,
 	); err != nil {
-		return false, fmt.Errorf("insert outbound message: %w", err)
+		return fmt.Errorf("insert outbound message: %w", err)
 	}
 
 	if _, err := tx.ExecContext(
@@ -238,13 +307,13 @@ func (s *Store) StoreConversation(ctx context.Context, inbound InboundMessageRec
 		outbound.RoomID,
 		outbound.TargetName,
 	); err != nil {
-		return false, fmt.Errorf("insert outbox delivery: %w", err)
+		return fmt.Errorf("insert outbox delivery: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("commit tx: %w", err)
+		return fmt.Errorf("commit tx: %w", err)
 	}
-	return true, nil
+	return nil
 }
 
 func (s *Store) ClaimNextDelivery(ctx context.Context, lease time.Duration) (*Delivery, error) {

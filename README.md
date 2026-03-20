@@ -8,10 +8,34 @@
 ## 当前实现
 TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
 - `clawman` 从企业微信会话存档拉取消息、解密并标准化。
+- `clawman` 当前每 3 秒拉取一次会话存档，单批最多处理 100 条消息，游标保存在 PostgreSQL `ingest_cursors` 的 `wecom_archive` 记录中。
+- 所有 `from == WECOM_BOT_ID` 的归档消息都会在 ingress 侧直接跳过，避免机器人自己在私聊或群聊中的回发再次进入处理链路。
 - 主服务通过官方 Go SDK 管理 sandbox 生命周期，并在进程内按 `room_id` 复用已打开的 sandbox client。
+- room 级 SDK client 遇到 `ErrOrphanedClaim` 时会先 `Close()` 清理，再重建 client，避免单个 room 进入必须重启进程才能恢复的中毒状态。
 - 官方 Go SDK 当前走 direct-url 模式连接 `sandbox-router`，再通过 `/execute` 在 sandbox 内部桥接调用本机 `POST /agent`。
 - `agent` 在 sandbox 内提供 `/healthz`、`/agent`、`/execute`、`/upload`、`/download`、`/list`、`/exists` 等官方风格 HTTP 接口，内部使用 `claude_agent_sdk` 或 `echo` runtime 执行。
-- sandbox 返回回复后，主服务把入站消息、出站消息和待发送回执写入 PostgreSQL，再由 egress consumer 从 outbox 统一回发企业微信。
+- 每条有效入站消息都会先写入 PostgreSQL `messages`，私聊消息直接进入处理；群聊消息只有命中 `@` 提及或触发关键字时才会进入 agent，未触发消息保留在 DB 中作为后续上下文。
+- 触发消息成功处理后，主服务会把本 room 尚未完成的 inbound 一并标记完成，写入一条 outbound `messages` 和一条 `outbox_deliveries`，再推进 `wecom_archive` cursor，最后由 egress consumer 从 outbox 统一回发企业微信。
+- 如果消息已写入 inbound，但在详情解析、sandbox 打开或 agent 执行阶段失败，则 cursor 不推进；后续重放时会复用这批 `status=received` 的消息重新处理，而不会重复插入 inbound。
+
+## 当前消息流程
+1. `clawman` 从企业微信会话存档拉取 `GetChatData(seq, limit)`，当前固定 `limit=100`。
+2. 对每条 archive message 执行解密、JSON 反序列化和基础校验。
+3. 若 `from == WECOM_BOT_ID`，直接跳过，避免 bot 自己的群消息或私聊消息形成自循环。
+4. 根据 `roomid` / `from` 计算统一 `room_id`，先解析发送者昵称，再写一条 inbound `messages(status=received)`。
+5. 若是私聊，直接进入处理；若是群聊，则只有命中 `@` 提及或 `WECOM_GROUP_TRIGGER_KEYWORDS` 中的关键字时才进入处理，否则仅推进 archive cursor。
+6. 触发处理时，按 room 读取所有 `status=received` 的 inbound 作为本轮上下文；入库前已解析发送者身份并写入 `sender_name`：
+   - 私聊：员工走 `user/get`，客户走 `externalcontact/get`
+   - 群聊：若发送者是外部联系人，则走 `externalcontact/groupchat/get`；否则走 `msgaudit/groupchat/get`
+7. `sandbox.Orchestrator` 按 `room_id` 查找或创建进程内 SDK client，并调用 `Open()` 保证 sandbox ready。
+8. Orchestrator 通过 SDK `Run()` 在 sandbox 内执行一个本机 `curl http://127.0.0.1:8888/agent`，把聚合后的 `query/msgid/room_id/tenant_id/chat_type` 传给 agent runtime。
+9. agent runtime 用 `claude_agent_sdk` 执行；`SandboxTemplate` 当前通过 `CLAUDE_SYSTEM_PROMPT_APPEND` 注入系统提示词。
+10. 主服务在同一个 PostgreSQL 事务中写入：
+   - 一条 outbound `messages`
+   - 一条 `outbox_deliveries`
+   - 并把本次参与处理的 inbound `messages` 标记为 `completed`
+11. 事务成功后才更新 `ingest_cursors.wecom_archive.cursor`。
+12. egress consumer 每 500ms 轮询一次 outbox，领取一条待发送记录，经 WorkTool 回发企业微信；发送成功标记 `sent`，失败则重试，最多 5 次。
 
 ## Agent Scaffold
 - `agent/`：独立的 TypeScript agent 子工程，当前提供：
@@ -55,8 +79,8 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
   - 客户：调用 `externalcontact/get` 获取客户详情
   - 员工：调用 `user/get` 获取内部用户详情
 - 群聊消息按 `roomid` 分流：
-  - 先调用 `msgaudit/groupchat/get` 解析内部群详情
-  - 若不是内部群，再调用 `externalcontact/groupchat/get` 解析客户群详情
+  - 若发送者是客户：调用 `externalcontact/groupchat/get` 解析客户群详情
+  - 若发送者是员工：调用 `msgaudit/groupchat/get` 解析内部群详情
 - 进程内会做短期 TTL cache，避免同一批消息重复请求企业微信详情接口。
 
 ## K8s 部署
@@ -84,6 +108,8 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
 
 主服务关键配置：
 - `DATABASE_URL`
+- `WECOM_GROUP_TRIGGER_MENTIONS`
+- `WECOM_GROUP_TRIGGER_KEYWORDS`
 - `SANDBOX_NAMESPACE`
 - `SANDBOX_TEMPLATE_NAME`
 - `SANDBOX_ROUTER_URL`
@@ -94,6 +120,8 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
 - `SANDBOX_TEMPLATE_NAME=tinyclaw-agent-template`
 - `SANDBOX_ROUTER_URL=http://sandbox-router-svc.{namespace}.svc.cluster.local:8080`
 - `SANDBOX_SERVER_PORT=8888`
+- `WECOM_GROUP_TRIGGER_MENTIONS={WECOM_BOT_ID}`（若未显式配置）
+- `WECOM_GROUP_TRIGGER_KEYWORDS=`（默认空）
 
 agent 运行时关键配置：
 - `AGENT_SERVER_PORT`
@@ -101,6 +129,7 @@ agent 运行时关键配置：
 - `AGENT_WORKDIR`
 - `ANTHROPIC_API_KEY` 或 `CLAUDE_CODE_OAUTH_TOKEN`
 - `ANTHROPIC_BASE_URL`
+- `CLAUDE_SYSTEM_PROMPT_APPEND`
 
 ## CI/CD 前置条件
 - `deploy-claw` job 通过 `tailscale/github-action@v4`（OAuth client）接入 tailnet 后再执行 `kubectl`。

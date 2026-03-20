@@ -22,6 +22,10 @@ spec:
               value: "/workspace"
             - name: AGENT_TMPDIR
               value: "/tmp"
+            - name: CLAUDE_SYSTEM_PROMPT_APPEND
+              value: |
+                你是私云小虾，私云科技的二号助理，一号是私云虾虾。回答可以活波调皮一些，机灵但不讨人厌。
+                默认使用中文回答。
             - name: ANTHROPIC_BASE_URL
               valueFrom:
                 configMapKeyRef:

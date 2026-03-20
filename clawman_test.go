@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"tinyclaw/wecom"
 )
@@ -215,6 +216,69 @@ func TestPrimeSenderIdentityUsesResolveCache(t *testing.T) {
 	}
 }
 
+func TestResolveRoutingTargetUsesGroupNameForGroupMessage(t *testing.T) {
+	var archiveGroupCalls int
+
+	server := newWeComTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/msgaudit/groupchat/get":
+			archiveGroupCalls++
+			writeJSON(t, w, map[string]any{
+				"errcode":  0,
+				"errmsg":   "ok",
+				"roomname": "研发群",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	clawman := newTestClawman(t, server.URL)
+	ctx := context.Background()
+	msg := &WeComMessage{
+		MsgID:  "msg-ctx-1",
+		From:   "zhangsan",
+		RoomID: "room-internal",
+	}
+
+	targetName, err := clawman.resolveRoutingTarget(ctx, msg, &Identity{
+		UserID: "zhangsan",
+		Name:   "张三",
+		Type:   "employee",
+	})
+	if err != nil {
+		t.Fatalf("resolveRoutingTarget: %v", err)
+	}
+
+	if targetName != "研发群" {
+		t.Fatalf("targetName = %q, want %q", targetName, "研发群")
+	}
+	if archiveGroupCalls != 1 {
+		t.Fatalf("archive group API calls = %d, want 1", archiveGroupCalls)
+	}
+}
+
+func TestResolveRoutingTargetUsesSenderNameForDirectMessage(t *testing.T) {
+	clawman := &Clawman{}
+	msg := &WeComMessage{
+		MsgID: "msg-direct-1",
+		From:  "zhangsan",
+	}
+
+	targetName, err := clawman.resolveRoutingTarget(context.Background(), msg, &Identity{
+		UserID: "zhangsan",
+		Name:   "张三",
+		Type:   "employee",
+	})
+	if err != nil {
+		t.Fatalf("resolveRoutingTarget: %v", err)
+	}
+
+	if targetName != "张三" {
+		t.Fatalf("targetName = %q, want %q", targetName, "张三")
+	}
+}
+
 func TestShouldSkipArchivedMessageSkipsBotSelfMessageInDirectChat(t *testing.T) {
 	clawman := &Clawman{
 		cfg: Config{
@@ -254,6 +318,95 @@ func TestShouldSkipArchivedMessageDoesNotSkipHumanGroupMessage(t *testing.T) {
 		RoomID: "wrg-oKJwAANVxkGsVgVraqwm3SH6GWSw",
 	}) {
 		t.Fatal("shouldSkipArchivedMessage = true, want false")
+	}
+}
+
+func TestShouldProcessStoredMessageDirectChatAlwaysProcesses(t *testing.T) {
+	clawman := &Clawman{}
+
+	if !clawman.shouldProcessStoredMessage(&WeComMessage{From: "zhangsan"}, "hello") {
+		t.Fatal("shouldProcessStoredMessage direct chat = false, want true")
+	}
+}
+
+func TestShouldProcessStoredMessageGroupRequiresMentionOrKeyword(t *testing.T) {
+	clawman := &Clawman{
+		groupTriggerKeywords: normalizeTriggerTerms([]string{"tinyclaw"}),
+		groupMentionPattern:  buildGroupMentionPattern([]string{"moss", "tiny"}),
+	}
+
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{
+			name: "group message without trigger",
+			text: "大家下午好",
+			want: false,
+		},
+		{
+			name: "group message with mention",
+			text: "请 @moss 看一下",
+			want: true,
+		},
+		{
+			name: "group message with keyword",
+			text: "tinyclaw 帮我总结一下",
+			want: true,
+		},
+		{
+			name: "mention should not match partial suffix",
+			text: "请 @mossbot 看一下",
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := clawman.shouldProcessStoredMessage(&WeComMessage{
+				From:   "zhangsan",
+				RoomID: "room-1",
+			}, tc.text)
+			if got != tc.want {
+				t.Fatalf("shouldProcessStoredMessage(%q) = %v, want %v", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFormatInboundMessagesForAgent(t *testing.T) {
+	single := formatInboundMessagesForAgent([]InboundMessageRecord{
+		{
+			SenderID:   "zhangsan",
+			SenderName: "张三",
+			Content:    "你好",
+			CreatedAt:  time.Date(2026, 3, 19, 8, 0, 0, 0, time.UTC),
+		},
+	})
+	if single != "你好" {
+		t.Fatalf("single message format = %q, want %q", single, "你好")
+	}
+
+	multi := formatInboundMessagesForAgent([]InboundMessageRecord{
+		{
+			SenderID:   "zhangsan",
+			SenderName: "张三",
+			Content:    "第一句",
+			CreatedAt:  time.Date(2026, 3, 19, 8, 0, 0, 0, time.UTC),
+		},
+		{
+			SenderID:   "lisi",
+			SenderName: "",
+			Content:    "第二句",
+			CreatedAt:  time.Date(2026, 3, 19, 8, 1, 0, 0, time.UTC),
+		},
+	})
+	want := "以下是当前会话自上次处理以来的未处理消息，请结合上下文回复最后的用户请求：\n" +
+		"[2026-03-19T08:00:00Z] 张三: 第一句\n" +
+		"[2026-03-19T08:01:00Z] lisi: 第二句"
+	if multi != want {
+		t.Fatalf("multi message format = %q, want %q", multi, want)
 	}
 }
 
@@ -345,15 +498,15 @@ func TestResolveGroupUsesArchiveFirstThenFallsBackToCustomerGroup(t *testing.T) 
 	clawman := newTestClawman(t, server.URL)
 	ctx := context.Background()
 
-	customerGroup, err := clawman.ResolveGroup(ctx, "room-customer")
+	customerGroup, err := clawman.ResolveGroup(ctx, "room-customer", nil)
 	if err != nil {
 		t.Fatalf("ResolveGroup customer: %v", err)
 	}
-	internalGroup, err := clawman.ResolveGroup(ctx, "room-internal")
+	internalGroup, err := clawman.ResolveGroup(ctx, "room-internal", nil)
 	if err != nil {
 		t.Fatalf("ResolveGroup internal: %v", err)
 	}
-	internalGroupCached, err := clawman.ResolveGroup(ctx, "room-internal")
+	internalGroupCached, err := clawman.ResolveGroup(ctx, "room-internal", nil)
 	if err != nil {
 		t.Fatalf("ResolveGroup internal cached: %v", err)
 	}
@@ -401,10 +554,10 @@ func TestResolveGroupFailureDoesNotCachePlaceholder(t *testing.T) {
 	clawman := newTestClawman(t, server.URL)
 	ctx := context.Background()
 
-	if _, err := clawman.ResolveGroup(ctx, "room-missing"); err == nil {
+	if _, err := clawman.ResolveGroup(ctx, "room-missing", nil); err == nil {
 		t.Fatal("ResolveGroup error = nil, want non-nil")
 	}
-	if _, err := clawman.ResolveGroup(ctx, "room-missing"); err == nil {
+	if _, err := clawman.ResolveGroup(ctx, "room-missing", nil); err == nil {
 		t.Fatal("ResolveGroup second error = nil, want non-nil")
 	}
 	if archiveGroupCalls != 2 {
@@ -412,5 +565,89 @@ func TestResolveGroupFailureDoesNotCachePlaceholder(t *testing.T) {
 	}
 	if customerGroupCalls != 2 {
 		t.Fatalf("customer group API calls = %d, want 2", customerGroupCalls)
+	}
+}
+
+func TestResolveGroupUsesCustomerAPIForExternalSender(t *testing.T) {
+	var customerGroupCalls int
+	var archiveGroupCalls int
+
+	server := newWeComTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/msgaudit/groupchat/get":
+			archiveGroupCalls++
+			writeJSON(t, w, map[string]any{"errcode": 0, "errmsg": "ok", "roomname": "不该调用"})
+		case "/cgi-bin/externalcontact/groupchat/get":
+			customerGroupCalls++
+			writeJSON(t, w, map[string]any{
+				"errcode": 0,
+				"errmsg":  "ok",
+				"group_chat": map[string]any{
+					"chat_id": "room-customer",
+					"name":    "客户群A",
+					"owner":   "lisi",
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	clawman := newTestClawman(t, server.URL)
+	ctx := context.Background()
+
+	group, err := clawman.ResolveGroup(ctx, "room-customer", &Identity{UserID: "wm123", Type: "external", Name: "外部联系人A"})
+	if err != nil {
+		t.Fatalf("ResolveGroup external sender: %v", err)
+	}
+
+	if group.Type != "customer_group" || group.Name != "客户群A" {
+		t.Fatalf("group = %+v", group)
+	}
+	if customerGroupCalls != 1 {
+		t.Fatalf("customer group API calls = %d, want 1", customerGroupCalls)
+	}
+	if archiveGroupCalls != 0 {
+		t.Fatalf("archive group API calls = %d, want 0", archiveGroupCalls)
+	}
+}
+
+func TestResolveGroupUsesArchiveAPIForInternalSender(t *testing.T) {
+	var customerGroupCalls int
+	var archiveGroupCalls int
+
+	server := newWeComTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/msgaudit/groupchat/get":
+			archiveGroupCalls++
+			writeJSON(t, w, map[string]any{
+				"errcode":  0,
+				"errmsg":   "ok",
+				"roomname": "内部群B",
+			})
+		case "/cgi-bin/externalcontact/groupchat/get":
+			customerGroupCalls++
+			writeJSON(t, w, map[string]any{"errcode": 0, "errmsg": "ok"})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	clawman := newTestClawman(t, server.URL)
+	ctx := context.Background()
+
+	group, err := clawman.ResolveGroup(ctx, "room-internal", &Identity{UserID: "zhangsan", Type: "employee", Name: "张三"})
+	if err != nil {
+		t.Fatalf("ResolveGroup internal sender: %v", err)
+	}
+
+	if group.Type != "internal_group" || group.Name != "内部群B" {
+		t.Fatalf("group = %+v", group)
+	}
+	if archiveGroupCalls != 1 {
+		t.Fatalf("archive group API calls = %d, want 1", archiveGroupCalls)
+	}
+	if customerGroupCalls != 0 {
+		t.Fatalf("customer group API calls = %d, want 0", customerGroupCalls)
 	}
 }

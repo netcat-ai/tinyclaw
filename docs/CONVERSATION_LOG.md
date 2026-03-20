@@ -89,3 +89,19 @@ agent启动后就去从redis队列中拉取对应的消息，开始消费。
    - `TS_OAUTH_CLIENT_ID`
    - `TS_OAUTH_SECRET`
 6. Deploy 中 kube context 采用 `azure/k8s-set-context@v4`，要求 `KUBE_CONFIG` 中存在 `default` context。
+
+---
+
+## 6. 消息链路校准（2026-03-19）
+
+### 变更结论
+1. `clawman` 当前以 `3s` 周期拉取企业微信会话存档，单批上限 `100` 条，游标存储在 PostgreSQL `ingest_cursors(source=wecom_archive)`。
+2. ingress 侧统一跳过 `from == WECOM_BOT_ID` 的归档消息，不再只限于私聊，避免 bot 自己的群消息再次被当作用户输入。
+3. room 级 sandbox session 仍然是进程内 cache，但遇到 SDK `ErrOrphanedClaim` 时会先 `Close()` 再重建，避免单个 room 进入永久报错状态。
+4. 当前消息只有在以下步骤全部成功后才会推进 cursor：
+   - 企业微信详情解析成功
+   - sandbox 打开成功
+   - agent 执行成功
+   - PostgreSQL 事务成功写入 inbound / outbound / outbox
+5. `outbox_deliveries` 由独立 egress consumer 轮询回发；消息发送成功后才标记 `sent`。
+6. 因为 cursor 只在成功路径推进，所以停机或持续失败后恢复服务时，会从旧 cursor 开始回放历史 archive backlog；这属于当前版本的既定运行语义。
