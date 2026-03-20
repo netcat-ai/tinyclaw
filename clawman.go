@@ -552,11 +552,10 @@ func (r *Clawman) resolveGroup(ctx context.Context, roomID string, sender *Ident
 		switch sender.Type {
 		case "external", "guest":
 			return r.resolveCustomerGroup(ctx, roomID)
-		default:
-			return r.resolveInternalGroup(ctx, roomID)
 		}
 	}
 
+	// Try internal group first, fallback to customer group.
 	internalGroup, internalErr := r.resolveInternalGroup(ctx, roomID)
 	if internalErr == nil {
 		return internalGroup, nil
