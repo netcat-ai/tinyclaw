@@ -141,6 +141,7 @@ func (s *Store) InitSchema(ctx context.Context) error {
 }
 
 func (s *Store) GetCursor(ctx context.Context, source, tenantID string) (int64, error) {
+	defer dbTimer("get_cursor")()
 	var cursor int64
 	err := s.db.QueryRowContext(
 		ctx,
@@ -158,6 +159,7 @@ func (s *Store) GetCursor(ctx context.Context, source, tenantID string) (int64, 
 }
 
 func (s *Store) SetCursor(ctx context.Context, source, tenantID string, cursor int64) error {
+	defer dbTimer("set_cursor")()
 	_, err := s.db.ExecContext(
 		ctx,
 		`
@@ -177,6 +179,7 @@ func (s *Store) SetCursor(ctx context.Context, source, tenantID string, cursor i
 }
 
 func (s *Store) StoreInboundMessage(ctx context.Context, inbound InboundMessageRecord) (bool, error) {
+	defer dbTimer("store_inbound")()
 	var insertedID string
 	err := s.db.QueryRowContext(
 		ctx,
@@ -210,6 +213,7 @@ func (s *Store) StoreInboundMessage(ctx context.Context, inbound InboundMessageR
 }
 
 func (s *Store) ListPendingInboundMessages(ctx context.Context, tenantID, roomID string) ([]InboundMessageRecord, error) {
+	defer dbTimer("list_pending_inbound")()
 	rows, err := s.db.QueryContext(
 		ctx,
 		`
@@ -254,6 +258,7 @@ func (s *Store) ListPendingInboundMessages(ctx context.Context, tenantID, roomID
 }
 
 func (s *Store) StoreOutboundMessage(ctx context.Context, inboundIDs []string, outbound OutboundMessageRecord) error {
+	defer dbTimer("store_outbound")()
 	if len(inboundIDs) == 0 {
 		return fmt.Errorf("store outbound message: inboundIDs is empty")
 	}
@@ -317,6 +322,7 @@ func (s *Store) StoreOutboundMessage(ctx context.Context, inboundIDs []string, o
 }
 
 func (s *Store) ClaimNextDelivery(ctx context.Context, lease time.Duration) (*Delivery, error) {
+	defer dbTimer("claim_delivery")()
 	if lease <= 0 {
 		lease = defaultDeliveryLease
 	}
@@ -358,6 +364,7 @@ func (s *Store) ClaimNextDelivery(ctx context.Context, lease time.Duration) (*De
 }
 
 func (s *Store) MarkDeliverySent(ctx context.Context, id int64) error {
+	defer dbTimer("mark_sent")()
 	_, err := s.db.ExecContext(
 		ctx,
 		`
@@ -374,6 +381,7 @@ func (s *Store) MarkDeliverySent(ctx context.Context, id int64) error {
 }
 
 func (s *Store) MarkDeliveryRetry(ctx context.Context, id int64, backoff time.Duration, errText string) error {
+	defer dbTimer("mark_retry")()
 	if backoff <= 0 {
 		backoff = defaultDeliveryBackoff
 	}
@@ -398,6 +406,7 @@ func (s *Store) MarkDeliveryRetry(ctx context.Context, id int64, backoff time.Du
 }
 
 func (s *Store) MarkDeliveryFailed(ctx context.Context, id int64, errText string) error {
+	defer dbTimer("mark_failed")()
 	_, err := s.db.ExecContext(
 		ctx,
 		`

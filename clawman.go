@@ -132,6 +132,7 @@ func (r *Clawman) Run(ctx context.Context) error {
 		seq, err = r.pullAndDispatch(ctx, seq, 100)
 		if err != nil {
 			slog.Error("pull and dispatch failed", "err", err)
+			pullCycleErrors.Inc()
 		}
 
 		select {
@@ -153,12 +154,15 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 		return seq, nil
 	}
 
+	msgPulled.Add(float64(len(chatDataList)))
+
 	for _, chatData := range chatDataList {
 		if ctx.Err() != nil {
 			return seq, ctx.Err()
 		}
 		raw, err := r.sdk.DecryptData(&chatData)
 		if err != nil {
+			msgSkipped.WithLabelValues("decrypt_failed").Inc()
 			slog.Warn("skip message decrypt failed", "seq", chatData.Seq, "msgid", chatData.MsgID, "err", err)
 			continue
 		}
@@ -174,6 +178,7 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 			continue
 		}
 		if r.shouldSkipArchivedMessage(&msg) {
+			msgSkipped.WithLabelValues("bot_self").Inc()
 			continue
 		}
 		roomID := msg.RoomID
@@ -208,6 +213,7 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 		}
 
 		if !r.shouldProcessStoredMessage(&msg, text) {
+			msgSkipped.WithLabelValues("no_trigger").Inc()
 			if err := r.store.SetCursor(ctx, wecomCursorSource, r.cfg.WeComCorpID, chatData.Seq); err != nil {
 				return seq, fmt.Errorf("set cursor in postgres: %w", err)
 			}
@@ -234,6 +240,7 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 		}
 
 		query := formatInboundMessagesForAgent(pendingMessages)
+		sandboxStart := time.Now()
 		reply, err := r.orch.InvokeAgent(ctx, roomID, sandbox.AgentRequest{
 			Query:    query,
 			MsgID:    msg.MsgID,
@@ -241,9 +248,13 @@ func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64,
 			TenantID: r.cfg.WeComCorpID,
 			ChatType: chatTypeForRoom(msg.RoomID),
 		})
+		sandboxDuration.Observe(time.Since(sandboxStart).Seconds())
 		if err != nil {
+			sandboxInvocations.WithLabelValues("error").Inc()
 			return seq, fmt.Errorf("invoke sandbox for room %s: %w", roomID, err)
 		}
+		sandboxInvocations.WithLabelValues("ok").Inc()
+		msgDispatched.Inc()
 
 		pendingIDs := make([]string, 0, len(pendingMessages))
 		for _, pending := range pendingMessages {

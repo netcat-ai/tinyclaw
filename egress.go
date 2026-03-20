@@ -77,11 +77,14 @@ func (c *EgressConsumer) processDelivery(ctx context.Context, delivery *Delivery
 
 	if err := c.worktool.SendTextMessage(delivery.TargetName, delivery.Content, nil); err != nil {
 		if delivery.AttemptCount >= maxDeliveryAttempts {
+			deliveriesProcessed.WithLabelValues("failed").Inc()
 			return c.store.MarkDeliveryFailed(ctx, delivery.ID, err.Error())
 		}
+		deliveriesProcessed.WithLabelValues("retry").Inc()
 		return c.store.MarkDeliveryRetry(ctx, delivery.ID, defaultDeliveryBackoff, err.Error())
 	}
 
+	deliveriesProcessed.WithLabelValues("sent").Inc()
 	if err := c.store.MarkDeliverySent(ctx, delivery.ID); err != nil {
 		return err
 	}

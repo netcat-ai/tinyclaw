@@ -79,6 +79,9 @@ func main() {
 	runCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Start metrics server
+	go serveMetrics(runCtx, cfg.MetricsAddr)
+
 	// Start egress consumer goroutine
 	if egress != nil {
 		go func() {

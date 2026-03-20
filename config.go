@@ -30,6 +30,8 @@ type Config struct {
 	SandboxReadyTimeoutSec int
 
 	WorkToolRobotID string
+
+	MetricsAddr string
 }
 
 func LoadConfig() (Config, error) {
@@ -59,6 +61,8 @@ func LoadConfig() (Config, error) {
 		SandboxReadyTimeoutSec: parseIntEnv("SANDBOX_READY_TIMEOUT_SEC", 180),
 
 		WorkToolRobotID: os.Getenv("WORKTOOL_ROBOT_ID"),
+
+		MetricsAddr: envOrDefault("METRICS_ADDR", ":9090"),
 	}
 
 	return cfg, nil
