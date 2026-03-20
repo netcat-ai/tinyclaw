@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -452,6 +453,11 @@ func (r *Clawman) resolveExternal(ctx context.Context, id string) (*Identity, er
 	}
 	contact, err := r.contactAPI.GetExternalContact(ctx, id)
 	if err != nil {
+		var apiErr *wecom.APIError
+		if errors.As(err, &apiErr) && apiErr.Code == 84061 {
+			slog.Warn("not external contact, skipping", "id", id)
+			return &Identity{UserID: id, Name: id, Type: "unknown"}, nil
+		}
 		return nil, fmt.Errorf("get external contact %s: %w", id, err)
 	}
 	return &Identity{

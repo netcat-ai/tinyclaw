@@ -30,9 +30,19 @@ type APIRes struct {
 
 func (r *APIRes) Error() error {
 	if r.Errcode != 0 {
-		return fmt.Errorf("wecom api error %d: %s", r.Errcode, r.Errmsg)
+		return &APIError{Code: r.Errcode, Msg: r.Errmsg}
 	}
 	return nil
+}
+
+// APIError is a structured WeCom API error.
+type APIError struct {
+	Code int
+	Msg  string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("wecom api error %d: %s", e.Code, e.Msg)
 }
 
 // Client is a minimal WeCom API client with automatic token management.
