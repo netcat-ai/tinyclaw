@@ -38,7 +38,19 @@ function buildMessage() {
     roomId: 'room-test',
     tenantId: 'tenant-test',
     chatType: 'group',
-    text: 'hello',
+    messages: [
+      {
+        seq: 1,
+        msgid: 'msg-test-1',
+        fromId: 'user-test',
+        fromName: 'Test User',
+        msgTime: '2026-03-21T00:00:00Z',
+        payload: JSON.stringify({
+          msgtype: 'text',
+          text: { content: 'hello' },
+        }),
+      },
+    ],
   };
 }
 

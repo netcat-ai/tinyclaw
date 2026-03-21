@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"tinyclaw/sandbox"
 	"tinyclaw/wecom"
+	"tinyclaw/wecom/finance"
 )
 
 func newTestClawman(t *testing.T, serverURL string) *Clawman {
@@ -321,92 +324,194 @@ func TestShouldSkipArchivedMessageDoesNotSkipHumanGroupMessage(t *testing.T) {
 	}
 }
 
-func TestShouldProcessStoredMessageDirectChatAlwaysProcesses(t *testing.T) {
+func TestStatusForMessageDirectChatAlwaysPending(t *testing.T) {
 	clawman := &Clawman{}
 
-	if !clawman.shouldProcessStoredMessage(&WeComMessage{From: "zhangsan"}, "hello") {
-		t.Fatal("shouldProcessStoredMessage direct chat = false, want true")
+	status, promote, err := clawman.statusForMessage(&WeComMessage{From: "zhangsan"}, `{"msgtype":"text","text":{"content":"hello"}}`)
+	if err != nil {
+		t.Fatalf("statusForMessage error: %v", err)
+	}
+	if status != statusPending {
+		t.Fatalf("status = %q, want %q", status, statusPending)
+	}
+	if promote {
+		t.Fatal("promote = true, want false")
 	}
 }
 
-func TestShouldProcessStoredMessageGroupRequiresMentionOrKeyword(t *testing.T) {
+func TestStatusForMessageGroupRequiresMentionOrKeyword(t *testing.T) {
 	clawman := &Clawman{
 		groupTriggerKeywords: normalizeTriggerTerms([]string{"tinyclaw"}),
 		groupMentionPattern:  buildGroupMentionPattern([]string{"moss", "tiny"}),
 	}
 
 	tests := []struct {
-		name string
-		text string
-		want bool
+		name    string
+		text    string
+		want    string
+		promote bool
 	}{
 		{
-			name: "group message without trigger",
-			text: "大家下午好",
-			want: false,
+			name:    "group message without trigger",
+			text:    "大家下午好",
+			want:    statusBuffered,
+			promote: false,
 		},
 		{
-			name: "group message with mention",
-			text: "请 @moss 看一下",
-			want: true,
+			name:    "group message with mention",
+			text:    "请 @moss 看一下",
+			want:    statusPending,
+			promote: true,
 		},
 		{
-			name: "group message with keyword",
-			text: "tinyclaw 帮我总结一下",
-			want: true,
+			name:    "group message with keyword",
+			text:    "tinyclaw 帮我总结一下",
+			want:    statusPending,
+			promote: true,
 		},
 		{
-			name: "mention should not match partial suffix",
-			text: "请 @mossbot 看一下",
-			want: false,
+			name:    "mention should not match partial suffix",
+			text:    "请 @mossbot 看一下",
+			want:    statusBuffered,
+			promote: false,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := clawman.shouldProcessStoredMessage(&WeComMessage{
+			status, promote, err := clawman.statusForMessage(&WeComMessage{
 				From:   "zhangsan",
 				RoomID: "room-1",
-			}, tc.text)
-			if got != tc.want {
-				t.Fatalf("shouldProcessStoredMessage(%q) = %v, want %v", tc.text, got, tc.want)
+			}, `{"msgtype":"text","text":{"content":"`+tc.text+`"}}`)
+			if err != nil {
+				t.Fatalf("statusForMessage error: %v", err)
+			}
+			if status != tc.want {
+				t.Fatalf("statusForMessage(%q) status = %q, want %q", tc.text, status, tc.want)
+			}
+			if promote != tc.promote {
+				t.Fatalf("statusForMessage(%q) promote = %v, want %v", tc.text, promote, tc.promote)
 			}
 		})
 	}
 }
 
-func TestFormatInboundMessagesForAgent(t *testing.T) {
-	single := formatInboundMessagesForAgent([]InboundMessageRecord{
+func TestBuildAgentMessages(t *testing.T) {
+	got := buildAgentMessages([]MessageRecord{
 		{
-			SenderID:   "zhangsan",
-			SenderName: "张三",
-			Content:    "你好",
-			CreatedAt:  time.Date(2026, 3, 19, 8, 0, 0, 0, time.UTC),
+			Seq:       1,
+			MsgID:     "msg-1",
+			FromID:    "zhangsan",
+			FromName:  "张三",
+			Payload:   `{"msgtype":"text","text":{"content":"第一句"}}`,
+			MsgTime:   time.Date(2026, 3, 19, 8, 0, 0, 0, time.UTC),
+			CreatedAt: time.Date(2026, 3, 19, 8, 0, 0, 0, time.UTC),
+		},
+		{
+			Seq:       2,
+			MsgID:     "msg-2",
+			FromID:    "lisi",
+			Payload:   `{"msgtype":"text","text":{"content":"第二句"}}`,
+			MsgTime:   time.Date(2026, 3, 19, 8, 1, 0, 0, time.UTC),
+			CreatedAt: time.Date(2026, 3, 19, 8, 1, 0, 0, time.UTC),
 		},
 	})
-	if single != "你好" {
-		t.Fatalf("single message format = %q, want %q", single, "你好")
+	want := []sandbox.AgentMessage{
+		{
+			Seq:      1,
+			MsgID:    "msg-1",
+			FromID:   "zhangsan",
+			FromName: "张三",
+			MsgTime:  "2026-03-19T08:00:00Z",
+			Payload:  `{"msgtype":"text","text":{"content":"第一句"}}`,
+		},
+		{
+			Seq:      2,
+			MsgID:    "msg-2",
+			FromID:   "lisi",
+			FromName: "",
+			MsgTime:  "2026-03-19T08:01:00Z",
+			Payload:  `{"msgtype":"text","text":{"content":"第二句"}}`,
+		},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len(buildAgentMessages) = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("buildAgentMessages[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestBuildMessageRecordReturnsFatalErrorOnDecryptFailure(t *testing.T) {
+	clawman := &Clawman{
+		cfg: Config{
+			WeComCorpID: "corp-id",
+		},
 	}
 
-	multi := formatInboundMessagesForAgent([]InboundMessageRecord{
-		{
-			SenderID:   "zhangsan",
-			SenderName: "张三",
-			Content:    "第一句",
-			CreatedAt:  time.Date(2026, 3, 19, 8, 0, 0, 0, time.UTC),
-		},
-		{
-			SenderID:   "lisi",
-			SenderName: "",
-			Content:    "第二句",
-			CreatedAt:  time.Date(2026, 3, 19, 8, 1, 0, 0, time.UTC),
-		},
+	_, _, err := clawman.buildMessageRecord(context.Background(), finance.ChatData{
+		Seq:   1,
+		MsgID: "msg-decrypt-fail",
 	})
-	want := "以下是当前会话自上次处理以来的未处理消息，请结合上下文回复最后的用户请求：\n" +
-		"[2026-03-19T08:00:00Z] 张三: 第一句\n" +
-		"[2026-03-19T08:01:00Z] lisi: 第二句"
-	if multi != want {
-		t.Fatalf("multi message format = %q, want %q", multi, want)
+	if err == nil {
+		t.Fatal("buildMessageRecord error = nil, want non-nil")
+	}
+	if !errors.Is(err, errFatalIngest) {
+		t.Fatalf("buildMessageRecord error = %v, want fatal ingest error", err)
+	}
+}
+
+func TestValidateParsedMessage(t *testing.T) {
+	tests := []struct {
+		name    string
+		msg     *WeComMessage
+		wantErr bool
+	}{
+		{
+			name: "valid message",
+			msg: &WeComMessage{
+				MsgID:  "msg-1",
+				From:   "zhangsan",
+				ToList: []string{"bot"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing msgid",
+			msg: &WeComMessage{
+				From:   "zhangsan",
+				ToList: []string{"bot"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing from",
+			msg: &WeComMessage{
+				ToList: []string{"bot"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing tolist",
+			msg: &WeComMessage{
+				From: "zhangsan",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateParsedMessage(tc.msg)
+			if tc.wantErr && err == nil {
+				t.Fatal("validateParsedMessage error = nil, want non-nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("validateParsedMessage error = %v, want nil", err)
+			}
+		})
 	}
 }
 

@@ -96,17 +96,29 @@ test('agent serves official sandbox runtime endpoints in echo mode', async () =>
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        query: 'hello integration',
         msgid: 'msg-integration-1',
         room_id: 'room-integration',
         tenant_id: 'tenant-integration',
         chat_type: 'group',
+        messages: [
+          {
+            seq: 1,
+            msgid: 'msg-integration-1',
+            from_id: 'user-integration',
+            from_name: 'Integration User',
+            msg_time: '2026-03-21T00:00:00Z',
+            payload: JSON.stringify({
+              msgtype: 'text',
+              text: { content: 'hello integration' },
+            }),
+          },
+        ],
       }),
     });
 
     assert.equal(agentResponse.status, 200);
     assert.deepEqual(await agentResponse.json(), {
-      stdout: 'Echo from tinyclaw-agent: hello integration',
+      stdout: 'Echo from tinyclaw-agent: received 1 messages',
       stderr: '',
       exit_code: 0,
     });

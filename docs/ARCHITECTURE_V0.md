@@ -21,14 +21,14 @@ tinyclaw 是一个面向企业微信会话的 AI Agent Runtime：
 +---------------------------+       +----------------------------------+
 | WeCom Session Archive API |-----> | Ingress Service (clawman)        |
 | WeCom Send API            | <-----| - decrypt / normalize            |
-+---------------------------+       | - manage sandbox via Go SDK      |
++---------------------------+       | - persist archive into messages  |
+                                    | - scan pending rooms             |
+                                    | - manage sandbox via Go SDK      |
                                     | - invoke /agent via SDK Run      |
-                                    | - persist messages/outbox        |
                                     +----------------+-----------------+
                                                      |
                                    +-----------------v------------------+
                                    | PostgreSQL                           |
-                                   | - ingest_cursors                     |
                                    | - messages                           |
                                    | - outbox_deliveries                  |
                                    +-----------------+------------------+
@@ -98,19 +98,22 @@ SDK client.Open() -> create SandboxClaim -> wait Sandbox ready
 ## 5. 数据面设计
 
 ### 5.1 Ingress 流程
-1. `clawman` 每 3 秒执行一次 archive pull，当前固定调用 `GetChatData(seq, 100)`。
-2. 对每条 archive item 执行解密、JSON 解析与字段校验。
-3. 若消息发送方满足 `from == WECOM_BOT_ID`，直接跳过，不进入后续详情解析、sandbox 调用和落库流程。
-4. 根据 `room_id = {roomid_or_from}` 标准化会话标识，先解析发送者身份并拿到昵称，再写入一条 inbound `messages(status=received)`。
-5. 私聊消息默认直接触发处理；群聊消息仅在命中 `WECOM_GROUP_TRIGGER_MENTIONS` 的 `@` 提及，或命中 `WECOM_GROUP_TRIGGER_KEYWORDS` 时才触发处理。
-6. 每条消息在 ingest 阶段完成入库或明确跳过后，立即推进 `ingest_cursors.wecom_archive.cursor`；不再等待后续 dispatch 成功。
-7. 未触发的群聊消息不调用 sandbox；它们继续保留在 PostgreSQL，等待后续触发消息一并带入上下文。
-8. dispatch 阶段按 `room_id` 合并，同一个 room 在同一批拉取中只触发一次 agent 调用；同时会把 DB 中遗留的 `status=received` room 一并捞起重试。
-9. 触发处理时，先按 `tenant_id + room_id` 读取所有 `status=received` 的 inbound 消息，作为当前 room 尚未处理的上下文窗口。
-10. 触发阶段只补充解析群详情；发送方身份与昵称已经在入库前解析，并在进程内使用短期 TTL cache 降低企业微信详情接口压力。群详情接口按发送者类型选择：外部联系人走客户群接口，员工走内部群接口。
+1. `clawman` 运行两个独立协程：ingest worker 每 3 秒执行一次 archive pull，dispatch worker 每秒扫描一次 `messages(status=pending)`。
+2. ingest worker 先查询当前 tenant 的 `MAX(messages.seq)`，再调用 `GetChatData(seq, 100)`；`messages.seq` 是唯一拉取 checkpoint。
+3. 对每条 archive item 按 `seq` 升序执行解密、JSON 解析与字段校验，并把完整解密结果写入 `messages.payload`。
+4. 所有 archive item 都必须先落库：
+   - bot/self、冷启动窗口外的历史消息、非法 payload 写成 `status=ignored`
+   - 群聊未触发消息写成 `status=buffered`
+   - 私聊消息和群聊触发消息写成 `status=pending`
+5. 若 `DecryptData` 失败，视为致命 ingest 错误，当前 worker 直接返回错误并退出服务，而不是把该消息写成 `ignored`。
+6. 若当前消息是群聊触发消息，ingest 会在同一个事务中把该 `room_id` 下已有 `buffered` 消息一并提升为 `pending`。
+7. 冷启动且 `messages` 为空时，只允许最近 10 分钟内的消息进入 `pending/buffered`；更早的 archive backlog 仍会写入 `messages`，但统一标记为 `ignored`。
+8. dispatch 阶段按 `room_id` 聚合，同一个 room 在同一轮只触发一次 agent 调用。
+9. 触发处理时，先按 `tenant_id + room_id` 读取所有 `status=pending` 的消息，作为当前 room 尚未处理的结构化上下文窗口。
+10. 触发阶段按需补充解析群详情；发送方昵称在 ingest 阶段 best-effort 写入 `from_name`，失败不阻塞入库。
 11. 通过官方 Go SDK `Open()` 确保该 room 的 sandbox session ready；进程内 room session cache 遇到 `ErrOrphanedClaim` 时会先 `Close()` 再重建。
 12. 通过官方 Go SDK `Run()` 在 sandbox 内部桥接调用本机 `POST /agent`。
-13. agent 成功返回后，在同一事务中写入 outbound `messages`、写入 `outbox_deliveries`，并把本轮参与处理的 inbound 消息标记为 `completed`。
+13. agent 成功返回后，在同一事务中把本轮参与处理的 `messages` 标记为 `done`，并写入一条 `outbox_deliveries`。
 14. egress consumer 轮询 outbox 并统一回发企业微信。
 
 ### 5.2 Router 调用契约
@@ -124,11 +127,20 @@ POST http://127.0.0.1:{AGENT_SERVER_PORT}/agent
 
 ```json
 {
-  "query": "用户消息正文",
   "msgid": "wecom_msg_abc",
   "room_id": "chat_123",
   "tenant_id": "corp_id",
-  "chat_type": "group"
+  "chat_type": "group",
+  "messages": [
+    {
+      "seq": 123,
+      "msgid": "wecom_msg_abc",
+      "from_id": "zhangsan",
+      "from_name": "张三",
+      "msg_time": "2026-03-21T10:00:00Z",
+      "payload": "{\"msgtype\":\"text\",\"text\":{\"content\":\"你好\"}}"
+    }
+  ]
 }
 ```
 
@@ -144,15 +156,14 @@ POST http://127.0.0.1:{AGENT_SERVER_PORT}/agent
 
 ### 5.3 PostgreSQL 职责
 v0 中主服务只依赖最小 PostgreSQL 事实源：
-- `ingest_cursors`：企业微信拉取游标
-- `messages`：入站事实、待处理状态、出站消息
+- `messages`：企业微信 archive 入站事实、待处理状态、拉取 checkpoint
 - `outbox_deliveries`：待发送、重试中、已发送、失败的回发任务
 
 补充语义：
-- inbound `messages` 会先以 `status=received` 写入；当该 room 发生一次有效触发并成功产出回复后，这批 inbound 会被更新为 `status=completed`。
-- 群聊未触发的消息保持 `status=received`，用于后续触发时补齐上下文。
-- `ingest_cursors` 在当前 archive item 的 ingest 成功后立即推进；dispatch/outbox 失败不会回滚 cursor。
-- 因此，只要消息在 sandbox 打开、agent 执行或事务提交前失败，后续轮询仍可基于已持久化的 `received` 消息继续重放，而不会丢失上下文。
+- `messages` 的流程状态固定为 `ignored / buffered / pending / done`。
+- `messages.seq` 单调递增；系统通过 `MAX(messages.seq)` 推导下一次 archive pull 的起点。
+- 群聊未触发消息保持 `status=buffered`，用于后续触发时补齐上下文。
+- dispatch/outbox 失败不会回滚 `messages.seq`；后续轮询会基于已持久化的 `pending` 消息继续重试，而不会丢失上下文。
 
 ## 6. Agent Runtime 设计
 
@@ -219,21 +230,21 @@ PID 1: tini / entrypoint
 
 ## 8. 失败处理
 - `SandboxClaim` 创建失败：
-  - 当前触发消息通常已经在 ingest 阶段推进过 cursor；dispatch 会在后续轮询中基于 `received` 消息重试。
+  - 当前触发消息已经写入 `messages(status=pending)`；dispatch 会在后续轮询中继续重试。
 - sandbox 未 ready：
-  - 视为当前触发消息 dispatch 失败，但不影响已经推进的 ingest cursor。
+  - 视为当前触发消息 dispatch 失败，但不影响已经持久化的 `messages.seq`。
 - sandbox 返回 5xx：
-  - 当前触发消息保留重试机会，但不回滚已经推进的 ingest cursor。
+  - 当前触发消息保留重试机会，但不会回滚已经持久化的 `messages.seq`。
 - 企业微信详情解析失败：
-  - 若失败发生在入库前，则当前消息不会推进 cursor；若失败发生在 dispatch 阶段，则由 pending inbound 重试。
+  - 发送者昵称解析失败不会阻塞入库；如果后续群详情解析失败，则由 pending room 在后续轮询中重试。
 - bot 自发消息：
-  - 在 ingress 侧直接跳过，并推进 cursor，避免重复回放同一条 bot 消息。
+  - 仍然会落一条 `messages(status=ignored)`，但不会进入 dispatch。
 - egress 回发失败：
   - 保留在 `outbox_deliveries` 中重试，超过阈值后标记 `failed`。
 
 现网含义：
-- 如果 `clawman` 长时间停机，或者某个阶段持续失败，`wecom_archive` cursor 会停在旧位置。
-- 服务恢复后，会从旧 cursor 继续回放历史 archive 消息；如果这些旧消息当时已经写入 inbound 但尚未完成处理，就会复用同一批 `received` 消息重试，而不是重复插入 inbound。
+- 冷启动且 `messages` 为空时，只会处理最近 10 分钟消息；更早的 archive backlog 统一写入 `ignored`，避免误回复历史对话。
+- 非冷启动场景下，服务恢复后会从 `MAX(messages.seq)` 继续拉取；如果已有 `pending` 消息尚未完成处理，dispatch 会继续复用同一批消息重试，而不是重复插入。
 
 ## 9. 可观测性
 核心指标建议：

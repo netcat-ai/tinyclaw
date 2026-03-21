@@ -8,10 +8,11 @@ Cloud-based AI Agent Runtime for WeChat Work (企业微信).
 
 Current architecture:
 - `clawman` pulls encrypted messages from the WeChat Work Finance SDK.
+- `clawman` splits ingest and dispatch into separate loops; `messages.seq` is the archive checkpoint.
 - `clawman` uses the official `agent-sandbox` Go SDK to open and reuse sandbox clients.
 - `clawman` invokes the sandbox through `sandbox-router` over HTTP.
 - The sandboxed `agent` exposes `/healthz`, `/agent`, `/execute`, and the standard file APIs.
-- Successful conversations are persisted to PostgreSQL and replies are sent by the egress consumer from `outbox_deliveries`.
+- All pulled archive items are persisted to PostgreSQL `messages`, and replies are sent by the egress consumer from `outbox_deliveries`.
 
 ## Build & Run
 
@@ -35,11 +36,12 @@ See `config.go` for the current main-service env contract.
 
 ```text
 WeChat Work Finance SDK
-  -> Clawman (poll / decrypt / normalize)
+  -> Clawman ingest (poll / decrypt / normalize / persist)
+  -> PostgreSQL messages(seq/status/payload)
+  -> Clawman dispatch (scan pending rooms)
   -> agent-sandbox Go SDK open
   -> sandbox-router
   -> agent HTTP runtime (/agent)
-  -> PostgreSQL messages/outbox
   -> WorkTool / WeCom send
 ```
 
@@ -56,8 +58,7 @@ Key files:
 
 | Table | Purpose |
 |---------|---------|
-| `ingest_cursors` | Last processed WeChat Work sequence number |
-| `messages` | Successful inbound/outbound message records |
+| `messages` | Inbound archive facts, status machine, and `seq` checkpoint source |
 | `outbox_deliveries` | Pending / retry / sent / failed egress jobs |
 
 Short-lived WeCom detail caching and ensure debounce are process-local in the current single-replica version.

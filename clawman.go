@@ -23,7 +23,12 @@ const (
 	primeSenderFailCachePrefix = "wecom:user:prime_fail:"
 	detailCacheTTL             = time.Hour
 	primeSenderFailTTL         = 5 * time.Second
+	ingestPollInterval         = 3 * time.Second
+	dispatchPollInterval       = time.Second
+	coldStartWindow            = 10 * time.Minute
 )
+
+var errFatalIngest = errors.New("fatal ingest error")
 
 // Identity represents a resolved WeCom user identity.
 type Identity struct {
@@ -53,6 +58,8 @@ type Clawman struct {
 
 	groupTriggerKeywords []string
 	groupMentionPattern  *regexp.Regexp
+	coldStartCutoff      *time.Time
+	lastSeq              int64
 }
 
 type WeComMessage struct {
@@ -122,17 +129,58 @@ func (r *Clawman) Close() {
 }
 
 func (r *Clawman) Run(ctx context.Context) error {
-	ticker := time.NewTicker(3 * time.Second)
+	lastSeq, hasMessages, err := r.store.GetMaxSeq(ctx, r.cfg.WeComCorpID)
+	if err != nil {
+		return fmt.Errorf("get startup seq: %w", err)
+	}
+	r.lastSeq = lastSeq
+	if !hasMessages {
+		cutoff := time.Now().UTC().Add(-coldStartWindow)
+		r.coldStartCutoff = &cutoff
+		slog.Info("cold start window enabled", "cutoff", cutoff.Format(time.RFC3339))
+	}
+
+	errCh := make(chan error, 2)
+
+	go func() {
+		errCh <- r.runIngestLoop(ctx)
+	}()
+	go func() {
+		errCh <- r.runDispatchLoop(ctx)
+	}()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-ctx.Done():
+			return nil
+		case err := <-errCh:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+type roomContext struct {
+	msg    *WeComMessage
+	sender *Identity
+}
+
+func (r *Clawman) runIngestLoop(ctx context.Context) error {
+	ticker := time.NewTicker(ingestPollInterval)
 	defer ticker.Stop()
 
-	seq, err := r.store.GetCursor(ctx, wecomCursorSource, r.cfg.WeComCorpID)
-	if err != nil {
-		return fmt.Errorf("get cursor from postgres: %w", err)
-	}
 	for {
-		seq, err = r.pullAndDispatch(ctx, seq, 100)
+		committedSeq, err := r.pullOnce(ctx, 100)
+		if committedSeq > r.lastSeq {
+			r.lastSeq = committedSeq
+		}
 		if err != nil {
-			slog.Error("pull and dispatch failed", "err", err)
+			if errors.Is(err, errFatalIngest) {
+				return err
+			}
+			slog.Error("ingest pull failed", "err", err)
 			pullCycleErrors.Inc()
 		}
 
@@ -144,199 +192,174 @@ func (r *Clawman) Run(ctx context.Context) error {
 	}
 }
 
-// roomContext holds the last triggered message info for a room, used in the dispatch phase.
-type roomContext struct {
-	msg    *WeComMessage
-	sender *Identity
+func (r *Clawman) runDispatchLoop(ctx context.Context) error {
+	ticker := time.NewTicker(dispatchPollInterval)
+	defer ticker.Stop()
+
+	for {
+		if err := r.dispatchPendingRooms(ctx); err != nil {
+			slog.Error("dispatch pending rooms failed", "err", err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
 }
 
-type ingestResult struct {
-	triggered bool
-	roomID    string
-	ctx       *roomContext
-}
-
-func (r *Clawman) pullAndDispatch(ctx context.Context, seq, limit int64) (int64, error) {
+func (r *Clawman) pullOnce(ctx context.Context, limit int64) (int64, error) {
+	seq := r.lastSeq
 	chatDataList, err := r.sdk.GetChatData(seq, limit)
 	if err != nil {
 		return seq, fmt.Errorf("sdk get chat data failed: seq=%d limit=%d err=%w", seq, limit, err)
 	}
 	r.recordPullMetrics(seq, chatDataList)
 
-	triggeredRooms, committedSeq, err := r.ingestBatch(ctx, seq, chatDataList)
-	if err != nil {
-		return committedSeq, err
-	}
-
-	if err := r.dispatchTriggeredRooms(ctx, triggeredRooms, committedSeq); err != nil {
-		return committedSeq, err
-	}
-	return committedSeq, nil
+	return r.ingestBatch(ctx, seq, chatDataList)
 }
 
 func (r *Clawman) recordPullMetrics(seq int64, chatDataList []finance.ChatData) {
 	if len(chatDataList) == 0 {
-		slog.Info("pull completed", "pulled", 0, "dispatched", 0, "seq", seq)
+		slog.Info("pull completed", "pulled", 0, "seq", seq)
 		return
 	}
 	msgPulled.Add(float64(len(chatDataList)))
 }
 
-func (r *Clawman) ingestBatch(ctx context.Context, seq int64, chatDataList []finance.ChatData) (map[string]*roomContext, int64, error) {
-	triggeredRooms := make(map[string]*roomContext)
+func (r *Clawman) ingestBatch(ctx context.Context, seq int64, chatDataList []finance.ChatData) (int64, error) {
 	committedSeq := seq
-
 	for _, chatData := range chatDataList {
 		if ctx.Err() != nil {
-			return triggeredRooms, committedSeq, ctx.Err()
+			return committedSeq, ctx.Err()
 		}
-
-		result, err := r.ingestChatData(ctx, chatData)
-		if err != nil {
-			return triggeredRooms, committedSeq, err
+		if err := r.ingestChatData(ctx, chatData); err != nil {
+			return committedSeq, err
 		}
 		committedSeq = chatData.Seq
-		if result.triggered {
-			triggeredRooms[result.roomID] = result.ctx
-		}
 	}
-
-	if committedSeq > seq {
-		if err := r.advanceIngestCursor(ctx, committedSeq); err != nil {
-			return triggeredRooms, seq, err
-		}
-	}
-
-	return triggeredRooms, committedSeq, nil
+	return committedSeq, nil
 }
 
-func (r *Clawman) dispatchTriggeredRooms(ctx context.Context, triggeredRooms map[string]*roomContext, committedSeq int64) error {
-	// Include rooms from DB that may have been left pending by a previous failed dispatch.
-	if err := r.addRecoveredPendingRooms(ctx, triggeredRooms); err != nil {
-		slog.Error("list pending rooms failed", "err", err)
+func (r *Clawman) ingestChatData(ctx context.Context, chatData finance.ChatData) error {
+	record, promoteBuffered, err := r.buildMessageRecord(ctx, chatData)
+	if err != nil {
+		return err
 	}
-
-	for roomID, rc := range triggeredRooms {
-		if ctx.Err() != nil {
-			return fmt.Errorf("dispatch interrupted at room %s after committed_seq=%d: %w", roomID, committedSeq, ctx.Err())
-		}
-		r.dispatchRoom(ctx, roomID, rc)
+	if _, err := r.store.StoreMessage(ctx, record, promoteBuffered); err != nil {
+		return fmt.Errorf("store message seq=%d: %w", chatData.Seq, err)
 	}
 	return nil
 }
 
-func (r *Clawman) ingestChatData(ctx context.Context, chatData finance.ChatData) (ingestResult, error) {
-	var result ingestResult
-
-	msg, roomID, text, err := r.parseChatData(ctx, chatData)
-	if err != nil {
-		if errors.Is(err, errChatDataSkipped) {
-			return result, nil
-		}
-		return result, err
-	}
-
-	sender, err := r.resolveSenderIdentity(ctx, msg)
-	if err != nil {
-		return result, fmt.Errorf("resolve sender identity for room %s: %w", roomID, err)
-	}
-
-	if _, err := r.store.StoreInboundMessage(ctx, InboundMessageRecord{
-		ID:            "in:" + msg.MsgID,
-		TenantID:      r.cfg.WeComCorpID,
-		RoomID:        roomID,
-		PlatformMsgID: msg.MsgID,
-		SenderID:      msg.From,
-		SenderName:    sender.Name,
-		Content:       text,
-		RawPayload:    msg.RawContent,
-		CreatedAt:     time.UnixMilli(msg.MsgTime),
-	}); err != nil {
-		return result, fmt.Errorf("store inbound message for room %s: %w", roomID, err)
-	}
-
-	if !r.shouldProcessStoredMessage(msg, text) {
-		msgSkipped.WithLabelValues("no_trigger").Inc()
-		return result, nil
-	}
-
-	msgCopy := *msg
-	result.triggered = true
-	result.roomID = roomID
-	result.ctx = &roomContext{msg: &msgCopy, sender: sender}
-	return result, nil
-}
-
-var errChatDataSkipped = errors.New("chat data skipped")
-
-func (r *Clawman) parseChatData(_ context.Context, chatData finance.ChatData) (*WeComMessage, string, string, error) {
+func (r *Clawman) buildMessageRecord(ctx context.Context, chatData finance.ChatData) (MessageRecord, bool, error) {
 	raw, err := r.sdk.DecryptData(&chatData)
 	if err != nil {
 		msgSkipped.WithLabelValues("decrypt_failed").Inc()
-		slog.Warn("skip message decrypt failed", "seq", chatData.Seq, "msgid", chatData.MsgID, "err", err)
-		return nil, "", "", errChatDataSkipped
+		return MessageRecord{}, false, fmt.Errorf("%w: decrypt chat data seq=%d msgid=%s: %v", errFatalIngest, chatData.Seq, chatData.MsgID, err)
 	}
 
 	var msg WeComMessage
 	if err := json.Unmarshal(raw, &msg); err != nil {
-		slog.Warn("skip invalid message json", "seq", chatData.Seq, "msgid", chatData.MsgID, "err", err)
-		return nil, "", "", errChatDataSkipped
+		msgSkipped.WithLabelValues("invalid_json").Inc()
+		return MessageRecord{}, false, fmt.Errorf("%w: invalid message json seq=%d msgid=%s: %v", errFatalIngest, chatData.Seq, chatData.MsgID, err)
 	}
 	msg.RawContent = string(raw)
-	if msg.From == "" || len(msg.ToList) == 0 {
-		slog.Warn("skip invalid message without from/tolist", "seq", chatData.Seq, "msgid", chatData.MsgID)
-		return nil, "", "", errChatDataSkipped
-	}
-	if r.shouldSkipArchivedMessage(&msg) {
-		msgSkipped.WithLabelValues("bot_self").Inc()
-		return nil, "", "", errChatDataSkipped
+
+	if err := validateParsedMessage(&msg); err != nil {
+		msgSkipped.WithLabelValues("invalid_shape").Inc()
+		return MessageRecord{}, false, fmt.Errorf(
+			"%w: invalid message shape seq=%d msgid=%s: %v",
+			errFatalIngest,
+			chatData.Seq,
+			msg.MsgID,
+			err,
+		)
 	}
 
-	roomID := msg.RoomID
+	roomID := strings.TrimSpace(msg.RoomID)
 	if roomID == "" {
 		roomID = msg.From
 	}
 
-	text, err := extractWeComMessageText(msg.RawContent)
-	if err != nil {
-		slog.Warn("skip unsupported wecom message payload", "msgid", msg.MsgID, "room_id", roomID, "err", err)
-		return nil, "", "", errChatDataSkipped
+	record := MessageRecord{
+		Seq:       chatData.Seq,
+		TenantID:  r.cfg.WeComCorpID,
+		MsgID:     msg.MsgID,
+		RoomID:    roomID,
+		FromID:    msg.From,
+		Payload:   string(raw),
+		Status:    statusIgnored,
+		MsgTime:   time.UnixMilli(msg.MsgTime).UTC(),
+		CreatedAt: time.Now().UTC(),
 	}
 
-	return &msg, roomID, text, nil
+	if name, resolveErr := r.resolveSenderName(ctx, &msg); resolveErr == nil {
+		record.FromName = name
+	}
+
+	status, promoteBuffered, err := r.statusForMessage(&msg, msg.RawContent)
+	if err != nil {
+		msgSkipped.WithLabelValues("unsupported_payload").Inc()
+		slog.Warn("skip unsupported wecom message payload", "msgid", msg.MsgID, "room_id", record.RoomID, "err", err)
+		return record, false, nil
+	}
+	if r.coldStartCutoff != nil && !record.MsgTime.IsZero() && record.MsgTime.Before(*r.coldStartCutoff) {
+		msgSkipped.WithLabelValues("cold_start").Inc()
+		record.Status = statusIgnored
+		return record, false, nil
+	}
+
+	record.Status = status
+	return record, promoteBuffered, nil
 }
 
-func (r *Clawman) advanceIngestCursor(ctx context.Context, seq int64) error {
-	if err := r.store.SetCursor(ctx, wecomCursorSource, r.cfg.WeComCorpID, seq); err != nil {
-		return fmt.Errorf("set cursor in postgres: %w", err)
+func validateParsedMessage(msg *WeComMessage) error {
+	if msg == nil {
+		return fmt.Errorf("message is nil")
+	}
+	if strings.TrimSpace(msg.MsgID) == "" {
+		return fmt.Errorf("msgid is empty")
+	}
+	if strings.TrimSpace(msg.From) == "" {
+		return fmt.Errorf("from is empty")
+	}
+	if len(msg.ToList) == 0 {
+		return fmt.Errorf("tolist is empty")
 	}
 	return nil
 }
 
-func (r *Clawman) addRecoveredPendingRooms(ctx context.Context, triggeredRooms map[string]*roomContext) error {
+func (r *Clawman) dispatchPendingRooms(ctx context.Context) error {
 	pendingRooms, err := r.store.ListPendingRooms(ctx, r.cfg.WeComCorpID)
 	if err != nil {
 		return err
 	}
 	for _, roomID := range pendingRooms {
-		if _, ok := triggeredRooms[roomID]; !ok {
-			triggeredRooms[roomID] = nil
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
+		r.dispatchRoom(ctx, roomID)
 	}
 	return nil
 }
 
-func (r *Clawman) dispatchRoom(ctx context.Context, roomID string, rc *roomContext) {
-	pendingMessages, err := r.store.ListPendingInboundMessages(ctx, r.cfg.WeComCorpID, roomID)
+func (r *Clawman) dispatchRoom(ctx context.Context, roomID string) {
+	pendingMessages, err := r.store.ListPendingMessages(ctx, r.cfg.WeComCorpID, roomID)
 	if err != nil {
-		slog.Error("list pending inbound messages failed", "room_id", roomID, "err", err)
+		slog.Error("list pending messages failed", "room_id", roomID, "err", err)
 		return
 	}
 	if len(pendingMessages) == 0 {
 		return
 	}
 
-	rc = r.ensureRoomContext(roomID, pendingMessages, rc)
+	rc, err := r.buildRoomContext(ctx, roomID, pendingMessages)
+	if err != nil {
+		slog.Error("build room context failed", "room_id", roomID, "err", err)
+		return
+	}
 
 	targetName, err := r.resolveRoutingTarget(ctx, rc.msg, rc.sender)
 	if err != nil {
@@ -350,58 +373,60 @@ func (r *Clawman) dispatchRoom(ctx context.Context, roomID string, rc *roomConte
 		return
 	}
 
-	pendingIDs := make([]string, 0, len(pendingMessages))
+	pendingSeqs := make([]int64, 0, len(pendingMessages))
 	for _, pending := range pendingMessages {
-		pendingIDs = append(pendingIDs, pending.ID)
+		pendingSeqs = append(pendingSeqs, pending.Seq)
 	}
-	if err := r.store.StoreOutboundMessage(ctx, pendingIDs, OutboundMessageRecord{
-		ID:         "out:" + rc.msg.MsgID,
+	if err := r.store.MarkMessagesDoneAndEnqueueDelivery(ctx, pendingSeqs, DeliveryRecord{
 		TenantID:   r.cfg.WeComCorpID,
 		RoomID:     roomID,
 		Content:    reply.Stdout,
 		TargetName: targetName,
-		CreatedAt:  time.Now().UTC(),
 	}); err != nil {
-		slog.Error("store outbound message failed", "room_id", roomID, "err", err)
+		slog.Error("mark messages done and enqueue delivery failed", "room_id", roomID, "err", err)
 	}
 }
 
-func (r *Clawman) ensureRoomContext(roomID string, pendingMessages []InboundMessageRecord, rc *roomContext) *roomContext {
-	if rc != nil {
-		return rc
-	}
+func (r *Clawman) buildRoomContext(ctx context.Context, roomID string, pendingMessages []MessageRecord) (*roomContext, error) {
 	if len(pendingMessages) == 0 {
-		return &roomContext{}
+		return &roomContext{}, nil
 	}
 
 	lastPending := pendingMessages[len(pendingMessages)-1]
 	msgRoomID := roomID
-	if roomID == lastPending.SenderID {
+	if roomID == lastPending.FromID {
 		msgRoomID = ""
 	}
-	return &roomContext{
+	rc := &roomContext{
 		msg: &WeComMessage{
-			MsgID:  lastPending.PlatformMsgID,
-			From:   lastPending.SenderID,
+			MsgID:  lastPending.MsgID,
+			From:   lastPending.FromID,
 			RoomID: msgRoomID,
 		},
-		sender: &Identity{UserID: lastPending.SenderID, Name: lastPending.SenderName},
 	}
+	if lastPending.FromID != "" {
+		rc.sender = &Identity{UserID: lastPending.FromID, Name: lastPending.FromName}
+		if rc.sender.Name == "" {
+			if ident, err := r.Resolve(ctx, lastPending.FromID); err == nil {
+				rc.sender = ident
+			}
+		}
+	}
+	return rc, nil
 }
 
-func (r *Clawman) invokeRoomAgent(ctx context.Context, roomID string, msg *WeComMessage, pendingMessages []InboundMessageRecord) (sandbox.ExecutionResult, error) {
+func (r *Clawman) invokeRoomAgent(ctx context.Context, roomID string, msg *WeComMessage, pendingMessages []MessageRecord) (sandbox.ExecutionResult, error) {
 	if r.orch == nil {
 		return sandbox.ExecutionResult{}, fmt.Errorf("sandbox integration not configured")
 	}
 
-	query := formatInboundMessagesForAgent(pendingMessages)
 	sandboxStart := time.Now()
 	reply, err := r.orch.InvokeAgent(ctx, roomID, sandbox.AgentRequest{
-		Query:    query,
 		MsgID:    msg.MsgID,
 		RoomID:   roomID,
 		TenantID: r.cfg.WeComCorpID,
 		ChatType: chatTypeForRoom(msg.RoomID),
+		Messages: buildAgentMessages(pendingMessages),
 	})
 	sandboxDuration.Observe(time.Since(sandboxStart).Seconds())
 	if err != nil {
@@ -413,14 +438,26 @@ func (r *Clawman) invokeRoomAgent(ctx context.Context, roomID string, msg *WeCom
 	return reply, nil
 }
 
-func (r *Clawman) shouldProcessStoredMessage(msg *WeComMessage, text string) bool {
+func (r *Clawman) statusForMessage(msg *WeComMessage, payload string) (string, bool, error) {
 	if msg == nil {
-		return false
+		return statusIgnored, false, nil
+	}
+	if r.shouldSkipArchivedMessage(msg) {
+		msgSkipped.WithLabelValues("bot_self").Inc()
+		return statusIgnored, false, nil
+	}
+
+	text, err := extractWeComMessageText(payload)
+	if err != nil {
+		return statusIgnored, false, err
 	}
 	if msg.RoomID == "" {
-		return true
+		return statusPending, false, nil
 	}
-	return r.matchesGroupTrigger(text)
+	if r.matchesGroupTrigger(text) {
+		return statusPending, true, nil
+	}
+	return statusBuffered, false, nil
 }
 
 func (r *Clawman) matchesGroupTrigger(text string) bool {
@@ -486,30 +523,35 @@ func buildGroupMentionPattern(values []string) *regexp.Regexp {
 	return regexp.MustCompile(`(?i)(?:^|[\s\p{P}])@(?:` + strings.Join(parts, "|") + `)(?:$|[\s\p{P}])`)
 }
 
-func formatInboundMessagesForAgent(messages []InboundMessageRecord) string {
+func buildAgentMessages(messages []MessageRecord) []sandbox.AgentMessage {
 	if len(messages) == 0 {
-		return ""
-	}
-	if len(messages) == 1 {
-		return messages[0].Content
+		return nil
 	}
 
-	var b strings.Builder
-	b.WriteString("以下是当前会话自上次处理以来的未处理消息，请结合上下文回复最后的用户请求：\n")
+	payloads := make([]sandbox.AgentMessage, 0, len(messages))
 	for _, message := range messages {
-		sender := strings.TrimSpace(message.SenderName)
-		if sender == "" {
-			sender = message.SenderID
-		}
-		b.WriteString("[")
-		b.WriteString(message.CreatedAt.UTC().Format(time.RFC3339))
-		b.WriteString("] ")
-		b.WriteString(sender)
-		b.WriteString(": ")
-		b.WriteString(message.Content)
-		b.WriteString("\n")
+		payloads = append(payloads, sandbox.AgentMessage{
+			Seq:      message.Seq,
+			MsgID:    message.MsgID,
+			FromID:   message.FromID,
+			FromName: message.FromName,
+			MsgTime:  message.MsgTime.UTC().Format(time.RFC3339),
+			Payload:  message.Payload,
+		})
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return payloads
+}
+
+func (r *Clawman) resolveSenderName(ctx context.Context, msg *WeComMessage) (string, error) {
+	if msg == nil || strings.TrimSpace(msg.From) == "" {
+		return "", fmt.Errorf("sender id is empty")
+	}
+	ident, err := r.Resolve(ctx, msg.From)
+	if err != nil {
+		slog.Warn("resolve sender name on ingest failed", "from", msg.From, "msgid", msg.MsgID, "err", err)
+		return "", err
+	}
+	return ident.Name, nil
 }
 
 func (r *Clawman) resolveSenderIdentity(ctx context.Context, msg *WeComMessage) (*Identity, error) {
@@ -545,7 +587,13 @@ func (r *Clawman) resolveRoutingTarget(ctx context.Context, msg *WeComMessage, s
 		return group.Name, nil
 	}
 
-	return sender.Name, nil
+	if sender != nil && strings.TrimSpace(sender.Name) != "" {
+		return sender.Name, nil
+	}
+	if msg != nil && strings.TrimSpace(msg.From) != "" {
+		return msg.From, nil
+	}
+	return "", fmt.Errorf("direct routing target is empty")
 }
 
 // Resolve resolves a WeCom sender ID to an Identity.

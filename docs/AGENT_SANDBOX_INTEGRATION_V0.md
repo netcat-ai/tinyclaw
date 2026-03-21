@@ -116,11 +116,20 @@ Content-Type: application/json
 
 ```json
 {
-  "query": "hello",
   "msgid": "wecom_msg_abc",
   "room_id": "room-123",
   "tenant_id": "corp-id",
-  "chat_type": "group"
+  "chat_type": "group",
+  "messages": [
+    {
+      "seq": 123,
+      "msgid": "wecom_msg_abc",
+      "from_id": "zhangsan",
+      "from_name": "张三",
+      "msg_time": "2026-03-21T10:00:00Z",
+      "payload": "{\"msgtype\":\"text\",\"text\":{\"content\":\"hello\"}}"
+    }
+  ]
 }
 ```
 
@@ -231,11 +240,11 @@ agent 容器 ready 条件：
 ## 10. 失败处理
 
 1. `SandboxClaim` 创建失败
-   - 当前消息不推进 `ingest_cursors.cursor`，下一轮重试。
+   - 当前消息保持 `messages(status=pending)`，下一轮重试。
 2. `SandboxClaim` 长时间未 ready
    - 视为当前消息失败，记日志并重试。
 3. router 调用失败
-   - 视为当前消息失败，不推进 cursor。
+   - 视为当前消息失败，保留 `pending` 供后续重试。
 4. agent 运行失败
    - router 返回 5xx，主服务记录并重试。
 5. egress 回发失败

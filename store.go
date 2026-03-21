@@ -11,7 +11,11 @@ import (
 )
 
 const (
-	wecomCursorSource      = "wecom_archive"
+	statusIgnored  = "ignored"
+	statusBuffered = "buffered"
+	statusPending  = "pending"
+	statusDone     = "done"
+
 	defaultDeliveryLease   = time.Minute
 	defaultDeliveryBackoff = 5 * time.Second
 )
@@ -20,25 +24,24 @@ type Store struct {
 	db *sql.DB
 }
 
-type InboundMessageRecord struct {
-	ID            string
-	TenantID      string
-	RoomID        string
-	PlatformMsgID string
-	SenderID      string
-	SenderName    string
-	Content       string
-	RawPayload    string
-	CreatedAt     time.Time
+type MessageRecord struct {
+	Seq       int64
+	TenantID  string
+	MsgID     string
+	RoomID    string
+	FromID    string
+	FromName  string
+	Payload   string
+	Status    string
+	MsgTime   time.Time
+	CreatedAt time.Time
 }
 
-type OutboundMessageRecord struct {
-	ID         string
+type DeliveryRecord struct {
 	TenantID   string
 	RoomID     string
-	Content    string
 	TargetName string
-	CreatedAt  time.Time
+	Content    string
 }
 
 type Delivery struct {
@@ -83,36 +86,36 @@ func (s *Store) Close() error {
 func (s *Store) InitSchema(ctx context.Context) error {
 	statements := []string{
 		`
-		CREATE TABLE IF NOT EXISTS ingest_cursors (
-			source TEXT NOT NULL,
+		CREATE TABLE IF NOT EXISTS messages (
+			seq BIGINT PRIMARY KEY,
 			tenant_id TEXT NOT NULL,
-			cursor BIGINT NOT NULL,
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			PRIMARY KEY (source, tenant_id)
+			msgid TEXT,
+			room_id TEXT,
+			from_id TEXT,
+			from_name TEXT,
+			payload TEXT NOT NULL,
+			status TEXT NOT NULL,
+			msg_time TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			CHECK (status IN ('ignored', 'buffered', 'pending', 'done'))
 		)
 		`,
 		`
-		CREATE TABLE IF NOT EXISTS messages (
-			id TEXT PRIMARY KEY,
-			tenant_id TEXT NOT NULL,
-			room_id TEXT NOT NULL,
-			platform_msg_id TEXT UNIQUE,
-			direction TEXT NOT NULL,
-			sender_id TEXT,
-			sender_name TEXT,
-			target_name TEXT,
-			content TEXT NOT NULL,
-			raw_payload TEXT,
-			status TEXT NOT NULL DEFAULT 'completed',
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)
+		CREATE INDEX IF NOT EXISTS idx_messages_room_seq
+		ON messages (tenant_id, room_id, seq)
+		`,
+		`
+		CREATE INDEX IF NOT EXISTS idx_messages_pending_by_room
+		ON messages (tenant_id, status, room_id, seq)
+		WHERE status = 'pending'
 		`,
 		`
 		CREATE TABLE IF NOT EXISTS outbox_deliveries (
 			id BIGSERIAL PRIMARY KEY,
-			message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+			tenant_id TEXT NOT NULL,
 			room_id TEXT NOT NULL,
 			target_name TEXT NOT NULL,
+			content TEXT NOT NULL,
 			status TEXT NOT NULL DEFAULT 'pending',
 			attempt_count INTEGER NOT NULL DEFAULT 0,
 			available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -126,10 +129,6 @@ func (s *Store) InitSchema(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_outbox_deliveries_ready
 		ON outbox_deliveries (status, available_at, id)
 		`,
-		`
-		CREATE INDEX IF NOT EXISTS idx_messages_pending_inbound
-		ON messages (tenant_id, room_id, direction, status, created_at, id)
-		`,
 	}
 
 	for _, stmt := range statements {
@@ -140,135 +139,141 @@ func (s *Store) InitSchema(ctx context.Context) error {
 	return nil
 }
 
-func (s *Store) GetCursor(ctx context.Context, source, tenantID string) (int64, error) {
-	defer dbTimer("get_cursor")()
-	var cursor int64
+func (s *Store) GetMaxSeq(ctx context.Context, tenantID string) (int64, bool, error) {
+	defer dbTimer("get_max_seq")()
+
+	var maxSeq sql.NullInt64
 	err := s.db.QueryRowContext(
 		ctx,
-		`SELECT cursor FROM ingest_cursors WHERE source = $1 AND tenant_id = $2`,
-		source,
-		tenantID,
-	).Scan(&cursor)
-	if err == nil {
-		return cursor, nil
-	}
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
-	}
-	return 0, fmt.Errorf("get cursor: %w", err)
-}
-
-func (s *Store) SetCursor(ctx context.Context, source, tenantID string, cursor int64) error {
-	defer dbTimer("set_cursor")()
-	_, err := s.db.ExecContext(
-		ctx,
 		`
-		INSERT INTO ingest_cursors (source, tenant_id, cursor, updated_at)
-		VALUES ($1, $2, $3, NOW())
-		ON CONFLICT (source, tenant_id)
-		DO UPDATE SET cursor = EXCLUDED.cursor, updated_at = NOW()
+		SELECT MAX(seq)
+		FROM messages
+		WHERE tenant_id = $1
 		`,
-		source,
 		tenantID,
-		cursor,
-	)
+	).Scan(&maxSeq)
 	if err != nil {
-		return fmt.Errorf("set cursor: %w", err)
+		return 0, false, fmt.Errorf("get max seq: %w", err)
 	}
-	return nil
+
+	if !maxSeq.Valid {
+		return 0, false, nil
+	}
+	return maxSeq.Int64, true, nil
 }
 
-func (s *Store) StoreInboundMessage(ctx context.Context, inbound InboundMessageRecord) (bool, error) {
-	defer dbTimer("store_inbound")()
-	var insertedID string
-	err := s.db.QueryRowContext(
-		ctx,
-		`
-		INSERT INTO messages (
-			id, tenant_id, room_id, platform_msg_id, direction, sender_id, sender_name, content, raw_payload, status, created_at
-		)
-		VALUES ($1, $2, $3, $4, 'inbound', $5, $6, $7, $8, 'received', $9)
-		ON CONFLICT (platform_msg_id) DO NOTHING
-		RETURNING id
-		`,
-		inbound.ID,
-		inbound.TenantID,
-		inbound.RoomID,
-		inbound.PlatformMsgID,
-		inbound.SenderID,
-		inbound.SenderName,
-		inbound.Content,
-		inbound.RawPayload,
-		inbound.CreatedAt,
-	).Scan(&insertedID)
-	switch {
-	case err == nil:
-	case errors.Is(err, sql.ErrNoRows):
+func (s *Store) StoreMessage(ctx context.Context, record MessageRecord, promoteBuffered bool) (bool, error) {
+	defer dbTimer("store_message")()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	inserted, err := insertMessageTx(ctx, tx, record)
+	if err != nil {
+		return false, err
+	}
+	if !inserted {
 		return false, nil
-	default:
-		return false, fmt.Errorf("insert inbound message: %w", err)
 	}
 
+	if promoteBuffered && record.RoomID != "" {
+		if _, err := tx.ExecContext(
+			ctx,
+			`
+			UPDATE messages
+			SET status = $4
+			WHERE tenant_id = $1
+			  AND room_id = $2
+			  AND seq IS NOT NULL
+			  AND status = $3
+			`,
+			record.TenantID,
+			record.RoomID,
+			statusBuffered,
+			statusPending,
+		); err != nil {
+			return false, fmt.Errorf("promote buffered messages: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit tx: %w", err)
+	}
 	return true, nil
 }
 
-func (s *Store) ListPendingInboundMessages(ctx context.Context, tenantID, roomID string) ([]InboundMessageRecord, error) {
-	defer dbTimer("list_pending_inbound")()
-	rows, err := s.db.QueryContext(
+func insertMessageTx(ctx context.Context, tx *sql.Tx, record MessageRecord) (bool, error) {
+	var insertedSeq int64
+	err := tx.QueryRowContext(
 		ctx,
 		`
-		SELECT id, tenant_id, room_id, platform_msg_id, sender_id, sender_name, content, raw_payload, created_at
-		FROM messages
-		WHERE tenant_id = $1
-		  AND room_id = $2
-		  AND direction = 'inbound'
-		  AND status = 'received'
-		ORDER BY created_at, id
+		INSERT INTO messages (
+			seq,
+			tenant_id,
+			msgid,
+			room_id,
+			from_id,
+			from_name,
+			payload,
+			status,
+			msg_time,
+			created_at
+		)
+		VALUES (
+			$1,
+			$2,
+			$3,
+			$4,
+			$5,
+			$6,
+			$7,
+			$8,
+			$9,
+			$10
+		)
+		ON CONFLICT (seq) DO NOTHING
+		RETURNING seq
 		`,
-		tenantID,
-		roomID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("list pending inbound messages: %w", err)
+		record.Seq,
+		record.TenantID,
+		nullIfEmpty(record.MsgID),
+		nullIfEmpty(record.RoomID),
+		nullIfEmpty(record.FromID),
+		nullIfEmpty(record.FromName),
+		record.Payload,
+		record.Status,
+		nullTime(record.MsgTime),
+		record.CreatedAt,
+	).Scan(&insertedSeq)
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	default:
+		return false, fmt.Errorf("insert message seq=%d: %w", record.Seq, err)
 	}
-	defer rows.Close()
-
-	var records []InboundMessageRecord
-	for rows.Next() {
-		var record InboundMessageRecord
-		if err := rows.Scan(
-			&record.ID,
-			&record.TenantID,
-			&record.RoomID,
-			&record.PlatformMsgID,
-			&record.SenderID,
-			&record.SenderName,
-			&record.Content,
-			&record.RawPayload,
-			&record.CreatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan pending inbound message: %w", err)
-		}
-		records = append(records, record)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate pending inbound messages: %w", err)
-	}
-	return records, nil
 }
 
 func (s *Store) ListPendingRooms(ctx context.Context, tenantID string) ([]string, error) {
 	defer dbTimer("list_pending_rooms")()
+
 	rows, err := s.db.QueryContext(
 		ctx,
 		`
-		SELECT DISTINCT room_id
+		SELECT room_id
 		FROM messages
 		WHERE tenant_id = $1
-		  AND direction = 'inbound'
-		  AND status = 'received'
+		  AND status = $2
+		  AND room_id IS NOT NULL
+		GROUP BY room_id
+		ORDER BY MIN(seq)
 		`,
 		tenantID,
+		statusPending,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list pending rooms: %w", err)
@@ -289,10 +294,62 @@ func (s *Store) ListPendingRooms(ctx context.Context, tenantID string) ([]string
 	return rooms, nil
 }
 
-func (s *Store) StoreOutboundMessage(ctx context.Context, inboundIDs []string, outbound OutboundMessageRecord) error {
-	defer dbTimer("store_outbound")()
-	if len(inboundIDs) == 0 {
-		return fmt.Errorf("store outbound message: inboundIDs is empty")
+func (s *Store) ListPendingMessages(ctx context.Context, tenantID, roomID string) ([]MessageRecord, error) {
+	defer dbTimer("list_pending_messages")()
+
+	rows, err := s.db.QueryContext(
+		ctx,
+		`
+		SELECT seq, tenant_id, msgid, room_id, from_id, from_name, payload, status, msg_time, created_at
+		FROM messages
+		WHERE tenant_id = $1
+		  AND room_id = $2
+		  AND status = $3
+		ORDER BY seq
+		`,
+		tenantID,
+		roomID,
+		statusPending,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list pending messages: %w", err)
+	}
+	defer rows.Close()
+
+	var records []MessageRecord
+	for rows.Next() {
+		var record MessageRecord
+		var msgTime sql.NullTime
+		if err := rows.Scan(
+			&record.Seq,
+			&record.TenantID,
+			&record.MsgID,
+			&record.RoomID,
+			&record.FromID,
+			&record.FromName,
+			&record.Payload,
+			&record.Status,
+			&msgTime,
+			&record.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan pending message: %w", err)
+		}
+		if msgTime.Valid {
+			record.MsgTime = msgTime.Time
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending messages: %w", err)
+	}
+	return records, nil
+}
+
+func (s *Store) MarkMessagesDoneAndEnqueueDelivery(ctx context.Context, seqs []int64, delivery DeliveryRecord) error {
+	defer dbTimer("mark_done_enqueue_delivery")()
+
+	if len(seqs) == 0 {
+		return fmt.Errorf("mark messages done: seqs is empty")
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -305,44 +362,34 @@ func (s *Store) StoreOutboundMessage(ctx context.Context, inboundIDs []string, o
 		ctx,
 		`
 		UPDATE messages
-		SET status = 'completed'
-		WHERE direction = 'inbound'
-		  AND id = ANY($1)
+		SET status = $2
+		WHERE seq = ANY($1)
 		`,
-		inboundIDs,
+		seqs,
+		statusDone,
 	); err != nil {
-		return fmt.Errorf("mark inbound messages completed: %w", err)
-	}
-
-	if _, err := tx.ExecContext(
-		ctx,
-		`
-		INSERT INTO messages (
-			id, tenant_id, room_id, direction, target_name, content, status, created_at
-		)
-		VALUES ($1, $2, $3, 'outbound', $4, $5, 'completed', $6)
-		`,
-		outbound.ID,
-		outbound.TenantID,
-		outbound.RoomID,
-		outbound.TargetName,
-		outbound.Content,
-		outbound.CreatedAt,
-	); err != nil {
-		return fmt.Errorf("insert outbound message: %w", err)
+		return fmt.Errorf("mark messages done: %w", err)
 	}
 
 	if _, err := tx.ExecContext(
 		ctx,
 		`
 		INSERT INTO outbox_deliveries (
-			message_id, room_id, target_name, status, available_at, created_at, updated_at
+			tenant_id,
+			room_id,
+			target_name,
+			content,
+			status,
+			available_at,
+			created_at,
+			updated_at
 		)
-		VALUES ($1, $2, $3, 'pending', NOW(), NOW(), NOW())
+		VALUES ($1, $2, $3, $4, 'pending', NOW(), NOW(), NOW())
 		`,
-		outbound.ID,
-		outbound.RoomID,
-		outbound.TargetName,
+		delivery.TenantID,
+		delivery.RoomID,
+		delivery.TargetName,
+		delivery.Content,
 	); err != nil {
 		return fmt.Errorf("insert outbox delivery: %w", err)
 	}
@@ -376,10 +423,9 @@ func (s *Store) ClaimNextDelivery(ctx context.Context, lease time.Duration) (*De
 			attempt_count = o.attempt_count + 1,
 			available_at = NOW() + ($1 * INTERVAL '1 second'),
 			updated_at = NOW()
-		FROM next_delivery, messages AS m
+		FROM next_delivery
 		WHERE o.id = next_delivery.id
-		  AND m.id = o.message_id
-		RETURNING o.id, o.message_id, o.room_id, o.target_name, m.content, o.attempt_count
+		RETURNING o.id, '', o.room_id, o.target_name, o.content, o.attempt_count
 		`,
 		int(lease.Seconds()),
 	)
@@ -453,4 +499,18 @@ func (s *Store) MarkDeliveryFailed(ctx context.Context, id int64, errText string
 		return fmt.Errorf("mark delivery failed: %w", err)
 	}
 	return nil
+}
+
+func nullIfEmpty(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+func nullTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
 }

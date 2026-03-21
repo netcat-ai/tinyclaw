@@ -11,12 +11,21 @@ import { z } from 'zod';
 import type { AgentEnv, AgentRequest, ExecutionResult, FileEntry } from './types.js';
 import type { AgentRuntime } from './runtime.js';
 
+const agentMessageSchema = z.object({
+  seq: z.number().int().nonnegative(),
+  msgid: z.string().min(1).optional(),
+  from_id: z.string().optional(),
+  from_name: z.string().optional(),
+  msg_time: z.string().optional(),
+  payload: z.string().min(1),
+});
+
 const agentRequestSchema = z.object({
-  query: z.string().min(1),
   msgid: z.string().min(1).optional(),
   room_id: z.string().optional(),
   tenant_id: z.string().optional(),
   chat_type: z.string().optional(),
+  messages: z.array(agentMessageSchema).min(1),
 });
 
 const executeRequestSchema = z.object({
@@ -67,7 +76,14 @@ function normalizeAgentRequest(input: z.infer<typeof agentRequestSchema>): Agent
     roomId: input.room_id ?? 'sandbox-local',
     tenantId: input.tenant_id ?? '',
     chatType: input.chat_type ?? '',
-    query: input.query,
+    messages: input.messages.map(message => ({
+      seq: message.seq,
+      msgid: message.msgid ?? randomUUID(),
+      fromId: message.from_id ?? '',
+      fromName: message.from_name,
+      msgTime: message.msg_time,
+      payload: message.payload,
+    })),
   };
 }
 

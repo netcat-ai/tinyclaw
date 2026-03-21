@@ -74,6 +74,23 @@ func (f *fakeSDKHandle) Run(ctx context.Context, command string, opts ...sdksand
 	return &sdksandbox.ExecutionResult{}, nil
 }
 
+func testAgentRequest(msg string) AgentRequest {
+	return AgentRequest{
+		MsgID:    "msg-test",
+		RoomID:   "room-1",
+		TenantID: "tenant-test",
+		ChatType: "group",
+		Messages: []AgentMessage{
+			{
+				Seq:     1,
+				MsgID:   "msg-test",
+				FromID:  "user-test",
+				Payload: `{"msgtype":"text","text":{"content":"` + msg + `"}}`,
+			},
+		},
+	}
+}
+
 func TestInvokeAgentCreatesAndReusesRoomSession(t *testing.T) {
 	handle := &fakeSDKHandle{sandboxID: "sandbox-123"}
 	var factoryCalls int
@@ -100,10 +117,10 @@ func TestInvokeAgentCreatesAndReusesRoomSession(t *testing.T) {
 	handle.runResult = &sdksandbox.ExecutionResult{
 		Stdout: `{"stdout":"agent reply","stderr":"","exit_code":0}`,
 	}
-	if _, err := orch.InvokeAgent(context.Background(), "room-1", AgentRequest{Query: "hello"}); err != nil {
+	if _, err := orch.InvokeAgent(context.Background(), "room-1", testAgentRequest("hello")); err != nil {
 		t.Fatalf("InvokeAgent first call error: %v", err)
 	}
-	if _, err := orch.InvokeAgent(context.Background(), "room-1", AgentRequest{Query: "hello again"}); err != nil {
+	if _, err := orch.InvokeAgent(context.Background(), "room-1", testAgentRequest("hello again")); err != nil {
 		t.Fatalf("InvokeAgent second call error: %v", err)
 	}
 
@@ -128,7 +145,7 @@ func TestInvokeAgentPropagatesOpenError(t *testing.T) {
 		return handle, nil
 	}
 
-	_, err := orch.InvokeAgent(context.Background(), "room-1", AgentRequest{Query: "hello"})
+	_, err := orch.InvokeAgent(context.Background(), "room-1", testAgentRequest("hello"))
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("InvokeAgent error = %v, want wrapped %v", err, wantErr)
 	}
@@ -159,7 +176,7 @@ func TestInvokeAgentRecreatesRoomSessionAfterOrphanedClaim(t *testing.T) {
 		return h, nil
 	}
 
-	resp, err := orch.InvokeAgent(context.Background(), "room-1", AgentRequest{Query: "hello"})
+	resp, err := orch.InvokeAgent(context.Background(), "room-1", testAgentRequest("hello"))
 	if err != nil {
 		t.Fatalf("InvokeAgent error: %v", err)
 	}
@@ -193,7 +210,7 @@ func TestInvokeAgentReturnsCleanupErrorWhenOrphanedClaimCloseFails(t *testing.T)
 		return handle, nil
 	}
 
-	_, err := orch.InvokeAgent(context.Background(), "room-1", AgentRequest{Query: "hello"})
+	_, err := orch.InvokeAgent(context.Background(), "room-1", testAgentRequest("hello"))
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("InvokeAgent error = %v, want wrapped %v", err, wantErr)
 	}
@@ -222,11 +239,20 @@ func TestInvokeAgentRunsEncodedAgentRequest(t *testing.T) {
 	}
 
 	resp, err := orch.InvokeAgent(context.Background(), "room-1", AgentRequest{
-		Query:    "hello",
 		MsgID:    "msg-1",
 		RoomID:   "room-1",
 		TenantID: "corp-id",
 		ChatType: "group",
+		Messages: []AgentMessage{
+			{
+				Seq:      1,
+				MsgID:    "msg-1",
+				FromID:   "zhangsan",
+				FromName: "张三",
+				MsgTime:  "2026-03-21T10:00:00Z",
+				Payload:  `{"msgtype":"text","text":{"content":"hello"}}`,
+			},
+		},
 	})
 	if err != nil {
 		t.Fatalf("InvokeAgent error: %v", err)
@@ -263,7 +289,7 @@ func TestInvokeAgentPropagatesRunError(t *testing.T) {
 		return handle, nil
 	}
 
-	_, err := orch.InvokeAgent(context.Background(), "room-1", AgentRequest{Query: "hello"})
+	_, err := orch.InvokeAgent(context.Background(), "room-1", testAgentRequest("hello"))
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("InvokeAgent error = %v, want wrapped %v", err, wantErr)
 	}
@@ -287,7 +313,7 @@ func TestInvokeAgentReopensAfterRunNotReady(t *testing.T) {
 		return handle, nil
 	}
 
-	resp, err := orch.InvokeAgent(context.Background(), "room-1", AgentRequest{Query: "hello"})
+	resp, err := orch.InvokeAgent(context.Background(), "room-1", testAgentRequest("hello"))
 	if err != nil {
 		t.Fatalf("InvokeAgent error: %v", err)
 	}
@@ -325,10 +351,10 @@ func TestCloseClosesAllSDKClients(t *testing.T) {
 	handle2.runResult = &sdksandbox.ExecutionResult{
 		Stdout: `{"stdout":"reply-2","stderr":"","exit_code":0}`,
 	}
-	if _, err := orch.InvokeAgent(context.Background(), "room-1", AgentRequest{Query: "hello-1"}); err != nil {
+	if _, err := orch.InvokeAgent(context.Background(), "room-1", testAgentRequest("hello-1")); err != nil {
 		t.Fatalf("InvokeAgent room-1: %v", err)
 	}
-	if _, err := orch.InvokeAgent(context.Background(), "room-2", AgentRequest{Query: "hello-2"}); err != nil {
+	if _, err := orch.InvokeAgent(context.Background(), "room-2", testAgentRequest("hello-2")); err != nil {
 		t.Fatalf("InvokeAgent room-2: %v", err)
 	}
 

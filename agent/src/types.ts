@@ -24,7 +24,16 @@ export interface AgentRequest {
   roomId: string;
   tenantId: string;
   chatType: string;
-  query: string;
+  messages: AgentMessage[];
+}
+
+export interface AgentMessage {
+  seq: number;
+  msgid: string;
+  fromId: string;
+  fromName?: string;
+  msgTime?: string;
+  payload: string;
 }
 
 export interface ExecutionResult {

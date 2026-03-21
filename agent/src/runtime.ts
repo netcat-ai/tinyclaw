@@ -30,10 +30,18 @@ const runtimeDeps: RuntimeDeps = {
 class EchoRuntime implements AgentRuntime {
   async run(message: AgentRequest): Promise<ExecutionResult> {
     return {
-      stdout: `Echo from tinyclaw-agent: ${message.query}`,
+      stdout: `Echo from tinyclaw-agent: received ${message.messages.length} messages`,
       stderr: '',
       exit_code: 0,
     };
+  }
+}
+
+function parsePayload(payload: string): unknown {
+  try {
+    return JSON.parse(payload);
+  } catch {
+    return payload;
   }
 }
 
@@ -46,7 +54,22 @@ function buildClaudePrompt(message: AgentRequest): string {
     `msgid: ${message.msgid}`,
   ];
 
-  lines.push('', 'User message:', message.query);
+  lines.push(
+    '',
+    'Messages (JSON):',
+    JSON.stringify(
+      message.messages.map(item => ({
+        seq: item.seq,
+        msgid: item.msgid,
+        from_id: item.fromId,
+        from_name: item.fromName ?? '',
+        msg_time: item.msgTime ?? '',
+        payload: parsePayload(item.payload),
+      })),
+      null,
+      2,
+    ),
+  );
   return lines.join('\n');
 }
 

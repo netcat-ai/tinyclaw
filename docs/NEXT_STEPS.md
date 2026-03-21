@@ -47,8 +47,7 @@
 3. 验证 SDK direct-url 模式与 `/agent` 桥接调用行为。
 
 ## PostgreSQL 最小范围（当前版）
-- `ingest_cursors`：企业微信拉取游标
-- `messages`：成功处理的入站/出站消息
+- `messages`：企业微信 archive 入站事实、状态机、`seq` checkpoint
 - `outbox_deliveries`：egress 待发送、重试中、已发送、失败记录
 
 ## 验收标准

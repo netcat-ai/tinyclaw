@@ -105,11 +105,23 @@ liveTest(
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          query: 'Reply with the exact text: tinyclaw-live-ok',
           msgid: 'msg-live-smoke-1',
           room_id: 'room-live',
           tenant_id: 'tenant-live',
           chat_type: 'group',
+          messages: [
+            {
+              seq: 1,
+              msgid: 'msg-live-smoke-1',
+              from_id: 'user-live',
+              from_name: 'Live User',
+              msg_time: '2026-03-21T00:00:00Z',
+              payload: JSON.stringify({
+                msgtype: 'text',
+                text: { content: 'Reply with the exact text: tinyclaw-live-ok' },
+              }),
+            },
+          ],
         }),
       });
 
