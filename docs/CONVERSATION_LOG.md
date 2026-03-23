@@ -105,3 +105,15 @@ agent启动后就去从redis队列中拉取对应的消息，开始消费。
    - PostgreSQL 事务成功写入 inbound / outbound / outbox
 5. `outbox_deliveries` 由独立 egress consumer 轮询回发；消息发送成功后才标记 `sent`。
 6. 因为 cursor 只在成功路径推进，所以停机或持续失败后恢复服务时，会从旧 cursor 开始回放历史 archive backlog；这属于当前版本的既定运行语义。
+
+---
+
+## 7. 消息与回发链路再简化（2026-03-23）
+
+### 变更结论
+1. `clawman` 继续以 PostgreSQL `messages.seq` 的 `MAX(seq)` 作为唯一 archive checkpoint，不再使用 `ingest_cursors`。
+2. 主服务不再写 `outbox_deliveries`，也不再运行独立 egress consumer。
+3. dispatch 拿到 agent reply 后，直接调用 WorkTool 回发企业微信。
+4. 只有当 WorkTool 回发成功后，对应 `messages` 才会从 `pending` 更新为 `done`。
+5. 如果 sandbox 调用失败、WorkTool 回发失败，或回发成功后 `done` 更新失败，当前消息都会继续保留在 `pending`，由后续 dispatch 重试。
+6. 该简化方案接受一个已知窗口：如果 WorkTool 已成功发送，但 `messages.done` 更新失败，后续重试可能产生重复回复；当前版本先接受这一权衡，以换取更直接的实现。

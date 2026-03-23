@@ -20,7 +20,7 @@
    - 拉取企业微信消息并标准化。
    - 调用 SDK `Open()`，保证对应 sandbox ready。
    - 通过 SDK `Run()` 在 sandbox 内桥接调用 HTTP runtime `/agent`。
-   - 将成功处理的入站消息、出站消息和 outbox 记录写入 PostgreSQL，由统一回发服务处理。
+   - 将入站消息写入 PostgreSQL `messages`；agent 返回后由主服务直接调用 WorkTool 回发，并在发送成功后把对应 `messages` 标记为 `done`。
 
 2. `Sandbox Orchestrator`
    - 调用官方 Go SDK 创建 room 级 sandbox session。
@@ -146,7 +146,7 @@ Content-Type: application/json
 ### 5.2 sandbox -> 主服务
 - v0 不走主动回调。
 - sandbox 直接同步返回 HTTP 响应。
-- 主服务收到结果后写入 PostgreSQL `messages` 与 `outbox_deliveries`。
+- 主服务收到结果后直接调用 WorkTool 回发，并在发送成功后更新 PostgreSQL `messages(status=done)`。
 
 ## 6. Runtime 环境变量契约
 
@@ -228,8 +228,8 @@ agent 容器 ready 条件：
 3. Orchestrator 创建或复用对应 room 的 SDK client。
 4. SDK `Open()` 完成后，通过 `/execute` 桥接调用 `/agent`。
 5. agent 返回回复。
-6. 主服务写入 PostgreSQL `messages` 与 `outbox_deliveries`。
-7. egress consumer 统一回发企业微信。
+6. 主服务直接通过 WorkTool 回发企业微信。
+7. 回发成功后，主服务把参与处理的 `messages` 标记为 `done`。
 
 ### 9.2 活跃会话
 1. 新消息到达。
@@ -247,8 +247,8 @@ agent 容器 ready 条件：
    - 视为当前消息失败，保留 `pending` 供后续重试。
 4. agent 运行失败
    - router 返回 5xx，主服务记录并重试。
-5. egress 回发失败
-   - 保留在 `outbox_deliveries` 中，按 consumer 逻辑重试并最终标记 `failed`。
+5. WorkTool 回发失败
+   - 当前消息保持 `messages(status=pending)`，由后续 dispatch 重试。
 
 ## 11. 观测与告警
 
@@ -257,12 +257,12 @@ agent 容器 ready 条件：
 - `sandbox_http_request_latency_ms`
 - `sandbox_http_error_rate`
 - `reply_e2e_ms`
-- `egress_retry_count`
+- `worktool_send_error_rate`
 
 告警建议：
 - `SandboxClaim Ready` 超时率持续升高
 - router 5xx 持续升高
-- `outbox_deliveries` backlog 持续累积
+- `messages(status=pending)` backlog 持续累积
 
 ## 12. 本轮确认约束
 

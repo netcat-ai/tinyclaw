@@ -30,14 +30,6 @@ tinyclaw 是一个面向企业微信会话的 AI Agent Runtime：
                                    +-----------------v------------------+
                                    | PostgreSQL                           |
                                    | - messages                           |
-                                   | - outbox_deliveries                  |
-                                   +-----------------+------------------+
-                                                     |
-                                   +-----------------v------------------+
-                                   | Egress Consumer                     |
-                                   | - poll outbox_deliveries            |
-                                   | - WorkTool / WeCom send             |
-                                   | - retry / failed                    |
                                    +-------------------------------------+
 
                                                      |
@@ -113,8 +105,8 @@ SDK client.Open() -> create SandboxClaim -> wait Sandbox ready
 10. 触发阶段按需补充解析群详情；发送方昵称在 ingest 阶段 best-effort 写入 `from_name`，失败不阻塞入库。
 11. 通过官方 Go SDK `Open()` 确保该 room 的 sandbox session ready；进程内 room session cache 遇到 `ErrOrphanedClaim` 时会先 `Close()` 再重建。
 12. 通过官方 Go SDK `Run()` 在 sandbox 内部桥接调用本机 `POST /agent`。
-13. agent 成功返回后，在同一事务中把本轮参与处理的 `messages` 标记为 `done`，并写入一条 `outbox_deliveries`。
-14. egress consumer 轮询 outbox 并统一回发企业微信。
+13. agent 成功返回后，主服务直接通过 WorkTool 回发企业微信。
+14. 只有当 WorkTool 回发成功后，主服务才把本轮参与处理的 `messages` 标记为 `done`。
 
 ### 5.2 Router 调用契约
 当前主服务不再直接从业务层拼接 router 请求头，而是让官方 Go SDK 通过 direct-url 模式连接 `sandbox-router`，并通过 `/execute` 在 sandbox 内部调用：
@@ -157,13 +149,12 @@ POST http://127.0.0.1:{AGENT_SERVER_PORT}/agent
 ### 5.3 PostgreSQL 职责
 v0 中主服务只依赖最小 PostgreSQL 事实源：
 - `messages`：企业微信 archive 入站事实、待处理状态、拉取 checkpoint
-- `outbox_deliveries`：待发送、重试中、已发送、失败的回发任务
 
 补充语义：
 - `messages` 的流程状态固定为 `ignored / buffered / pending / done`。
 - `messages.seq` 单调递增；系统通过 `MAX(messages.seq)` 推导下一次 archive pull 的起点。
 - 群聊未触发消息保持 `status=buffered`，用于后续触发时补齐上下文。
-- dispatch/outbox 失败不会回滚 `messages.seq`；后续轮询会基于已持久化的 `pending` 消息继续重试，而不会丢失上下文。
+- dispatch/发送失败不会回滚 `messages.seq`；后续轮询会基于已持久化的 `pending` 消息继续重试，而不会丢失上下文。
 
 ## 6. Agent Runtime 设计
 
@@ -216,17 +207,10 @@ PID 1: tini / entrypoint
 - 不单独维护 room registry 表。
 - 当前用进程内 room session cache 复用活跃 sandbox。
 
-### 7.3 Egress
-- 轮询 `outbox_deliveries`。
-- 统一回发企业微信。
-- 失败重试，超过阈值后标记 `failed`。
-
-当前实现细节：
-- 轮询间隔：500ms
-- 发送租约：1 分钟
-- 最大重试次数：5
-- 领取状态：`pending` / `retry` / `sending`
-- 成功后标记：`sent`
+### 7.3 Reply Delivery
+- 在 `dispatchRoom` 成功拿到 agent reply 后，直接调用 WorkTool 回发企业微信。
+- 只有发送成功后，当前这批 `messages` 才会从 `pending` 更新到 `done`。
+- 如果 WorkTool 回发失败，当前这批消息保持 `pending`，等待后续 dispatch 重试。
 
 ## 8. 失败处理
 - `SandboxClaim` 创建失败：
@@ -239,8 +223,8 @@ PID 1: tini / entrypoint
   - 发送者昵称解析失败不会阻塞入库；如果后续群详情解析失败，则由 pending room 在后续轮询中重试。
 - bot 自发消息：
   - 仍然会落一条 `messages(status=ignored)`，但不会进入 dispatch。
-- egress 回发失败：
-  - 保留在 `outbox_deliveries` 中重试，超过阈值后标记 `failed`。
+- WorkTool 回发失败：
+  - 当前消息保持 `messages(status=pending)`，由后续 dispatch 继续重试。
 
 现网含义：
 - 冷启动且 `messages` 为空时，只会处理最近 10 分钟消息；更早的 archive backlog 统一写入 `ignored`，避免误回复历史对话。
@@ -252,7 +236,7 @@ PID 1: tini / entrypoint
 - `sandbox_invoke_latency_ms`
 - `sandbox_http_error_rate`
 - `reply_e2e_ms`
-- `egress_retry_count`
+- `worktool_send_error_rate`
 
 ## 10. 结论
 v0 方案的重点已经从“Redis 驱动 sandbox 自拉”切换为“官方 agent-sandbox Go SDK + router/direct-url + PostgreSQL 最小事实源”：

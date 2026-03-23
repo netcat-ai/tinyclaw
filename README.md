@@ -17,7 +17,7 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
 - `agent` 在 sandbox 内提供 `/healthz`、`/agent`、`/execute`、`/upload`、`/download`、`/list`、`/exists` 等官方风格 HTTP 接口，主输入已经切到结构化 `messages[]`。
 - 私聊消息直接进入 `pending`；群聊消息只有命中 `@` 提及或触发关键字时才进入 `pending`，未触发消息先以 `status=buffered` 保留，等后续触发消息一并带入上下文。
 - 冷启动且 `messages` 为空时，仅最近 10 分钟内的消息允许进入 `pending/buffered`；更早的 backlog 仍会落库，但统一写成 `status=ignored`。
-- 如果消息已写入 `messages(status=pending)`，但在后续 sandbox 或 egress 阶段失败，消息不会丢失；dispatch worker 会持续复用这批 `pending` 消息重试。
+- 如果消息已写入 `messages(status=pending)`，但在后续 sandbox、WorkTool 回发或 `done` 更新阶段失败，消息不会丢失；dispatch worker 会持续复用这批 `pending` 消息重试。
 
 ## 当前消息流程
 1. ingest worker 从 `messages` 查询当前 `MAX(seq)`，以此作为 `GetChatData(seq, limit)` 的起点，当前固定 `limit=100`。
@@ -31,8 +31,8 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
 6. 触发处理时，`sandbox.Orchestrator` 按 `room_id` 查找或创建进程内 SDK client，并调用 `Open()` 保证 sandbox ready。
 7. Orchestrator 通过 SDK `Run()` 在 sandbox 内执行一个本机 `curl http://127.0.0.1:8888/agent`，把聚合后的 `messages[]/msgid/room_id/tenant_id/chat_type` 传给 agent runtime。
 8. agent runtime 用 `claude_agent_sdk` 执行；`SandboxTemplate` 当前通过 `CLAUDE_SYSTEM_PROMPT_APPEND` 注入系统提示词。
-9. 主服务在同一个 PostgreSQL 事务中把本轮参与处理的 `messages` 标记为 `done`，并写入一条 `outbox_deliveries` 发送任务。
-10. egress consumer 每 500ms 轮询一次 outbox，领取一条待发送记录，经 WorkTool 回发企业微信；发送成功标记 `sent`，失败则重试，最多 5 次。
+9. 主服务拿到 agent reply 后，直接通过 WorkTool 回发企业微信。
+10. 只有当 WorkTool 回发成功后，主服务才会把本轮参与处理的 `messages` 标记为 `done`；如果发送失败或 `done` 更新失败，这批消息保持 `pending`，由后续 dispatch 重试。
 
 ## Agent Scaffold
 - `agent/`：独立的 TypeScript agent 子工程，当前提供：
@@ -53,7 +53,7 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
 2. 官方控制面接口采用 `SandboxTemplate + SandboxClaim`，不再由业务侧直接创建 `Sandbox`。
 3. 官方通信接口采用 `sandbox-router + HTTP runtime`，不再让 sandbox 自拉 Redis ingress。
 4. sandbox 生命周期统一通过官方 Go SDK 管理；当前 SDK 不支持自定义确定性 claim 名称，因此 room 级复用先采用进程内 client cache。
-5. 主服务当前只保留最小 PostgreSQL 事实源：`messages`、`outbox_deliveries`。
+5. 主服务当前只保留最小 PostgreSQL 事实源：`messages`。
 6. 主服务当前按 `room_id` 维护进程内 sandbox session，并以 SDK `Open()` 作为 session 可调用条件。
 7. 不建设独立 `room registry` 表，暂不维护中心化 `last_seen_at`。
 8. 空闲策略先采用软休眠；硬休眠、warm pool 和自动销毁后置到后续阶段。
@@ -62,7 +62,7 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
 - 为进程内 `ttlCache` 增加过期项回收，避免长生命周期进程中缓存键只增不减。
 - 为 room sandbox session cache 增加回收策略，避免历史 `room_id` 持续堆积。
 - 评估如何在官方 Go SDK 支持前恢复跨重启的 room -> sandbox 稳定复用。
-- 为 `outbox_deliveries` 的发送完成/失败更新增加 attempt fencing，避免租约过期重领后旧 attempt 覆盖新状态。
+- 评估 direct send 模式下“发送成功但 `messages.done` 更新失败”带来的重复发送窗口，并决定是否需要补幂等或去重策略。
 
 ## 项目目标
 构建云端 AI Agent Runtime，让企业员工可在企业微信私聊/群聊中与 agent 交互：

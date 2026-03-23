@@ -37,10 +37,6 @@ var (
 		Help:    "Database operation latency.",
 		Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1},
 	}, []string{"operation"})
-	deliveriesProcessed = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "tinyclaw_deliveries_total",
-		Help: "Total outbox deliveries by result.",
-	}, []string{"result"})
 	pullCycleErrors = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "tinyclaw_pull_cycle_errors_total",
 		Help: "Total pull cycle errors.",
@@ -59,7 +55,6 @@ func init() {
 		sandboxInvocations,
 		sandboxDuration,
 		dbOperations,
-		deliveriesProcessed,
 		pullCycleErrors,
 		activeSandboxes,
 	)

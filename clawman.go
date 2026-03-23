@@ -14,6 +14,7 @@ import (
 	"tinyclaw/sandbox"
 	"tinyclaw/wecom"
 	"tinyclaw/wecom/finance"
+	"tinyclaw/worktool"
 )
 
 const (
@@ -47,14 +48,14 @@ type GroupDetail struct {
 }
 
 type Clawman struct {
-	cfg        Config
-	store      *Store
-	sdk        *finance.SDK
-	contactAPI *wecom.Client
-	archiveAPI *wecom.Client
-	orch       *sandbox.Orchestrator
-	egress     *EgressConsumer
-	cache      *ttlCache
+	cfg         Config
+	store       *Store
+	sdk         *finance.SDK
+	contactAPI  *wecom.Client
+	archiveAPI  *wecom.Client
+	orch        *sandbox.Orchestrator
+	replyClient *worktool.Client
+	cache       *ttlCache
 
 	groupTriggerKeywords []string
 	groupMentionPattern  *regexp.Regexp
@@ -77,7 +78,7 @@ func NewClawman(
 	cfg Config,
 	store *Store,
 	orch *sandbox.Orchestrator,
-	egress *EgressConsumer,
+	replyClient *worktool.Client,
 ) (*Clawman, error) {
 	if cfg.WeComCorpID == "" || cfg.WeComCorpSecret == "" || cfg.WeComPrivateKey == "" {
 		return nil, fmt.Errorf("WECOM_CORP_ID/WECOM_CORP_SECRET/WECOM_RSA_PRIVATE_KEY are required")
@@ -108,7 +109,7 @@ func NewClawman(
 		contactAPI:           contactAPI,
 		archiveAPI:           archiveAPI,
 		orch:                 orch,
-		egress:               egress,
+		replyClient:          replyClient,
 		cache:                newTTLCache(),
 		groupTriggerKeywords: normalizeTriggerTerms(cfg.WeComGroupTriggerKeywords),
 		groupMentionPattern:  buildGroupMentionPattern(cfg.WeComGroupTriggerMentions),
@@ -377,13 +378,14 @@ func (r *Clawman) dispatchRoom(ctx context.Context, roomID string) {
 	for _, pending := range pendingMessages {
 		pendingSeqs = append(pendingSeqs, pending.Seq)
 	}
-	if err := r.store.MarkMessagesDoneAndEnqueueDelivery(ctx, pendingSeqs, DeliveryRecord{
-		TenantID:   r.cfg.WeComCorpID,
-		RoomID:     roomID,
-		Content:    reply.Stdout,
-		TargetName: targetName,
-	}); err != nil {
-		slog.Error("mark messages done and enqueue delivery failed", "room_id", roomID, "err", err)
+
+	if err := r.sendReply(ctx, roomID, targetName, reply.Stdout); err != nil {
+		slog.Error("send reply failed", "room_id", roomID, "target", targetName, "err", err)
+		return
+	}
+
+	if err := r.store.MarkMessagesDone(ctx, pendingSeqs); err != nil {
+		slog.Error("mark messages done failed", "room_id", roomID, "err", err)
 	}
 }
 
@@ -436,6 +438,22 @@ func (r *Clawman) invokeRoomAgent(ctx context.Context, roomID string, msg *WeCom
 	sandboxInvocations.WithLabelValues("ok").Inc()
 	msgDispatched.Inc()
 	return reply, nil
+}
+
+func (r *Clawman) sendReply(ctx context.Context, roomID, targetName, content string) error {
+	if strings.TrimSpace(targetName) == "" {
+		return fmt.Errorf("reply target is empty")
+	}
+	if strings.TrimSpace(content) == "" {
+		return fmt.Errorf("reply content is empty")
+	}
+	if r.replyClient == nil {
+		return fmt.Errorf("worktool client not configured")
+	}
+	if err := r.replyClient.SendTextMessage(targetName, content, nil); err != nil {
+		return fmt.Errorf("send worktool message for room %s: %w", roomID, err)
+	}
+	return nil
 }
 
 func (r *Clawman) statusForMessage(msg *WeComMessage, payload string) (string, bool, error) {

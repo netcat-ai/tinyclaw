@@ -12,7 +12,7 @@ Current architecture:
 - `clawman` uses the official `agent-sandbox` Go SDK to open and reuse sandbox clients.
 - `clawman` invokes the sandbox through `sandbox-router` over HTTP.
 - The sandboxed `agent` exposes `/healthz`, `/agent`, `/execute`, and the standard file APIs.
-- All pulled archive items are persisted to PostgreSQL `messages`, and replies are sent by the egress consumer from `outbox_deliveries`.
+- All pulled archive items are persisted to PostgreSQL `messages`; after agent success, `clawman` sends replies directly through WorkTool and marks the corresponding messages `done`.
 
 ## Build & Run
 
@@ -59,7 +59,6 @@ Key files:
 | Table | Purpose |
 |---------|---------|
 | `messages` | Inbound archive facts, status machine, and `seq` checkpoint source |
-| `outbox_deliveries` | Pending / retry / sent / failed egress jobs |
 
 Short-lived WeCom detail caching and ensure debounce are process-local in the current single-replica version.
 

@@ -62,14 +62,15 @@ func main() {
 		"server_port", cfg.SandboxServerPort,
 	)
 
-	// Create egress consumer (nil if worktool not configured)
-	var egress *EgressConsumer
+	// Create WorkTool client for direct reply delivery.
+	var replyClient *worktool.Client
 	if cfg.WorkToolRobotID != "" {
-		wt := worktool.NewClient(cfg.WorkToolRobotID)
-		egress = NewEgressConsumer(store, wt)
+		replyClient = worktool.NewClient(cfg.WorkToolRobotID)
+	} else {
+		slog.Warn("WORKTOOL_ROBOT_ID is empty; agent replies will remain pending until outbound delivery is configured")
 	}
 
-	clawman, err := NewClawman(cfg, store, orch, egress)
+	clawman, err := NewClawman(cfg, store, orch, replyClient)
 	if err != nil {
 		slog.Error("init clawman failed", "err", err)
 		os.Exit(1)
@@ -81,16 +82,6 @@ func main() {
 
 	// Start metrics server
 	go serveMetrics(runCtx, cfg.MetricsAddr)
-
-	// Start egress consumer goroutine
-	if egress != nil {
-		go func() {
-			slog.Info("egress consumer starting")
-			if err := egress.Run(runCtx); err != nil {
-				slog.Error("egress consumer failed", "err", err)
-			}
-		}()
-	}
 
 	if err := clawman.Run(runCtx); err != nil {
 		slog.Error("clawman stopped with error", "err", err)

@@ -5,7 +5,7 @@
 - Ingress 拉取真实消息并解密。
 - 按 `room_id` 通过官方 Go SDK `Open()` 拉起或复用当前进程内 sandbox session。
 - 主服务通过 `sandbox-router` 调用 sandbox 内 `agent` 的 HTTP 接口。
-- 回复写入 PostgreSQL outbox，由统一 egress 回发企业微信。
+- agent 成功后直接通过 WorkTool 回发企业微信，并在发送成功后把 `messages` 标记为 `done`。
 
 ## 第一阶段（已完成）
 1. 明确 `room_id` 规则与主服务职责边界。
@@ -29,7 +29,7 @@
    - `reply_e2e_ms`
 
 ## 第三阶段
-1. 完善 ACK/重试/失败回收链路。
+1. 评估 direct send 模式下的重复发送窗口与幂等策略。
 2. 引入 warm pool，降低冷启动。
 3. 评估 idle / hibernate / terminate 自动化策略。
 4. 接入长期记忆与文件上下文能力。
@@ -48,14 +48,13 @@
 
 ## PostgreSQL 最小范围（当前版）
 - `messages`：企业微信 archive 入站事实、状态机、`seq` checkpoint
-- `outbox_deliveries`：egress 待发送、重试中、已发送、失败记录
 
 ## 验收标准
 1. 任意一条企业微信消息可触发对应 sandbox ready 并拿到回复。
 2. 主服务不再写 `stream:i:{room_id}` 给 sandbox 消费。
 3. sandbox 通信统一经过 router/HTTP，而不是 Redis ingress。
 4. 同一 `room_id` 的 sandbox 标识稳定且可复用。
-5. 回发失败可重试，超过阈值标记 `failed`。
+5. 回发失败时，对应 `messages` 保持 `pending` 并可在后续 dispatch 中重试。
 
 ## 文档 Review 清单
 1. 不再出现“agent 在 sandbox 内自拉 Redis Stream”的描述。

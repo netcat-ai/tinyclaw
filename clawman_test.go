@@ -12,6 +12,7 @@ import (
 	"tinyclaw/sandbox"
 	"tinyclaw/wecom"
 	"tinyclaw/wecom/finance"
+	"tinyclaw/worktool"
 )
 
 func newTestClawman(t *testing.T, serverURL string) *Clawman {
@@ -52,6 +53,47 @@ func writeJSON(t *testing.T, w http.ResponseWriter, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
 		t.Fatalf("encode json: %v", err)
+	}
+}
+
+func TestSendReplyUsesWorkToolClient(t *testing.T) {
+	var gotBody worktool.SendMessageRequest
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode worktool request: %v", err)
+		}
+		writeJSON(t, w, worktool.SendMessageResponse{Code: 200, Message: "ok"})
+	}))
+	defer server.Close()
+
+	worktool.SetBaseURL(server.URL)
+	defer worktool.ResetBaseURL()
+
+	clawman := &Clawman{
+		replyClient: worktool.NewClient("robot-id"),
+	}
+
+	if err := clawman.sendReply(context.Background(), "room-1", "测试群", "hello from agent"); err != nil {
+		t.Fatalf("sendReply error: %v", err)
+	}
+
+	if len(gotBody.List) != 1 {
+		t.Fatalf("request item count = %d, want 1", len(gotBody.List))
+	}
+	if gotBody.List[0].TitleList[0] != "测试群" {
+		t.Fatalf("target = %q, want %q", gotBody.List[0].TitleList[0], "测试群")
+	}
+	if gotBody.List[0].ReceivedContent != "hello from agent" {
+		t.Fatalf("content = %q, want %q", gotBody.List[0].ReceivedContent, "hello from agent")
+	}
+}
+
+func TestSendReplyRequiresConfiguredClient(t *testing.T) {
+	clawman := &Clawman{}
+
+	if err := clawman.sendReply(context.Background(), "room-1", "测试群", "hello"); err == nil {
+		t.Fatal("sendReply error = nil, want non-nil")
 	}
 }
 
