@@ -18,6 +18,7 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
 - 私聊消息直接进入 `pending`；群聊消息只有命中 `@` 提及或触发关键字时才进入 `pending`，未触发消息先以 `status=buffered` 保留，等后续触发消息一并带入上下文。
 - 冷启动且 `messages` 为空时，仅最近 10 分钟内的消息允许进入 `pending/buffered`；更早的 backlog 仍会落库，但统一写成 `status=ignored`。
 - 如果消息已写入 `messages(status=pending)`，但在后续 sandbox、WorkTool 回发或 `done` 更新阶段失败，消息不会丢失；dispatch worker 会持续复用这批 `pending` 消息重试。
+- 主服务新增一个轻量 control API，可把“发给指定企业微信联系人”的外发任务写入 PostgreSQL `wecom_send_jobs`，再由 Android 发送端主动 claim 并回传结果。
 
 ## 当前消息流程
 1. ingest worker 从 `messages` 查询当前 `MAX(seq)`，以此作为 `GetChatData(seq, limit)` 的起点，当前固定 `limit=100`。
@@ -33,6 +34,57 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
 8. agent runtime 用 `claude_agent_sdk` 执行；`SandboxTemplate` 当前通过 `CLAUDE_SYSTEM_PROMPT_APPEND` 注入系统提示词。
 9. 主服务拿到 agent reply 后，直接通过 WorkTool 回发企业微信。
 10. 只有当 WorkTool 回发成功后，主服务才会把本轮参与处理的 `messages` 标记为 `done`；如果发送失败或 `done` 更新失败，这批消息保持 `pending`，由后续 dispatch 重试。
+
+## Android 外发任务队列
+
+TinyClaw 现在支持一个最小 outbox 队列，给 Android 无障碍发送端拉取：
+
+- 写任务：`POST /api/wecom/send-jobs`
+- 领任务：`POST /api/wecom/send-jobs/claim`
+- 回结果：`POST /api/wecom/send-jobs/{id}/result`
+
+任务模型最小字段：
+
+```json
+{
+  "recipient_alias": "小金鱼",
+  "message": "你好呀"
+}
+```
+
+claim 请求最小字段：
+
+```json
+{
+  "device_id": "android-phone-01"
+}
+```
+
+result 请求最小字段：
+
+```json
+{
+  "device_id": "android-phone-01",
+  "status": "succeeded"
+}
+```
+
+失败回执示例：
+
+```json
+{
+  "device_id": "android-phone-01",
+  "status": "failed",
+  "error": "recipient alias is not configured on device"
+}
+```
+
+说明：
+
+- 这是“手机主动轮询 TinyClaw”的 pull 模式，不是 TinyClaw 主动打到手机。
+- `recipient_alias` 由手机本地联系人配置解析，所以服务端不需要知道企业微信 UI 细节。
+- claim 使用 lease 机制；当前由 `SEND_JOB_LEASE_SECONDS` 控制，默认 300 秒。
+- 若设置了 `CONTROL_API_TOKEN`，所有 control API 请求都必须带 `Authorization: Bearer <token>`。
 
 ## Agent Scaffold
 - `agent/`：独立的 TypeScript agent 子工程，当前提供：
@@ -111,12 +163,17 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
 - `SANDBOX_TEMPLATE_NAME`
 - `SANDBOX_ROUTER_URL`
 - `SANDBOX_SERVER_PORT`
+- `CONTROL_API_ADDR`
+- `CONTROL_API_TOKEN`
+- `SEND_JOB_LEASE_SECONDS`
 
 默认值：
 - `SANDBOX_NAMESPACE=claw`
 - `SANDBOX_TEMPLATE_NAME=tinyclaw-agent-template`
 - `SANDBOX_ROUTER_URL=http://sandbox-router-svc.{namespace}.svc.cluster.local:8080`
 - `SANDBOX_SERVER_PORT=8888`
+- `CONTROL_API_ADDR=:8081`
+- `SEND_JOB_LEASE_SECONDS=300`
 - `WECOM_GROUP_TRIGGER_MENTIONS={WECOM_BOT_ID}`（若未显式配置）
 - `WECOM_GROUP_TRIGGER_KEYWORDS=`（默认空）
 

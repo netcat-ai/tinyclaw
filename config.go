@@ -31,6 +31,10 @@ type Config struct {
 
 	WorkToolRobotID string
 
+	ControlAPIAddr      string
+	ControlAPIToken     string
+	SendJobLeaseSeconds int
+
 	MetricsAddr string
 }
 
@@ -61,6 +65,10 @@ func LoadConfig() (Config, error) {
 		SandboxReadyTimeoutSec: parseIntEnv("SANDBOX_READY_TIMEOUT_SEC", 180),
 
 		WorkToolRobotID: os.Getenv("WORKTOOL_ROBOT_ID"),
+
+		ControlAPIAddr:      envOrDefault("CONTROL_API_ADDR", ":8081"),
+		ControlAPIToken:     os.Getenv("CONTROL_API_TOKEN"),
+		SendJobLeaseSeconds: parseIntEnv("SEND_JOB_LEASE_SECONDS", 300),
 
 		MetricsAddr: envOrDefault("METRICS_ADDR", ":9090"),
 	}

@@ -21,7 +21,9 @@ tinyclaw 是一个面向企业微信会话的 AI Agent Runtime：
 +---------------------------+       +----------------------------------+
 | WeCom Session Archive API |-----> | Ingress Service (clawman)        |
 | WeCom Send API            | <-----| - decrypt / normalize            |
+| Android WeCom Sender App  |<----->| - control API for send jobs      |
 +---------------------------+       | - persist archive into messages  |
+                                    | - persist send jobs              |
                                     | - scan pending rooms             |
                                     | - manage sandbox via Go SDK      |
                                     | - invoke /agent via SDK Run      |
@@ -29,8 +31,9 @@ tinyclaw 是一个面向企业微信会话的 AI Agent Runtime：
                                                      |
                                    +-----------------v------------------+
                                    | PostgreSQL                           |
-                                   | - messages                           |
-                                   +-------------------------------------+
+                                    | - messages                           |
+                                    | - wecom_send_jobs                    |
+                                    +-------------------------------------+
 
                                                      |
                                                      v
@@ -149,12 +152,15 @@ POST http://127.0.0.1:{AGENT_SERVER_PORT}/agent
 ### 5.3 PostgreSQL 职责
 v0 中主服务只依赖最小 PostgreSQL 事实源：
 - `messages`：企业微信 archive 入站事实、待处理状态、拉取 checkpoint
+- `wecom_send_jobs`：发给 Android 无障碍发送端的外发任务队列
 
 补充语义：
 - `messages` 的流程状态固定为 `ignored / buffered / pending / done`。
 - `messages.seq` 单调递增；系统通过 `MAX(messages.seq)` 推导下一次 archive pull 的起点。
 - 群聊未触发消息保持 `status=buffered`，用于后续触发时补齐上下文。
 - dispatch/发送失败不会回滚 `messages.seq`；后续轮询会基于已持久化的 `pending` 消息继续重试，而不会丢失上下文。
+- `wecom_send_jobs` 的流程状态固定为 `queued / claimed / succeeded / failed`。
+- Android 发送端通过 control API 主动 claim `wecom_send_jobs(status=queued)`；发送完成后再通过 result API 回写终态。
 
 ## 6. Agent Runtime 设计
 

@@ -82,6 +82,7 @@ func main() {
 
 	// Start metrics server
 	go serveMetrics(runCtx, cfg.MetricsAddr)
+	go serveControlAPI(runCtx, cfg, store)
 
 	if err := clawman.Run(runCtx); err != nil {
 		slog.Error("clawman stopped with error", "err", err)

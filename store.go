@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -15,6 +17,11 @@ const (
 	statusBuffered = "buffered"
 	statusPending  = "pending"
 	statusDone     = "done"
+
+	sendJobStatusQueued    = "queued"
+	sendJobStatusClaimed   = "claimed"
+	sendJobStatusSucceeded = "succeeded"
+	sendJobStatusFailed    = "failed"
 )
 
 type Store struct {
@@ -32,6 +39,21 @@ type MessageRecord struct {
 	Status    string
 	MsgTime   time.Time
 	CreatedAt time.Time
+}
+
+type SendJob struct {
+	ID             string
+	RecipientAlias string
+	Message        string
+	Status         string
+	DeviceID       string
+	Attempts       int
+	LastError      string
+	ClaimDeadline  time.Time
+	ClaimedAt      time.Time
+	CompletedAt    time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 func OpenStore(ctx context.Context, dsn string) (*Store, error) {
@@ -89,6 +111,31 @@ func (s *Store) InitSchema(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_messages_pending_by_room
 		ON messages (tenant_id, status, room_id, seq)
 		WHERE status = 'pending'
+		`,
+		`
+		CREATE TABLE IF NOT EXISTS wecom_send_jobs (
+			id TEXT PRIMARY KEY,
+			recipient_alias TEXT NOT NULL,
+			message TEXT NOT NULL,
+			status TEXT NOT NULL,
+			device_id TEXT,
+			attempts INTEGER NOT NULL DEFAULT 0,
+			last_error TEXT,
+			claim_deadline TIMESTAMPTZ,
+			claimed_at TIMESTAMPTZ,
+			completed_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			CHECK (status IN ('queued', 'claimed', 'succeeded', 'failed'))
+		)
+		`,
+		`
+		CREATE INDEX IF NOT EXISTS idx_wecom_send_jobs_claimable
+		ON wecom_send_jobs (status, created_at)
+		`,
+		`
+		CREATE INDEX IF NOT EXISTS idx_wecom_send_jobs_claim_deadline
+		ON wecom_send_jobs (status, claim_deadline)
 		`,
 	}
 
@@ -326,6 +373,192 @@ func (s *Store) MarkMessagesDone(ctx context.Context, seqs []int64) error {
 		return fmt.Errorf("mark messages done: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) EnqueueSendJob(ctx context.Context, recipientAlias, message string) (SendJob, error) {
+	defer dbTimer("enqueue_send_job")()
+
+	now := time.Now().UTC()
+	job := SendJob{
+		ID:             uuid.NewString(),
+		RecipientAlias: recipientAlias,
+		Message:        message,
+		Status:         sendJobStatusQueued,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	if _, err := s.db.ExecContext(
+		ctx,
+		`
+		INSERT INTO wecom_send_jobs (
+			id,
+			recipient_alias,
+			message,
+			status,
+			created_at,
+			updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		`,
+		job.ID,
+		job.RecipientAlias,
+		job.Message,
+		job.Status,
+		job.CreatedAt,
+		job.UpdatedAt,
+	); err != nil {
+		return SendJob{}, fmt.Errorf("enqueue send job: %w", err)
+	}
+
+	return job, nil
+}
+
+func (s *Store) ClaimNextSendJob(ctx context.Context, deviceID string, lease time.Duration) (*SendJob, error) {
+	defer dbTimer("claim_send_job")()
+
+	if strings.TrimSpace(deviceID) == "" {
+		return nil, fmt.Errorf("claim send job: deviceID is empty")
+	}
+	if lease <= 0 {
+		return nil, fmt.Errorf("claim send job: lease must be positive")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin claim tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var job SendJob
+	err = tx.QueryRowContext(
+		ctx,
+		`
+		WITH candidate AS (
+			SELECT id
+			FROM wecom_send_jobs
+			WHERE status = $1
+			   OR (status = $2 AND claim_deadline IS NOT NULL AND claim_deadline < NOW())
+			ORDER BY created_at
+			LIMIT 1
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE wecom_send_jobs AS jobs
+		SET status = $2,
+			device_id = $3,
+			attempts = jobs.attempts + 1,
+			last_error = NULL,
+			claimed_at = NOW(),
+			claim_deadline = NOW() + ($4 * INTERVAL '1 second'),
+			updated_at = NOW()
+		FROM candidate
+		WHERE jobs.id = candidate.id
+		RETURNING
+			jobs.id,
+			jobs.recipient_alias,
+			jobs.message,
+			jobs.status,
+			COALESCE(jobs.device_id, ''),
+			jobs.attempts,
+			COALESCE(jobs.last_error, ''),
+			COALESCE(jobs.claim_deadline, TIMESTAMPTZ 'epoch'),
+			COALESCE(jobs.claimed_at, TIMESTAMPTZ 'epoch'),
+			COALESCE(jobs.completed_at, TIMESTAMPTZ 'epoch'),
+			jobs.created_at,
+			jobs.updated_at
+		`,
+		sendJobStatusQueued,
+		sendJobStatusClaimed,
+		deviceID,
+		int(lease.Seconds()),
+	).Scan(
+		&job.ID,
+		&job.RecipientAlias,
+		&job.Message,
+		&job.Status,
+		&job.DeviceID,
+		&job.Attempts,
+		&job.LastError,
+		&job.ClaimDeadline,
+		&job.ClaimedAt,
+		&job.CompletedAt,
+		&job.CreatedAt,
+		&job.UpdatedAt,
+	)
+	switch {
+	case err == nil:
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit claim tx: %w", err)
+		}
+		return &job, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("claim send job: %w", err)
+	}
+}
+
+func (s *Store) FinishSendJob(ctx context.Context, jobID, deviceID, status, lastError string) (*SendJob, error) {
+	defer dbTimer("finish_send_job")()
+
+	if status != sendJobStatusSucceeded && status != sendJobStatusFailed {
+		return nil, fmt.Errorf("finish send job: invalid status %q", status)
+	}
+
+	var job SendJob
+	err := s.db.QueryRowContext(
+		ctx,
+		`
+		UPDATE wecom_send_jobs
+		SET status = $3,
+			last_error = NULLIF($4, ''),
+			claim_deadline = NULL,
+			completed_at = NOW(),
+			updated_at = NOW()
+		WHERE id = $1
+		  AND device_id = $2
+		  AND status = $5
+		RETURNING
+			id,
+			recipient_alias,
+			message,
+			status,
+			COALESCE(device_id, ''),
+			attempts,
+			COALESCE(last_error, ''),
+			COALESCE(claim_deadline, TIMESTAMPTZ 'epoch'),
+			COALESCE(claimed_at, TIMESTAMPTZ 'epoch'),
+			COALESCE(completed_at, TIMESTAMPTZ 'epoch'),
+			created_at,
+			updated_at
+		`,
+		jobID,
+		deviceID,
+		status,
+		lastError,
+		sendJobStatusClaimed,
+	).Scan(
+		&job.ID,
+		&job.RecipientAlias,
+		&job.Message,
+		&job.Status,
+		&job.DeviceID,
+		&job.Attempts,
+		&job.LastError,
+		&job.ClaimDeadline,
+		&job.ClaimedAt,
+		&job.CompletedAt,
+		&job.CreatedAt,
+		&job.UpdatedAt,
+	)
+	switch {
+	case err == nil:
+		return &job, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("finish send job: %w", err)
+	}
 }
 
 func nullIfEmpty(value string) any {

@@ -63,18 +63,23 @@ jobs:
           SANDBOX_TEMPLATE_NAME: ${{ vars.SANDBOX_TEMPLATE_NAME }}
           SANDBOX_ROUTER_URL: ${{ vars.SANDBOX_ROUTER_URL }}
           SANDBOX_SERVER_PORT: ${{ vars.SANDBOX_SERVER_PORT }}
+          CONTROL_API_ADDR: ${{ vars.CONTROL_API_ADDR }}
+          SEND_JOB_LEASE_SECONDS: ${{ vars.SEND_JOB_LEASE_SECONDS }}
           ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           WECOM_CORP_SECRET: ${{ secrets.WECOM_CORP_SECRET }}
           WECOM_RSA_PRIVATE_KEY: ${{ secrets.WECOM_RSA_PRIVATE_KEY }}
           WECOM_CONTACT_SECRET: ${{ secrets.WECOM_CONTACT_SECRET }}
           WORKTOOL_ROBOT_ID: ${{ secrets.WORKTOOL_ROBOT_ID }}
+          CONTROL_API_TOKEN: ${{ secrets.CONTROL_API_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           : "${WECOM_BOT_ID:=}"
           : "${SANDBOX_TEMPLATE_NAME:=tinyclaw-agent-template}"
           : "${SANDBOX_ROUTER_URL:=http://sandbox-router-svc.claw.svc.cluster.local:8080}"
           : "${SANDBOX_SERVER_PORT:=8888}"
+          : "${CONTROL_API_ADDR:=:8081}"
+          : "${SEND_JOB_LEASE_SECONDS:=300}"
           : "${ANTHROPIC_BASE_URL:=https://api.anthropic.com}"
           kubectl -n claw create configmap tinyclaw-config \
             --from-literal=WECOM_CORP_ID="${WECOM_CORP_ID}" \
@@ -82,6 +87,8 @@ jobs:
             --from-literal=SANDBOX_TEMPLATE_NAME="${SANDBOX_TEMPLATE_NAME}" \
             --from-literal=SANDBOX_ROUTER_URL="${SANDBOX_ROUTER_URL}" \
             --from-literal=SANDBOX_SERVER_PORT="${SANDBOX_SERVER_PORT}" \
+            --from-literal=CONTROL_API_ADDR="${CONTROL_API_ADDR}" \
+            --from-literal=SEND_JOB_LEASE_SECONDS="${SEND_JOB_LEASE_SECONDS}" \
             --from-literal=ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL}" \
             --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n claw create secret generic tinyclaw-secret \
@@ -90,6 +97,7 @@ jobs:
             --from-literal=WECOM_RSA_PRIVATE_KEY="${WECOM_RSA_PRIVATE_KEY}" \
             --from-literal=WECOM_CONTACT_SECRET="${WECOM_CONTACT_SECRET}" \
             --from-literal=WORKTOOL_ROBOT_ID="${WORKTOOL_ROBOT_ID}" \
+            --from-literal=CONTROL_API_TOKEN="${CONTROL_API_TOKEN}" \
             --from-literal=ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
             --dry-run=client -o yaml | kubectl apply -f -
 
