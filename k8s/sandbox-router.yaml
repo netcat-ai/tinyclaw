@@ -28,6 +28,19 @@ spec:
       labels:
         app: sandbox-router
     spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: region
+                    operator: In
+                    values:
+                      - bj
+                      - sz
+                      - sh
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: topology.kubernetes.io/zone
@@ -37,10 +50,10 @@ spec:
               app: sandbox-router
       containers:
         - name: sandbox-router
-          image: IMAGE_PLACEHOLDER
+          image: ghcr.io/netcat-ai/tinyclaw-sandbox-router:IMAGE_PLACEHOLDER
           env:
             - name: PROXY_TIMEOUT_SECONDS
-              value: "180"
+              value: "300"
           ports:
             - containerPort: 8080
           readinessProbe:

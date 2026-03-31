@@ -107,6 +107,7 @@ TinyClaw 现在提供一个最小 outbox 拉取接口，给 Android 无障碍发
   - `k8s/deployment.yaml`
   - `k8s/sandbox-router.yaml`
   - `k8s/sandboxtemplate.yaml`
+- 若镜像来自私有 GHCR 仓库，需先在 `claw` 命名空间创建名为 `ghcr-pull` 的 `docker-registry` secret，供 `clawman` 与 `sandbox-router` 拉取镜像。
 - K8s Deployment 资源名固定为 `clawman`（见 `k8s/deployment.yaml`）。
 - 主服务需要集群内已部署：
   - agent-sandbox core controller

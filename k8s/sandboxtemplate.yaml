@@ -7,6 +7,17 @@ spec:
   podTemplate:
     spec:
       restartPolicy: OnFailure
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: region
+                    operator: In
+                    values:
+                      - bj
+                      - sz
+                      - sh
       containers:
         - name: agent
           image: IMAGE_PLACEHOLDER
@@ -22,6 +33,10 @@ spec:
               value: "/workspace"
             - name: AGENT_TMPDIR
               value: "/tmp"
+            - name: CLAUDE_RUNTIME_TIMEOUT_MS
+              value: "240000"
+            - name: AGENT_EXECUTE_TIMEOUT_MS
+              value: "240000"
             - name: CLAUDE_SYSTEM_PROMPT_APPEND
               value: |
                 你是私云小虾，私云科技的二号助理，一号是私云虾虾。回答可以活波调皮一些，机灵但不讨人厌。

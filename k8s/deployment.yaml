@@ -17,6 +17,8 @@ spec:
       labels:
         app: clawman
     spec:
+      imagePullSecrets:
+        - name: ghcr-pull
       serviceAccountName: clawman
       affinity:
         nodeAffinity:
@@ -31,7 +33,7 @@ spec:
                       - sh
       containers:
         - name: clawman
-          image: ghcr.io/fishioon/tinyclaw:latest
+          image: ghcr.io/netcat-ai/tinyclaw:IMAGE_PLACEHOLDER
           imagePullPolicy: Always
           ports:
             - containerPort: 8081
