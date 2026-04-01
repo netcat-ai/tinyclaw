@@ -9,10 +9,10 @@ Cloud-based AI Agent Runtime for WeChat Work (企业微信).
 Current architecture:
 - `clawman` pulls encrypted messages from the WeChat Work Finance SDK.
 - `clawman` splits ingest and dispatch into separate loops; `messages.seq` is the archive checkpoint.
-- `clawman` uses the official `agent-sandbox` Go SDK to open and reuse sandbox clients.
-- `clawman` invokes the sandbox through `sandbox-router` over HTTP.
-- The sandboxed `agent` exposes `/healthz`, `/agent`, `/execute`, and the standard file APIs.
-- All pulled archive items are persisted to PostgreSQL `messages`; after agent success, `clawman` writes reply tasks into PostgreSQL `jobs`, and marks the corresponding messages `done` only after the enqueue succeeds.
+- `clawman` manages `SandboxClaim` resources directly.
+- room sandboxes connect back to `clawman` over gRPC and receive `messages[]` batches.
+- The sandboxed `agent` exposes `/healthz` for probes and processes messages through the gRPC bridge.
+- All pulled archive items are persisted to PostgreSQL `messages`; after sandbox success, `clawman` writes reply tasks into PostgreSQL `jobs`, and marks the corresponding messages `done` only after the enqueue succeeds.
 
 ## Build & Run
 
@@ -39,9 +39,9 @@ WeChat Work Finance SDK
   -> Clawman ingest (poll / decrypt / normalize / persist)
   -> PostgreSQL messages(seq/status/payload)
   -> Clawman dispatch (scan pending rooms)
-  -> agent-sandbox Go SDK open
-  -> sandbox-router
-  -> agent HTTP runtime (/agent)
+  -> SandboxClaim ensure
+  -> sandbox gRPC client connects to clawman
+  -> clawman sends messages[] batches
   -> PostgreSQL jobs(seq/client_id/recipient_alias/message/max_seq)
   -> Android WeCom sender app
 ```
@@ -49,10 +49,11 @@ WeChat Work Finance SDK
 Key files:
 - `main.go` — main service entry point
 - `clawman.go` — ingress pull loop, WeCom metadata resolution, sandbox invocation
-- `sandbox/orchestrator.go` — official Go SDK room client manager + `/agent` bridge
-- `sandbox/types.go` — sandbox request/response contracts
-- `agent/src/main.ts` — sandbox HTTP runtime entry
-- `agent/src/server.ts` — `/healthz`, `/agent`, `/execute`, `/upload`, `/download`, `/list`, `/exists`
+- `grpc_gateway.go` — clawman gRPC server and room stream registry
+- `sandbox/orchestrator.go` — direct `SandboxClaim` lifecycle manager
+- `agent/src/main.ts` — sandbox runtime entry
+- `agent/src/server.ts` — `/healthz`
+- `agent/src/grpc.ts` — sandbox gRPC client bridge
 - `agent/src/runtime.ts` — echo / `claude_agent_sdk`
 
 ## Minimal PostgreSQL tables
@@ -71,4 +72,4 @@ Short-lived WeCom detail caching and sandbox session reuse are process-local in 
 - One logical change per commit
 - Prefer updating existing docs over creating overlapping docs
 - Reuse terminology from `docs/ARCHITECTURE_V0.md`
-- For sandbox integration, use `SandboxTemplate`, `SandboxClaim`, and `sandbox-router` terms consistently
+- For sandbox integration, use `SandboxTemplate` and `SandboxClaim` terms consistently

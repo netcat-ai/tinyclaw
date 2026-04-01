@@ -129,3 +129,54 @@ agent启动后就去从redis队列中拉取对应的消息，开始消费。
 4. control API 改为 HTTP Basic 认证；服务端通过 `wecom_app_clients(client_id, client_secret, enabled)` 校验客户端。
 5. 只要 `jobs` 写入成功，当前批次 `messages` 就会更新为 `done`；如果 `jobs` 写入失败，则该批消息继续保持 `pending`。
 6. 当前版本接受一个已知窗口：如果 `jobs` 已成功写入，但 `messages.done` 更新失败，后续 dispatch 可能重复写入同一回复任务。
+
+---
+
+## 9. room 级通信协议与 message gateway 讨论（2026-04-01）
+
+### 用户
+我的核心需求是每个 room 有一个 sandbox 去承载；不同用户、不同使用场景可能并行执行。
+
+### 助手（结论）
+- `room_id -> sandbox` 这个隔离模型是合理且应继续保留的。
+- 但“每个 sandbox 自拉 Redis 队列”不是该需求的必然推论；room 是执行隔离边界，不等于 sandbox 必须承担消息系统 consumer 的职责。
+
+### 用户
+如果主服务持续把消息传递给 agent，agent 持续响应，中间还可能中断，是继续用 Redis、WebSocket，还是别的方式？
+
+### 助手（结论）
+- 这类需求本质上是 room 级长会话，而不是单次最终态 RPC。
+- 如果只看双向实时性，`WebSocket` 比内部仿微信的 `getupdates/sendmessage` 或 Redis mailbox 更自然。
+- 但从长期内部服务协议看，`gRPC bidirectional streaming` 往往比 `WebSocket` 更容易约束 schema、取消、超时、错误码和版本演进。
+
+### 用户
+我不想让 sandbox-router 继续作为中间层；是否让 sandbox 主动连回 clawman 更合理？
+
+### 助手（结论）
+- 不想要 `sandbox-router`，不等于应该让 sandbox 主动回连 `clawman`。
+- 更清晰的控制面仍然是 `clawman` 持有 room ownership，并作为统一 `message gateway` 管理与 sandbox 的内部会话。
+
+### 用户
+我的意思是把 `clawman` 简化成统一 `message gateway`；sandbox 通过内部协议获取自己 room 的消息，执行完成后再调用 `clawman` 的 `sendmessage`，由 `clawman` 对接第三方渠道。
+
+### 助手（最终结论）
+1. 该方向成立，且比“sandbox 直接实现微信/飞书/email 客户端”更合理。
+2. `clawman` 应统一持有外部渠道协议、认证、cursor 与发送动作；sandbox 不直接维护第三方协议状态。
+3. 内部协议不应继续复刻外部渠道的 `iLink` 语义；应单独定义 room 级规范化会话协议。
+4. 下一阶段首选 `gRPC bidirectional streaming` 作为 `clawman <-> sandbox` 的内部主协议；`WebSocket` 保留为探索期备选。
+5. sandbox 输出的应是规范化事件和结果，例如 `typing`、`assistant_delta`、`assistant_final`、`tool_event`、`failed`；真正的 `sendmessage` 由 `clawman` 负责映射到各个外部渠道。
+
+---
+
+## 10. research pass：当前代码中的消息批次（2026-04-01）
+
+### 用户
+按照研究 -> 计划 -> 批注 -> 实现的方式开始；先确认当前代码里的消息批次语义到底落在哪里。
+
+### 助手（research 结论）
+1. 当前代码没有独立业务轮次实体；处理批次是 `clawman` 在 dispatch 阶段按 room 隐式形成的。
+2. `dispatchRoom(room_id)` 会读取该 room 当前全部 `messages(status=pending)`，按 `seq` 排序后一次性打包成单个 `sandbox.AgentRequest{messages[]}`。
+3. 因此当前处理边界是“该 room 当前所有 pending 消息集合”，而不是稳定持久化的业务实体。
+4. 该隐式处理批次只有在 sandbox 成功返回且 `jobs` 写入成功后，才会整体把这批消息更新为 `done`。
+5. 如果 sandbox 调用失败、`jobs` 写入失败，或 `done` 更新失败，系统不会留下独立批次状态，而是保留原始 `pending` 消息，由后续 dispatch 继续重试。
+6. 这意味着后续若切到 room 级 gRPC 消息传输，应继续围绕 `messages` 与消息批次设计，而不是引入新的业务轮次概念。

@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package clawman.v1;
+
+option go_package = "tinyclaw/proto/gen/clawman/v1;clawmanv1";
+
+message Message {
+  string kind = 1;
+  string sandbox_id = 2;
+  string room_id = 3;
+  string request_id = 4;
+  repeated AgentMessage messages = 5;
+  string output = 6;
+  string error = 7;
+}
+
+message AgentMessage {
+  int64 seq = 1;
+  string msgid = 2;
+  string room_id = 3;
+  string from_id = 4;
+  string from_name = 5;
+  string msg_time = 6;
+  string payload = 7;
+}
+
+service Clawman {
+  rpc RoomChat(stream Message) returns (stream Message);
+}

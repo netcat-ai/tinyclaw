@@ -11,9 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"tinyclaw/sandbox"
 	"tinyclaw/wecom"
 	"tinyclaw/wecom/finance"
+
+	clawmanv1 "tinyclaw/clawman/v1"
 )
 
 const (
@@ -26,6 +29,7 @@ const (
 	ingestPollInterval         = 3 * time.Second
 	dispatchPollInterval       = time.Second
 	coldStartWindow            = 10 * time.Minute
+	dispatchRoomTimeout        = 6 * time.Minute
 )
 
 var errFatalIngest = errors.New("fatal ingest error")
@@ -53,6 +57,7 @@ type Clawman struct {
 	contactAPI *wecom.Client
 	archiveAPI *wecom.Client
 	orch       *sandbox.Orchestrator
+	gateway    *MessageGateway
 	cache      *ttlCache
 
 	groupTriggerKeywords []string
@@ -76,6 +81,7 @@ func NewClawman(
 	cfg Config,
 	store *Store,
 	orch *sandbox.Orchestrator,
+	gateway *MessageGateway,
 ) (*Clawman, error) {
 	if cfg.WeComCorpID == "" || cfg.WeComCorpSecret == "" || cfg.WeComPrivateKey == "" {
 		return nil, fmt.Errorf("WECOM_CORP_ID/WECOM_CORP_SECRET/WECOM_RSA_PRIVATE_KEY are required")
@@ -106,6 +112,7 @@ func NewClawman(
 		contactAPI:           contactAPI,
 		archiveAPI:           archiveAPI,
 		orch:                 orch,
+		gateway:              gateway,
 		cache:                newTTLCache(),
 		groupTriggerKeywords: normalizeTriggerTerms(cfg.WeComGroupTriggerKeywords),
 		groupMentionPattern:  buildGroupMentionPattern(cfg.WeComGroupTriggerMentions),
@@ -343,6 +350,10 @@ func (r *Clawman) dispatchPendingRooms(ctx context.Context) error {
 }
 
 func (r *Clawman) dispatchRoom(ctx context.Context, roomID string) {
+	if r.gateway == nil {
+		slog.Error("grpc gateway not configured", "room_id", roomID)
+		return
+	}
 	pendingMessages, err := r.store.ListPendingMessages(ctx, r.cfg.WeComCorpID, roomID)
 	if err != nil {
 		slog.Error("list pending messages failed", "room_id", roomID, "err", err)
@@ -364,7 +375,10 @@ func (r *Clawman) dispatchRoom(ctx context.Context, roomID string) {
 		return
 	}
 
-	reply, err := r.invokeRoomAgent(ctx, roomID, rc.msg, pendingMessages)
+	dispatchCtx, cancel := context.WithTimeout(ctx, dispatchRoomTimeout)
+	defer cancel()
+
+	reply, err := r.invokeRoomAgent(dispatchCtx, roomID, rc.msg, pendingMessages)
 	if err != nil {
 		slog.Error("invoke sandbox failed", "room_id", roomID, "err", err)
 		return
@@ -379,8 +393,11 @@ func (r *Clawman) dispatchRoom(ctx context.Context, roomID string) {
 		}
 	}
 
-	if err := r.enqueueJob(ctx, targetName, reply.Stdout, maxSeq); err != nil {
+	if err := r.enqueueJob(ctx, targetName, reply, maxSeq); err != nil {
 		slog.Error("enqueue reply job failed", "room_id", roomID, "target", targetName, "err", err)
+		if resetErr := r.store.MarkMessagesPending(ctx, pendingSeqs); resetErr != nil {
+			slog.Error("reset messages pending after enqueue failure failed", "room_id", roomID, "err", resetErr)
+		}
 		return
 	}
 
@@ -396,6 +413,7 @@ func (r *Clawman) enqueueJob(ctx context.Context, targetName, content string, ma
 	if strings.TrimSpace(targetName) == "" {
 		return fmt.Errorf("reply target is empty")
 	}
+	content = strings.TrimSpace(content)
 	if strings.TrimSpace(content) == "" {
 		return fmt.Errorf("reply content is empty")
 	}
@@ -434,27 +452,63 @@ func (r *Clawman) buildRoomContext(ctx context.Context, roomID string, pendingMe
 	return rc, nil
 }
 
-func (r *Clawman) invokeRoomAgent(ctx context.Context, roomID string, msg *WeComMessage, pendingMessages []MessageRecord) (sandbox.ExecutionResult, error) {
+func (r *Clawman) invokeRoomAgent(ctx context.Context, roomID string, msg *WeComMessage, pendingMessages []MessageRecord) (string, error) {
 	if r.orch == nil {
-		return sandbox.ExecutionResult{}, fmt.Errorf("sandbox integration not configured")
+		return "", fmt.Errorf("sandbox integration not configured")
+	}
+	if r.gateway == nil {
+		return "", fmt.Errorf("grpc gateway not configured")
 	}
 
 	sandboxStart := time.Now()
-	reply, err := r.orch.InvokeAgent(ctx, roomID, sandbox.AgentRequest{
-		MsgID:    msg.MsgID,
-		RoomID:   roomID,
-		TenantID: r.cfg.WeComCorpID,
-		ChatType: chatTypeForRoom(msg.RoomID),
-		Messages: buildAgentMessages(pendingMessages),
-	})
-	sandboxDuration.Observe(time.Since(sandboxStart).Seconds())
-	if err != nil {
+	if _, err := r.orch.EnsureRoom(ctx, roomID); err != nil {
+		sandboxDuration.Observe(time.Since(sandboxStart).Seconds())
 		sandboxInvocations.WithLabelValues("error").Inc()
-		return sandbox.ExecutionResult{}, err
+		return "", err
 	}
-	sandboxInvocations.WithLabelValues("ok").Inc()
-	msgDispatched.Inc()
-	return reply, nil
+
+	seqs := make([]int64, 0, len(pendingMessages))
+	for _, message := range pendingMessages {
+		seqs = append(seqs, message.Seq)
+	}
+
+	requestID := uuid.NewString()
+	responseCh, err := r.gateway.SendBatch(ctx, roomID, &clawmanv1.Message{
+		Kind:      "messages",
+		RequestId: requestID,
+		Messages:  buildProtoMessages(pendingMessages),
+	})
+	if err != nil {
+		sandboxDuration.Observe(time.Since(sandboxStart).Seconds())
+		sandboxInvocations.WithLabelValues("error").Inc()
+		return "", err
+	}
+
+	if err := r.store.MarkMessagesSent(ctx, seqs); err != nil {
+		sandboxDuration.Observe(time.Since(sandboxStart).Seconds())
+		sandboxInvocations.WithLabelValues("error").Inc()
+		return "", fmt.Errorf("mark messages sent: %w", err)
+	}
+
+	select {
+	case <-ctx.Done():
+		_ = r.store.MarkMessagesPending(context.Background(), seqs)
+		sandboxDuration.Observe(time.Since(sandboxStart).Seconds())
+		sandboxInvocations.WithLabelValues("error").Inc()
+		return "", ctx.Err()
+	case resp := <-responseCh:
+		sandboxDuration.Observe(time.Since(sandboxStart).Seconds())
+		if resp.err != nil {
+			sandboxInvocations.WithLabelValues("error").Inc()
+			if resetErr := r.store.MarkMessagesPending(ctx, seqs); resetErr != nil {
+				slog.Error("reset messages pending after sandbox error failed", "room_id", roomID, "err", resetErr)
+			}
+			return "", resp.err
+		}
+		sandboxInvocations.WithLabelValues("ok").Inc()
+		msgDispatched.Inc()
+		return resp.output, nil
+	}
 }
 
 func (r *Clawman) statusForMessage(msg *WeComMessage, payload string) (string, bool, error) {
@@ -542,23 +596,24 @@ func buildGroupMentionPattern(values []string) *regexp.Regexp {
 	return regexp.MustCompile(`(?i)(?:^|[\s\p{P}])@(?:` + strings.Join(parts, "|") + `)(?:$|[\s\p{P}])`)
 }
 
-func buildAgentMessages(messages []MessageRecord) []sandbox.AgentMessage {
+func buildProtoMessages(messages []MessageRecord) []*clawmanv1.AgentMessage {
 	if len(messages) == 0 {
 		return nil
 	}
 
-	payloads := make([]sandbox.AgentMessage, 0, len(messages))
+	out := make([]*clawmanv1.AgentMessage, 0, len(messages))
 	for _, message := range messages {
-		payloads = append(payloads, sandbox.AgentMessage{
+		out = append(out, &clawmanv1.AgentMessage{
 			Seq:      message.Seq,
-			MsgID:    message.MsgID,
-			FromID:   message.FromID,
+			Msgid:    message.MsgID,
+			RoomId:   message.RoomID,
+			FromId:   message.FromID,
 			FromName: message.FromName,
 			MsgTime:  message.MsgTime.UTC().Format(time.RFC3339),
 			Payload:  message.Payload,
 		})
 	}
-	return payloads
+	return out
 }
 
 func (r *Clawman) resolveSenderName(ctx context.Context, msg *WeComMessage) (string, error) {
@@ -751,11 +806,4 @@ func (r *Clawman) resolveCustomerGroup(ctx context.Context, roomID string) (*Gro
 
 func isExternalUserID(id string) bool {
 	return strings.HasPrefix(id, "wm") || strings.HasPrefix(id, "wo")
-}
-
-func chatTypeForRoom(roomID string) string {
-	if roomID == "" {
-		return "direct"
-	}
-	return "group"
 }

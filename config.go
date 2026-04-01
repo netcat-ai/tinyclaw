@@ -25,23 +25,19 @@ type Config struct {
 
 	SandboxNamespace       string
 	SandboxTemplateName    string
-	SandboxRouterURL       string
-	SandboxServerPort      int
 	SandboxReadyTimeoutSec int
 
 	WeComAppClientID string
 
-	ControlAPIAddr string
+	ControlAPIAddr        string
+	ClawmanGRPCListenAddr string
+	ClawmanGRPCAddr       string
 
 	MetricsAddr string
 }
 
 func LoadConfig() (Config, error) {
 	sandboxNamespace := envOrDefault("SANDBOX_NAMESPACE", defaultSandboxNamespace)
-	sandboxRouterURL := os.Getenv("SANDBOX_ROUTER_URL")
-	if sandboxRouterURL == "" {
-		sandboxRouterURL = fmt.Sprintf("http://sandbox-router-svc.%s.svc.cluster.local:8080", sandboxNamespace)
-	}
 	cfg := Config{
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 
@@ -58,13 +54,16 @@ func LoadConfig() (Config, error) {
 
 		SandboxNamespace:       sandboxNamespace,
 		SandboxTemplateName:    envOrDefault("SANDBOX_TEMPLATE_NAME", defaultSandboxTemplate),
-		SandboxRouterURL:       sandboxRouterURL,
-		SandboxServerPort:      parseIntEnv("SANDBOX_SERVER_PORT", 8888),
 		SandboxReadyTimeoutSec: parseIntEnv("SANDBOX_READY_TIMEOUT_SEC", 180),
 
 		WeComAppClientID: strings.TrimSpace(os.Getenv("WECOM_APP_CLIENT_ID")),
 
-		ControlAPIAddr: envOrDefault("CONTROL_API_ADDR", ":8081"),
+		ControlAPIAddr:        envOrDefault("CONTROL_API_ADDR", ":8081"),
+		ClawmanGRPCListenAddr: envOrDefault("CLAWMAN_GRPC_LISTEN_ADDR", ":8092"),
+		ClawmanGRPCAddr: envOrDefault(
+			"CLAWMAN_GRPC_ADDR",
+			fmt.Sprintf("clawman-svc.%s.svc.cluster.local:8092", sandboxNamespace),
+		),
 
 		MetricsAddr: envOrDefault("METRICS_ADDR", ":9090"),
 	}

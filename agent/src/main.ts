@@ -1,11 +1,12 @@
 import { bootstrapAgent } from './bootstrap.js';
 import { loadEnv } from './env.js';
+import { runGrpcBridge } from './grpc.js';
 import { createRuntime } from './runtime.js';
 import { createAgentServer } from './server.js';
 
 const env = loadEnv();
 const runtime = createRuntime(env);
-const server = createAgentServer(env, runtime);
+const server = createAgentServer(env);
 
 let shutdownRequested = false;
 
@@ -70,6 +71,8 @@ try {
       resolve();
     });
   });
+
+  void runGrpcBridge(env, runtime);
 } catch (error) {
   const details = error instanceof Error ? error.message : String(error);
   console.error(

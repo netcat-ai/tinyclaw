@@ -7,9 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
-	"tinyclaw/sandbox"
 	"tinyclaw/wecom"
 	"tinyclaw/wecom/finance"
 )
@@ -393,54 +391,6 @@ func TestStatusForMessageGroupRequiresMentionOrKeyword(t *testing.T) {
 				t.Fatalf("statusForMessage(%q) promote = %v, want %v", tc.text, promote, tc.promote)
 			}
 		})
-	}
-}
-
-func TestBuildAgentMessages(t *testing.T) {
-	got := buildAgentMessages([]MessageRecord{
-		{
-			Seq:       1,
-			MsgID:     "msg-1",
-			FromID:    "zhangsan",
-			FromName:  "张三",
-			Payload:   `{"msgtype":"text","text":{"content":"第一句"}}`,
-			MsgTime:   time.Date(2026, 3, 19, 8, 0, 0, 0, time.UTC),
-			CreatedAt: time.Date(2026, 3, 19, 8, 0, 0, 0, time.UTC),
-		},
-		{
-			Seq:       2,
-			MsgID:     "msg-2",
-			FromID:    "lisi",
-			Payload:   `{"msgtype":"text","text":{"content":"第二句"}}`,
-			MsgTime:   time.Date(2026, 3, 19, 8, 1, 0, 0, time.UTC),
-			CreatedAt: time.Date(2026, 3, 19, 8, 1, 0, 0, time.UTC),
-		},
-	})
-	want := []sandbox.AgentMessage{
-		{
-			Seq:      1,
-			MsgID:    "msg-1",
-			FromID:   "zhangsan",
-			FromName: "张三",
-			MsgTime:  "2026-03-19T08:00:00Z",
-			Payload:  `{"msgtype":"text","text":{"content":"第一句"}}`,
-		},
-		{
-			Seq:      2,
-			MsgID:    "msg-2",
-			FromID:   "lisi",
-			FromName: "",
-			MsgTime:  "2026-03-19T08:01:00Z",
-			Payload:  `{"msgtype":"text","text":{"content":"第二句"}}`,
-		},
-	}
-	if len(got) != len(want) {
-		t.Fatalf("len(buildAgentMessages) = %d, want %d", len(got), len(want))
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("buildAgentMessages[%d] = %+v, want %+v", i, got[i], want[i])
-		}
 	}
 }
 
