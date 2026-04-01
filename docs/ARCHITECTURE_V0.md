@@ -107,15 +107,18 @@ SDK client.Open() -> create SandboxClaim -> wait Sandbox ready
 9. 触发处理时，先按 `tenant_id + room_id` 读取所有 `status=pending` 的消息，作为当前 room 尚未处理的结构化上下文窗口。
 10. 触发阶段按需补充解析群详情；发送方昵称在 ingest 阶段 best-effort 写入 `from_name`，失败不阻塞入库。
 11. 通过官方 Go SDK `Open()` 确保该 room 的 sandbox session ready；进程内 room session cache 遇到 `ErrOrphanedClaim` 时会先 `Close()` 再重建。
-12. 通过官方 Go SDK `Run()` 在 sandbox 内部桥接调用本机 `POST /agent`。
+12. 主服务复用当前 room 的 sandbox claim 元数据，经 `sandbox-router` 直接 `POST /agent`。
 13. agent 成功返回后，主服务把回复写入 `jobs(client_id, recipient_alias, message, max_seq)`。
 14. 只有当 `jobs` 写入成功后，主服务才把本轮参与处理的 `messages` 标记为 `done`。
 
 ### 5.2 Router 调用契约
-当前主服务不再直接从业务层拼接 router 请求头，而是让官方 Go SDK 通过 direct-url 模式连接 `sandbox-router`，并通过 `/execute` 在 sandbox 内部调用：
+当前主服务让官方 Go SDK 通过 direct-url 模式连接 `sandbox-router`，并复用 SDK 已建立的 sandbox claim 元数据直接调用：
 
 ```text
-POST http://127.0.0.1:{AGENT_SERVER_PORT}/agent
+POST {SANDBOX_ROUTER_URL}/agent
+X-Sandbox-ID: <claim-name>
+X-Sandbox-Namespace: <namespace>
+X-Sandbox-Port: <agent-server-port>
 ```
 
 请求体最小集：

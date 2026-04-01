@@ -1,11 +1,14 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +35,7 @@ type sdkHandle interface {
 	Open(ctx context.Context) error
 	Close(ctx context.Context) error
 	IsReady() bool
+	ClaimName() string
 	Run(ctx context.Context, command string, opts ...sdksandbox.CallOption) (*sdksandbox.ExecutionResult, error)
 }
 
@@ -45,6 +49,7 @@ type roomSession struct {
 type Orchestrator struct {
 	cfg     Config
 	factory sdkFactory
+	http    *http.Client
 
 	mu    sync.Mutex
 	rooms map[string]*roomSession
@@ -61,6 +66,7 @@ func NewOrchestrator(cfg Config) *Orchestrator {
 	return &Orchestrator{
 		cfg:     cfg,
 		factory: newSDKHandle,
+		http:    &http.Client{},
 		rooms:   make(map[string]*roomSession),
 	}
 }
@@ -78,25 +84,11 @@ func (o *Orchestrator) InvokeAgent(ctx context.Context, roomID string, req Agent
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
-	command, err := buildAgentInvokeCommand(req, o.cfg.ServerPort)
+	result, err := o.invokeAgentHTTP(ctx, state.client, req)
 	if err != nil {
-		return ExecutionResult{}, fmt.Errorf("build sdk agent command: %w", err)
+		return ExecutionResult{}, fmt.Errorf("invoke sdk sandbox for room %s: %w", roomID, err)
 	}
-
-	result, err := state.client.Run(ctx, command)
-	if err != nil {
-		if errors.Is(err, sdksandbox.ErrNotReady) && !state.client.IsReady() {
-			if openErr := o.openRoomSessionLocked(ctx, roomID, state); openErr != nil {
-				return ExecutionResult{}, fmt.Errorf("re-open sdk sandbox for room %s: %w", roomID, openErr)
-			}
-			result, err = state.client.Run(ctx, command)
-		}
-		if err != nil {
-			return ExecutionResult{}, fmt.Errorf("invoke sdk sandbox for room %s: %w", roomID, err)
-		}
-	}
-
-	return decodeAgentExecutionResult(result)
+	return result, nil
 }
 
 func (o *Orchestrator) Close(ctx context.Context) error {
@@ -209,43 +201,56 @@ func (o *Orchestrator) getOrCreateRoomSession(roomID string) *roomSession {
 	return state
 }
 
-func buildAgentInvokeCommand(req AgentRequest, serverPort int) (string, error) {
-	if serverPort <= 0 {
-		serverPort = defaultServerPort
+func (o *Orchestrator) invokeAgentHTTP(ctx context.Context, client sdkHandle, req AgentRequest) (ExecutionResult, error) {
+	if client == nil {
+		return ExecutionResult{}, fmt.Errorf("sdk client is nil")
+	}
+	claimName := strings.TrimSpace(client.ClaimName())
+	if claimName == "" {
+		return ExecutionResult{}, fmt.Errorf("sdk sandbox claim name is empty")
 	}
 
 	payload, err := json.Marshal(req)
 	if err != nil {
-		return "", fmt.Errorf("marshal agent request: %w", err)
+		return ExecutionResult{}, fmt.Errorf("marshal agent request: %w", err)
 	}
 
-	encoded := base64.StdEncoding.EncodeToString(payload)
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d/agent", serverPort)
-
-	lines := []string{
-		"set -eu",
-		"tmp_req=$(mktemp)",
-		"tmp_body=$(mktemp)",
-		"trap 'rm -f \"$tmp_req\" \"$tmp_body\"' EXIT",
-		fmt.Sprintf("printf '%%s' '%s' | base64 -d > \"$tmp_req\"", encoded),
-		fmt.Sprintf("status=$(curl -sS -o \"$tmp_body\" -w '%%{http_code}' -X POST -H 'Content-Type: application/json' --data-binary @\"$tmp_req\" %s)", shellQuote(endpoint)),
-		"if [ \"$status\" -lt 200 ] || [ \"$status\" -ge 300 ]; then",
-		"  cat \"$tmp_body\" >&2",
-		"  exit 1",
-		"fi",
-		"cat \"$tmp_body\"",
+	endpoint := strings.TrimRight(o.cfg.APIURL, "/") + "/agent"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return ExecutionResult{}, fmt.Errorf("build agent request: %w", err)
 	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("X-Sandbox-ID", claimName)
+	httpReq.Header.Set("X-Sandbox-Namespace", o.cfg.Namespace)
+	httpReq.Header.Set("X-Sandbox-Port", strconv.Itoa(o.cfg.ServerPort))
 
-	return strings.Join(lines, "\n"), nil
-}
+	resp, err := o.http.Do(httpReq)
+	if err != nil {
+		return ExecutionResult{}, fmt.Errorf("post /agent: %w", err)
+	}
+	defer resp.Body.Close()
 
-func decodeAgentExecutionResult(result *sdksandbox.ExecutionResult) (ExecutionResult, error) {
-	if result == nil {
-		return ExecutionResult{}, fmt.Errorf("sdk execution result is nil")
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return ExecutionResult{}, fmt.Errorf("read agent response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		message := strings.TrimSpace(string(body))
+		var errorBody struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(body, &errorBody); err == nil && strings.TrimSpace(errorBody.Error) != "" {
+			message = strings.TrimSpace(errorBody.Error)
+		}
+		if message == "" {
+			message = http.StatusText(resp.StatusCode)
+		}
+		return ExecutionResult{}, fmt.Errorf("post /agent returned status %d: %s", resp.StatusCode, message)
 	}
 
 	var decoded ExecutionResult
-	if err := json.Unmarshal([]byte(result.Stdout), &decoded); err != nil {
+	if err := json.Unmarshal(body, &decoded); err != nil {
 		return ExecutionResult{}, fmt.Errorf("decode agent response: %w", err)
 	}
 	if decoded.ExitCode != 0 {
@@ -262,8 +267,4 @@ func decodeAgentExecutionResult(result *sdksandbox.ExecutionResult) (ExecutionRe
 		return ExecutionResult{}, fmt.Errorf("sandbox response stdout is empty")
 	}
 	return decoded, nil
-}
-
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }

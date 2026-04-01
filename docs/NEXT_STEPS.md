@@ -45,7 +45,7 @@
    - `X-Sandbox-ID`
    - `X-Sandbox-Namespace`
    - `X-Sandbox-Port`
-3. 验证 SDK direct-url 模式与 `/agent` 桥接调用行为。
+3. 验证 SDK direct-url 模式下通过 router 直接调用 `/agent` 的行为。
 
 ## PostgreSQL 最小范围（当前版）
 - `messages`：企业微信 archive 入站事实、状态机、`seq` checkpoint

@@ -19,7 +19,7 @@
 1. `Ingress Service`
    - 拉取企业微信消息并标准化。
    - 调用 SDK `Open()`，保证对应 sandbox ready。
-   - 通过 SDK `Run()` 在 sandbox 内桥接调用 HTTP runtime `/agent`。
+   - 复用当前 sandbox claim 元数据，经 router 直接调用 HTTP runtime `/agent`。
    - 将入站消息写入 PostgreSQL `messages`；agent 返回后由主服务写入 `jobs` outbox，并在写入成功后把对应 `messages` 标记为 `done`。
 
 2. `Sandbox Orchestrator`
@@ -94,16 +94,17 @@ SDK direct-url 模式需要一个固定 router 地址，例如：
 http://sandbox-router-svc.claw.svc.cluster.local:8080
 ```
 
-具体 `X-Sandbox-*` 头由官方 Go SDK 内部注入，业务层不再直接拼装。
+当前 `X-Sandbox-*` 头由主服务复用 SDK 已建立的 sandbox claim 元数据填充，业务逻辑不再通过 shell 桥接 `/execute`。
 
 ## 5. 数据面契约
 
 ### 5.1 主服务 -> sandbox
 
-当前实现不是主服务直接调用 router `/agent`，而是：
-1. SDK 调用 router `/execute`
-2. sandbox 在本机执行 `curl http://127.0.0.1:8888/agent`
-3. `/agent` 返回的 JSON 再透传回主服务
+当前实现由主服务直接调用 router `/agent`：
+1. SDK `Open()` 保证当前 room 对应的 sandbox ready
+2. 主服务对 router `POST /agent`
+3. 请求头带上 `X-Sandbox-ID / X-Sandbox-Namespace / X-Sandbox-Port`
+4. `/agent` 返回的 JSON 直接回主服务
 
 `/agent` 的请求体保持：
 
@@ -226,7 +227,7 @@ agent 容器 ready 条件：
 1. Ingress 拉到企业微信消息并标准化。
 2. 根据 `room_id` 获取或创建当前进程内 sandbox session。
 3. Orchestrator 创建或复用对应 room 的 SDK client。
-4. SDK `Open()` 完成后，通过 `/execute` 桥接调用 `/agent`。
+4. SDK `Open()` 完成后，主服务直接通过 router 调用 `/agent`。
 5. agent 返回回复。
 6. 主服务把回复写入 `jobs` outbox。
 7. `jobs` 写入成功后，主服务把参与处理的 `messages` 标记为 `done`。
@@ -234,7 +235,7 @@ agent 容器 ready 条件：
 ### 9.2 活跃会话
 1. 新消息到达。
 2. 主服务直接复用现有 SDK client。
-3. 再次通过 `/execute` 桥接调用 `/agent`。
+3. 再次直接通过 router 调用 `/agent`。
 4. 不再等待 Redis ingress 被 sandbox 消费。
 
 ## 10. 失败处理
