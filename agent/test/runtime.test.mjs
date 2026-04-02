@@ -21,7 +21,7 @@ function buildEnv(overrides = {}) {
       agentWorkdir: workdir,
       agentTmpdir: os.tmpdir(),
       agentRuntimeMode: 'claude_agent_sdk',
-      claudeModel: 'claude-sonnet-4-5',
+      claudeModel: 'claude-sonnet-4-6',
       claudeSystemPromptAppend: undefined,
       claudeAllowedTools: undefined,
       claudeDisallowedTools: undefined,

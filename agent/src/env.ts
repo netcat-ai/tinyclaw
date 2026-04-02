@@ -72,9 +72,7 @@ export function loadEnv(): AgentEnv {
     agentTmpdir: process.env.AGENT_TMPDIR?.trim() || '/tmp',
     agentRuntimeMode: parseRuntimeMode(process.env.AGENT_RUNTIME_MODE?.trim()),
     claudeModel:
-      process.env.CLAUDE_MODEL?.trim() ||
-      process.env.MODEL_NAME?.trim() ||
-      'claude-sonnet-4-5',
+      process.env.CLAUDE_MODEL?.trim() || 'claude-sonnet-4-6',
     claudeSystemPromptAppend:
       process.env.CLAUDE_SYSTEM_PROMPT_APPEND?.trim() || undefined,
     claudeAllowedTools: parseCsv(process.env.CLAUDE_ALLOWED_TOOLS?.trim()),
