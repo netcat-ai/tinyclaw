@@ -82,14 +82,3 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/tinyclaw-agent:${{ github.sha }}
             ghcr.io/${{ github.repository_owner }}/tinyclaw-agent:latest
           platforms: linux/amd64
-
-      - name: Build Sandbox Router Image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./sandbox-router/Dockerfile
-          push: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/tinyclaw-sandbox-router:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/tinyclaw-sandbox-router:latest
-          platforms: linux/amd64
