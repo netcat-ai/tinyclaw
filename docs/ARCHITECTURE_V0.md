@@ -166,6 +166,22 @@ v0 中主服务只依赖最小 PostgreSQL 事实源：
 - `jobs.seq` 单调递增；Android 发送端通过 `GET /api/wecom/jobs?seq=<last_seq>` 拉取增量任务。
 - Android 发送端通过 HTTP Basic 认证访问 control API；服务端依据 `wecom_app_clients(client_id, client_secret)` 校验。
 
+### 5.4 当前代码中的消息批次语义
+截至 2026-04-01，仓库中没有独立的业务轮次实体；一次处理由 `clawman` 在 dispatch 阶段按 room 组装当前 `pending` 消息批次：
+
+1. ingest 先把 archive item 写入 `messages`，状态为 `ignored / buffered / pending`。
+2. dispatch 按 `room_id` 列出所有 pending room，并读取该 room 下当前全部 `messages(status=pending)`。
+3. 这批按 `seq` 排序的 pending 消息会被一次性组装成单个 `sandbox.AgentRequest{messages[]}`，并调用一次 sandbox。
+4. 只要本轮 reply 成功写入 `jobs`，这批消息才会整体从 `pending` 更新为 `done`。
+5. 如果 sandbox 调用失败、`jobs` 写入失败，或 `done` 更新失败，则不会生成独立批次记录；系统只是保留原来的 `pending` 消息，由下一轮 dispatch 再次整批重放。
+
+这意味着 v0 当前实现里：
+- 处理边界是“当前时刻该 room 下全部 pending 消息”，而不是显式持久化的业务实体。
+- 请求边界目前不稳定；重试时会重新基于当时的 pending 集合组装请求。
+- 中断、取消、增量流式输出等语义尚未进入主状态机。
+
+因此，若后续把内部通信改为 room 级 gRPC 消息传输，应继续围绕 `messages` 与消息批次来设计，而不是引入新的业务轮次概念。
+
 ## 6. Agent Runtime 设计
 
 ### 6.1 运行模式
@@ -251,9 +267,37 @@ PID 1: tini / entrypoint
 - `reply_e2e_ms`
 - `job_enqueue_error_rate`
 
-## 10. 结论
+## 10. v0 当前结论
 v0 方案的重点已经从“Redis 驱动 sandbox 自拉”切换为“官方 agent-sandbox Go SDK + router/direct-url + PostgreSQL 最小事实源”：
 - 控制面更贴近官方演进方向。
 - 模板复用能力更强。
 - sandbox 不再依赖 per-room Redis 凭据和 consumer group。
 - 主服务职责更清晰，后续接 warm pool、snapshot、router gateway 都更顺。
+
+## 11. 2026-04-01 通信方向校准
+本节用于固化 2026-04-01 的讨论结论；它描述的是下一阶段首选方向，不覆盖上文对 v0 当前实现的事实描述。
+
+### 11.1 保留的架构原则
+- `room_id -> sandbox` 仍然是核心隔离边界。
+- room 之间允许并行执行；同一 room 内的执行顺序和中断语义由单个 sandbox 承担。
+- 外部渠道事实源、审计、重试与投递仍然收敛在 `clawman`。
+
+### 11.2 否定的方案
+- 不回退到“每个 sandbox 自拉 Redis 队列”的 mailbox 模式。
+- 不让 sandbox 直接实现企业微信/飞书/email 等外部渠道客户端。
+- 不把集群内内部协议继续设计成仿第三方 `getupdates/sendmessage` 的长轮询协议。
+
+### 11.3 下一阶段推荐方向
+- `clawman` 收敛为统一 `message gateway`，持有外部渠道认证、cursor 和发送逻辑。
+- sandbox 只消费已按 room 路由好的规范化消息，并回传规范化事件：
+  - `typing`
+  - `assistant_delta`
+  - `assistant_final`
+  - `tool_event`
+  - `failed`
+- 内部主协议优先采用 `gRPC bidirectional streaming`，将 `clawman <-> sandbox` 建模为 room 级长会话。
+- `WebSocket` 仍可作为探索期备选，但其额外协议约束、错误模型和版本演进需要自行维护，因此不作为当前首选。
+
+### 11.4 边界说明
+- 当前 v0 实现仍然是 `sandbox-router + HTTP /agent` 的同步调用链路。
+- 下一阶段若切到 streaming，会替换“最终态 JSON RPC”这层数据面契约，但不会改变 `room -> sandbox` 的隔离模型，也不会改变 `clawman` 持有外部渠道状态这一原则。

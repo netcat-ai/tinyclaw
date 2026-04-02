@@ -1,55 +1,60 @@
 package sandbox
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
-	"io"
-	"net/http"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/rest"
-	sdksandbox "sigs.k8s.io/agent-sandbox/clients/go/sandbox"
+	extensionsclientset "sigs.k8s.io/agent-sandbox/clients/k8s/extensions/clientset/versioned"
+	extensionsclient "sigs.k8s.io/agent-sandbox/clients/k8s/extensions/clientset/versioned/typed/api/v1alpha1"
+	extensionsv1alpha1 "sigs.k8s.io/agent-sandbox/extensions/api/v1alpha1"
 )
 
 const (
 	defaultReadyTimeout = 3 * time.Minute
-	defaultServerPort   = 8888
+	roomIDAnnotationKey = "tinyclaw/room-id"
 )
 
 type Config struct {
 	Namespace    string
 	TemplateName string
-	APIURL       string
-	ServerPort   int
 	ReadyTimeout time.Duration
 	RestConfig   *rest.Config
 }
 
-type sdkHandle interface {
-	Open(ctx context.Context) error
-	Close(ctx context.Context) error
-	IsReady() bool
-	ClaimName() string
-	Run(ctx context.Context, command string, opts ...sdksandbox.CallOption) (*sdksandbox.ExecutionResult, error)
+type claimClient interface {
+	Create(ctx context.Context, sandboxClaim *extensionsv1alpha1.SandboxClaim, opts metav1.CreateOptions) (*extensionsv1alpha1.SandboxClaim, error)
+	Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error
+	Get(ctx context.Context, name string, opts metav1.GetOptions) (*extensionsv1alpha1.SandboxClaim, error)
+	Watch(ctx context.Context, opts metav1.ListOptions) (watch.Interface, error)
 }
 
-type sdkFactory func(ctx context.Context, opts sdksandbox.Options) (sdkHandle, error)
+type extensionGetter interface {
+	SandboxClaims(namespace string) claimClient
+}
+
+type extensionClientAdapter struct {
+	inner extensionsclient.ExtensionsV1alpha1Interface
+}
+
+func (a *extensionClientAdapter) SandboxClaims(namespace string) claimClient {
+	return a.inner.SandboxClaims(namespace)
+}
 
 type roomSession struct {
-	mu     sync.Mutex
-	client sdkHandle
+	roomID    string
+	claimName string
 }
 
 type Orchestrator struct {
-	cfg     Config
-	factory sdkFactory
-	http    *http.Client
+	cfg    Config
+	client extensionGetter
 
 	mu    sync.Mutex
 	rooms map[string]*roomSession
@@ -59,212 +64,132 @@ func NewOrchestrator(cfg Config) *Orchestrator {
 	if cfg.ReadyTimeout <= 0 {
 		cfg.ReadyTimeout = defaultReadyTimeout
 	}
-	if cfg.ServerPort <= 0 {
-		cfg.ServerPort = defaultServerPort
+	cs, err := extensionsclientset.NewForConfig(cfg.RestConfig)
+	if err != nil {
+		panic(err)
 	}
-
 	return &Orchestrator{
-		cfg:     cfg,
-		factory: newSDKHandle,
-		http:    &http.Client{},
-		rooms:   make(map[string]*roomSession),
+		cfg:    cfg,
+		client: &extensionClientAdapter{inner: cs.ExtensionsV1alpha1()},
+		rooms:  make(map[string]*roomSession),
 	}
 }
 
-func newSDKHandle(ctx context.Context, opts sdksandbox.Options) (sdkHandle, error) {
-	return sdksandbox.New(ctx, opts)
+func deterministicClaimName(roomID string) string {
+	sum := sha1.Sum([]byte(roomID))
+	return "tinyclaw-room-" + hex.EncodeToString(sum[:8])
 }
 
-func (o *Orchestrator) InvokeAgent(ctx context.Context, roomID string, req AgentRequest) (ExecutionResult, error) {
-	state, err := o.getReadyRoomSession(ctx, roomID)
-	if err != nil {
-		return ExecutionResult{}, err
+func (o *Orchestrator) EnsureRoom(ctx context.Context, roomID string) (string, error) {
+	if roomID == "" {
+		return "", fmt.Errorf("roomID is required")
+	}
+	if o.cfg.TemplateName == "" {
+		return "", fmt.Errorf("sandbox template name is required")
+	}
+	if o.cfg.Namespace == "" {
+		return "", fmt.Errorf("sandbox namespace is required")
 	}
 
-	state.mu.Lock()
-	defer state.mu.Unlock()
+	session := o.getOrCreateRoomSession(roomID)
+	claimName := session.claimName
+	claims := o.client.SandboxClaims(o.cfg.Namespace)
 
-	result, err := o.invokeAgentHTTP(ctx, state.client, req)
-	if err != nil {
-		return ExecutionResult{}, fmt.Errorf("invoke sdk sandbox for room %s: %w", roomID, err)
+	if _, err := claims.Get(ctx, claimName, metav1.GetOptions{}); err != nil {
+		if _, err := claims.Create(ctx, &extensionsv1alpha1.SandboxClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      claimName,
+				Namespace: o.cfg.Namespace,
+				Annotations: map[string]string{
+					roomIDAnnotationKey: roomID,
+				},
+			},
+			Spec: extensionsv1alpha1.SandboxClaimSpec{
+				TemplateRef: extensionsv1alpha1.SandboxTemplateRef{
+					Name: o.cfg.TemplateName,
+				},
+			},
+		}, metav1.CreateOptions{}); err != nil {
+			existing, getErr := claims.Get(ctx, claimName, metav1.GetOptions{})
+			if getErr != nil {
+				return "", fmt.Errorf("create sandbox claim for room %s: %w", roomID, err)
+			}
+			if existing.Annotations[roomIDAnnotationKey] != roomID {
+				return "", fmt.Errorf("claim %s already bound to another room", claimName)
+			}
+		}
 	}
-	return result, nil
+
+	if err := o.waitReady(ctx, claims, claimName); err != nil {
+		return "", err
+	}
+	return claimName, nil
+}
+
+func (o *Orchestrator) ResolveRoomID(ctx context.Context, sandboxID string) (string, error) {
+	claim, err := o.client.SandboxClaims(o.cfg.Namespace).Get(ctx, sandboxID, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("get sandbox claim %s: %w", sandboxID, err)
+	}
+	roomID := claim.Annotations[roomIDAnnotationKey]
+	if roomID == "" {
+		return "", fmt.Errorf("sandbox claim %s has no room annotation", sandboxID)
+	}
+	return roomID, nil
 }
 
 func (o *Orchestrator) Close(ctx context.Context) error {
 	o.mu.Lock()
-	states := make([]*roomSession, 0, len(o.rooms))
-	for _, state := range o.rooms {
-		states = append(states, state)
+	rooms := make([]*roomSession, 0, len(o.rooms))
+	for _, room := range o.rooms {
+		rooms = append(rooms, room)
 	}
 	o.mu.Unlock()
 
-	var errs []error
-	for _, state := range states {
-		state.mu.Lock()
-		client := state.client
-		state.mu.Unlock()
-		if client == nil {
-			continue
-		}
-		if err := client.Close(ctx); err != nil {
-			errs = append(errs, err)
+	var firstErr error
+	claims := o.client.SandboxClaims(o.cfg.Namespace)
+	for _, room := range rooms {
+		if err := claims.Delete(ctx, room.claimName, metav1.DeleteOptions{}); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("delete sandbox claim %s: %w", room.claimName, err)
 		}
 	}
-	return errors.Join(errs...)
-}
-
-func (o *Orchestrator) getReadyRoomSession(ctx context.Context, roomID string) (*roomSession, error) {
-	if roomID == "" {
-		return nil, fmt.Errorf("roomID is required")
-	}
-	if o.cfg.TemplateName == "" {
-		return nil, fmt.Errorf("sandbox template name is required")
-	}
-	if o.cfg.Namespace == "" {
-		return nil, fmt.Errorf("sandbox namespace is required")
-	}
-	if o.cfg.APIURL == "" {
-		return nil, fmt.Errorf("sandbox api url is required")
-	}
-
-	state := o.getOrCreateRoomSession(roomID)
-	state.mu.Lock()
-	defer state.mu.Unlock()
-
-	if state.client == nil {
-		if err := o.createRoomSessionClientLocked(ctx, roomID, state); err != nil {
-			return nil, err
-		}
-	}
-
-	if err := o.openRoomSessionLocked(ctx, roomID, state); err != nil {
-		return nil, err
-	}
-
-	return state, nil
-}
-
-func (o *Orchestrator) createRoomSessionClientLocked(ctx context.Context, roomID string, state *roomSession) error {
-	client, err := o.factory(ctx, sdksandbox.Options{
-		TemplateName:        o.cfg.TemplateName,
-		Namespace:           o.cfg.Namespace,
-		APIURL:              o.cfg.APIURL,
-		ServerPort:          o.cfg.ServerPort,
-		SandboxReadyTimeout: o.cfg.ReadyTimeout,
-		RestConfig:          o.cfg.RestConfig,
-		Quiet:               true,
-	})
-	if err != nil {
-		return fmt.Errorf("create sdk sandbox for room %s: %w", roomID, err)
-	}
-	state.client = client
-	return nil
-}
-
-func (o *Orchestrator) openRoomSessionLocked(ctx context.Context, roomID string, state *roomSession) error {
-	if state.client == nil {
-		if err := o.createRoomSessionClientLocked(ctx, roomID, state); err != nil {
-			return err
-		}
-	}
-	if state.client.IsReady() {
-		return nil
-	}
-	if err := state.client.Open(ctx); err != nil {
-		if !errors.Is(err, sdksandbox.ErrOrphanedClaim) {
-			return fmt.Errorf("open sdk sandbox for room %s: %w", roomID, err)
-		}
-		if closeErr := state.client.Close(ctx); closeErr != nil {
-			return fmt.Errorf("cleanup orphaned sdk sandbox for room %s: %w", roomID, closeErr)
-		}
-		state.client = nil
-		if err := o.createRoomSessionClientLocked(ctx, roomID, state); err != nil {
-			return err
-		}
-		if err := state.client.Open(ctx); err != nil {
-			return fmt.Errorf("re-open sdk sandbox for room %s after orphan cleanup: %w", roomID, err)
-		}
-	}
-	return nil
+	return firstErr
 }
 
 func (o *Orchestrator) getOrCreateRoomSession(roomID string) *roomSession {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	state, ok := o.rooms[roomID]
+	session, ok := o.rooms[roomID]
 	if !ok {
-		state = &roomSession{}
-		o.rooms[roomID] = state
+		session = &roomSession{
+			roomID:    roomID,
+			claimName: deterministicClaimName(roomID),
+		}
+		o.rooms[roomID] = session
 	}
-	return state
+	return session
 }
 
-func (o *Orchestrator) invokeAgentHTTP(ctx context.Context, client sdkHandle, req AgentRequest) (ExecutionResult, error) {
-	if client == nil {
-		return ExecutionResult{}, fmt.Errorf("sdk client is nil")
-	}
-	claimName := strings.TrimSpace(client.ClaimName())
-	if claimName == "" {
-		return ExecutionResult{}, fmt.Errorf("sdk sandbox claim name is empty")
-	}
+func (o *Orchestrator) waitReady(ctx context.Context, claims claimClient, claimName string) error {
+	deadlineCtx, cancel := context.WithTimeout(ctx, o.cfg.ReadyTimeout)
+	defer cancel()
 
-	payload, err := json.Marshal(req)
-	if err != nil {
-		return ExecutionResult{}, fmt.Errorf("marshal agent request: %w", err)
-	}
+	for {
+		claim, err := claims.Get(deadlineCtx, claimName, metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("get sandbox claim %s: %w", claimName, err)
+		}
+		for _, cond := range claim.Status.Conditions {
+			if cond.Type == "Ready" && cond.Status == metav1.ConditionTrue {
+				return nil
+			}
+		}
 
-	endpoint := strings.TrimRight(o.cfg.APIURL, "/") + "/agent"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return ExecutionResult{}, fmt.Errorf("build agent request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-Sandbox-ID", claimName)
-	httpReq.Header.Set("X-Sandbox-Namespace", o.cfg.Namespace)
-	httpReq.Header.Set("X-Sandbox-Port", strconv.Itoa(o.cfg.ServerPort))
-
-	resp, err := o.http.Do(httpReq)
-	if err != nil {
-		return ExecutionResult{}, fmt.Errorf("post /agent: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return ExecutionResult{}, fmt.Errorf("read agent response: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		message := strings.TrimSpace(string(body))
-		var errorBody struct {
-			Error string `json:"error"`
+		select {
+		case <-deadlineCtx.Done():
+			return fmt.Errorf("wait sandbox claim %s ready: %w", claimName, deadlineCtx.Err())
+		case <-time.After(500 * time.Millisecond):
 		}
-		if err := json.Unmarshal(body, &errorBody); err == nil && strings.TrimSpace(errorBody.Error) != "" {
-			message = strings.TrimSpace(errorBody.Error)
-		}
-		if message == "" {
-			message = http.StatusText(resp.StatusCode)
-		}
-		return ExecutionResult{}, fmt.Errorf("post /agent returned status %d: %s", resp.StatusCode, message)
 	}
-
-	var decoded ExecutionResult
-	if err := json.Unmarshal(body, &decoded); err != nil {
-		return ExecutionResult{}, fmt.Errorf("decode agent response: %w", err)
-	}
-	if decoded.ExitCode != 0 {
-		errText := strings.TrimSpace(decoded.Stderr)
-		if errText == "" {
-			errText = strings.TrimSpace(decoded.Stdout)
-		}
-		if errText == "" {
-			errText = "unknown agent runtime failure"
-		}
-		return ExecutionResult{}, fmt.Errorf("sandbox agent failed with exit_code=%d: %s", decoded.ExitCode, errText)
-	}
-	if strings.TrimSpace(decoded.Stdout) == "" {
-		return ExecutionResult{}, fmt.Errorf("sandbox response stdout is empty")
-	}
-	return decoded, nil
 }

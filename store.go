@@ -15,6 +15,7 @@ const (
 	statusIgnored  = "ignored"
 	statusBuffered = "buffered"
 	statusPending  = "pending"
+	statusSent     = "sent"
 	statusDone     = "done"
 )
 
@@ -89,7 +90,7 @@ func (s *Store) InitSchema(ctx context.Context) error {
 			status TEXT NOT NULL,
 			msg_time TIMESTAMPTZ,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			CHECK (status IN ('ignored', 'buffered', 'pending', 'done'))
+			CHECK (status IN ('ignored', 'buffered', 'pending', 'sent', 'done'))
 		)
 		`,
 		`
@@ -100,6 +101,11 @@ func (s *Store) InitSchema(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_messages_pending_by_room
 		ON messages (tenant_id, status, room_id, seq)
 		WHERE status = 'pending'
+		`,
+		`
+		CREATE INDEX IF NOT EXISTS idx_messages_sent_by_room
+		ON messages (tenant_id, status, room_id, seq)
+		WHERE status = 'sent'
 		`,
 		`
 		CREATE TABLE IF NOT EXISTS jobs (
@@ -133,6 +139,24 @@ func (s *Store) InitSchema(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("init schema: %w", err)
 		}
+	}
+	if _, err := s.db.ExecContext(
+		ctx,
+		`
+		ALTER TABLE messages DROP CONSTRAINT IF EXISTS messages_status_check
+		`,
+	); err != nil {
+		return fmt.Errorf("drop messages status constraint: %w", err)
+	}
+	if _, err := s.db.ExecContext(
+		ctx,
+		`
+		ALTER TABLE messages
+		ADD CONSTRAINT messages_status_check
+		CHECK (status IN ('ignored', 'buffered', 'pending', 'sent', 'done'))
+		`,
+	); err != nil {
+		return fmt.Errorf("add messages status constraint: %w", err)
 	}
 	return nil
 }
@@ -344,10 +368,40 @@ func (s *Store) ListPendingMessages(ctx context.Context, tenantID, roomID string
 }
 
 func (s *Store) MarkMessagesDone(ctx context.Context, seqs []int64) error {
-	defer dbTimer("mark_messages_done")()
+	return s.markMessagesStatus(ctx, "mark_messages_done", seqs, statusDone)
+}
+
+func (s *Store) MarkMessagesSent(ctx context.Context, seqs []int64) error {
+	return s.markMessagesStatus(ctx, "mark_messages_sent", seqs, statusSent)
+}
+
+func (s *Store) MarkMessagesPending(ctx context.Context, seqs []int64) error {
+	return s.markMessagesStatus(ctx, "mark_messages_pending", seqs, statusPending)
+}
+
+func (s *Store) ResetSentMessages(ctx context.Context) error {
+	defer dbTimer("reset_sent_messages")()
+
+	if _, err := s.db.ExecContext(
+		ctx,
+		`
+		UPDATE messages
+		SET status = $1
+		WHERE status = $2
+		`,
+		statusPending,
+		statusSent,
+	); err != nil {
+		return fmt.Errorf("reset sent messages: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) markMessagesStatus(ctx context.Context, metricName string, seqs []int64, status string) error {
+	defer dbTimer(metricName)()
 
 	if len(seqs) == 0 {
-		return fmt.Errorf("mark messages done: seqs is empty")
+		return fmt.Errorf("mark messages %s: seqs is empty", status)
 	}
 
 	if _, err := s.db.ExecContext(
@@ -358,9 +412,9 @@ func (s *Store) MarkMessagesDone(ctx context.Context, seqs []int64) error {
 		WHERE seq = ANY($1)
 		`,
 		seqs,
-		statusDone,
+		status,
 	); err != nil {
-		return fmt.Errorf("mark messages done: %w", err)
+		return fmt.Errorf("mark messages %s: %w", status, err)
 	}
 	return nil
 }

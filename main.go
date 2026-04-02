@@ -39,6 +39,11 @@ func main() {
 		slog.Error("init postgres schema failed", "err", err)
 		os.Exit(1)
 	}
+	if err := store.ResetSentMessages(ctx); err != nil {
+		cancel()
+		slog.Error("reset sent messages failed", "err", err)
+		os.Exit(1)
+	}
 	cancel()
 
 	k8sCfg, err := rest.InClusterConfig()
@@ -49,21 +54,18 @@ func main() {
 	orch := sandbox.NewOrchestrator(sandbox.Config{
 		Namespace:    cfg.SandboxNamespace,
 		TemplateName: cfg.SandboxTemplateName,
-		APIURL:       cfg.SandboxRouterURL,
-		ServerPort:   cfg.SandboxServerPort,
 		ReadyTimeout: time.Duration(cfg.SandboxReadyTimeoutSec) * time.Second,
 		RestConfig:   k8sCfg,
 	})
 	slog.Info(
-		"sandbox sdk integration enabled",
+		"sandbox claim integration enabled",
 		"namespace", cfg.SandboxNamespace,
 		"template", cfg.SandboxTemplateName,
-		"connect_mode", "direct-url",
-		"api_url", cfg.SandboxRouterURL,
-		"server_port", cfg.SandboxServerPort,
 	)
 
-	clawman, err := NewClawman(cfg, store, orch)
+	gateway := NewMessageGateway(cfg, orch.ResolveRoomID)
+
+	clawman, err := NewClawman(cfg, store, orch, gateway)
 	if err != nil {
 		slog.Error("init clawman failed", "err", err)
 		os.Exit(1)
@@ -76,6 +78,12 @@ func main() {
 	// Start metrics server
 	go serveMetrics(runCtx, cfg.MetricsAddr)
 	go serveControlAPI(runCtx, cfg, store)
+	go func() {
+		if err := gateway.Serve(runCtx); err != nil {
+			slog.Error("clawman grpc gateway stopped with error", "err", err)
+			stop()
+		}
+	}()
 
 	if err := clawman.Run(runCtx); err != nil {
 		slog.Error("clawman stopped with error", "err", err)

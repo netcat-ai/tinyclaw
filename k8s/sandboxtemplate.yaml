@@ -33,9 +33,12 @@ spec:
               value: "/workspace"
             - name: AGENT_TMPDIR
               value: "/tmp"
+            - name: CLAWMAN_GRPC_ADDR
+              valueFrom:
+                configMapKeyRef:
+                  name: tinyclaw-config
+                  key: CLAWMAN_GRPC_ADDR
             - name: CLAUDE_RUNTIME_TIMEOUT_MS
-              value: "240000"
-            - name: AGENT_EXECUTE_TIMEOUT_MS
               value: "240000"
             - name: CLAUDE_SYSTEM_PROMPT_APPEND
               value: |

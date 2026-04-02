@@ -53,7 +53,7 @@ async function stopProcess(child) {
   ]);
 }
 
-test('agent serves official sandbox runtime endpoints in echo mode', async () => {
+test('agent serves healthz in echo mode', async () => {
   const port = await getFreePort();
   const workdir = await fs.mkdtemp(path.join(os.tmpdir(), 'tinyclaw-agent-'));
   const agent = spawn('node', [path.resolve('dist/main.js')], {
@@ -90,81 +90,8 @@ test('agent serves official sandbox runtime endpoints in echo mode', async () =>
     const health = await fetch(`http://127.0.0.1:${port}/healthz`);
     assert.equal(health.status, 200);
 
-    const agentResponse = await fetch(`http://127.0.0.1:${port}/agent`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        msgid: 'msg-integration-1',
-        room_id: 'room-integration',
-        tenant_id: 'tenant-integration',
-        chat_type: 'group',
-        messages: [
-          {
-            seq: 1,
-            msgid: 'msg-integration-1',
-            from_id: 'user-integration',
-            from_name: 'Integration User',
-            msg_time: '2026-03-21T00:00:00Z',
-            payload: JSON.stringify({
-              msgtype: 'text',
-              text: { content: 'hello integration' },
-            }),
-          },
-        ],
-      }),
-    });
-
-    assert.equal(agentResponse.status, 200);
-    assert.deepEqual(await agentResponse.json(), {
-      stdout: 'Echo from tinyclaw-agent: received 1 messages',
-      stderr: '',
-      exit_code: 0,
-    });
-
-    const executeResponse = await fetch(`http://127.0.0.1:${port}/execute`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        command: 'printf tinyclaw-execute-ok',
-      }),
-    });
-
-    assert.equal(executeResponse.status, 200);
-    assert.deepEqual(await executeResponse.json(), {
-      stdout: 'tinyclaw-execute-ok',
-      stderr: '',
-      exit_code: 0,
-    });
-
-    const uploadForm = new FormData();
-    uploadForm.append('file', new Blob(['hello file']), 'note.txt');
-    const uploadResponse = await fetch(`http://127.0.0.1:${port}/upload`, {
-      method: 'POST',
-      body: uploadForm,
-    });
-    assert.equal(uploadResponse.status, 200);
-
-    const existsResponse = await fetch(`http://127.0.0.1:${port}/exists/note.txt`);
-    assert.equal(existsResponse.status, 200);
-    assert.deepEqual(await existsResponse.json(), {
-      path: 'note.txt',
-      exists: true,
-    });
-
-    const listResponse = await fetch(`http://127.0.0.1:${port}/list/.`);
-    assert.equal(listResponse.status, 200);
-    const listPayload = await listResponse.json();
-    assert.equal(listPayload.length, 1);
-    assert.equal(listPayload[0].name, 'note.txt');
-    assert.equal(listPayload[0].type, 'file');
-
-    const downloadResponse = await fetch(`http://127.0.0.1:${port}/download/note.txt`);
-    assert.equal(downloadResponse.status, 200);
-    assert.equal(await downloadResponse.text(), 'hello file');
+    const missing = await fetch(`http://127.0.0.1:${port}/does-not-exist`);
+    assert.equal(missing.status, 404);
   } finally {
     await stopProcess(agent);
     await fs.rm(workdir, { recursive: true, force: true });

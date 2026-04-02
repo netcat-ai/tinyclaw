@@ -38,6 +38,8 @@ spec:
           ports:
             - containerPort: 8081
               name: control-api
+            - containerPort: 8092
+              name: grpc
           envFrom:
             - configMapRef:
                 name: tinyclaw-config

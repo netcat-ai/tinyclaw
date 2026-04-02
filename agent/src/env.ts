@@ -60,6 +60,7 @@ export function loadEnv(): AgentEnv {
 
   return {
     serverPort: parseInteger('AGENT_SERVER_PORT', 8888),
+    clawmanGrpcAddr: process.env.CLAWMAN_GRPC_ADDR?.trim() || undefined,
     anthropicApiKey: process.env.ANTHROPIC_API_KEY?.trim() || undefined,
     anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL?.trim() || undefined,
     claudeCodeOauthToken:
@@ -79,6 +80,5 @@ export function loadEnv(): AgentEnv {
     claudeAllowedTools: parseCsv(process.env.CLAUDE_ALLOWED_TOOLS?.trim()),
     claudeDisallowedTools: parseCsv(process.env.CLAUDE_DISALLOWED_TOOLS?.trim()),
     claudeMaxTurns: parseInteger('CLAUDE_MAX_TURNS', 16),
-    executeTimeoutMs: parseInteger('AGENT_EXECUTE_TIMEOUT_MS', 120000),
   };
 }
