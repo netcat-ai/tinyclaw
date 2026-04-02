@@ -10,14 +10,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY package*.json ./
+COPY agent/package*.json ./
 RUN npm ci
 
-COPY tsconfig.json ./
-COPY src ./src
+COPY agent/tsconfig.json ./
+COPY proto ./proto
+COPY agent/src ./src
 RUN npm run build && npm prune --omit=dev
 
-COPY scripts/entrypoint.sh /app/entrypoint.sh
+COPY agent/scripts/entrypoint.sh /app/entrypoint.sh
 
 RUN chmod +x /app/entrypoint.sh \
     && mkdir -p /workspace /var/lib/tinyclaw /var/log/tinyclaw \

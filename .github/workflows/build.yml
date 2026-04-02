@@ -75,7 +75,7 @@ jobs:
       - name: Build Agent Image
         uses: docker/build-push-action@v6
         with:
-          context: ./agent
+          context: .
           file: ./agent/Dockerfile
           push: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
           tags: |

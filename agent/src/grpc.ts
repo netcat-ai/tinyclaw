@@ -27,7 +27,7 @@ type ProtoMessage = {
 type ProtoConnectStream = grpc.ClientDuplexStream<any, any>;
 
 const runtimeDir = path.dirname(fileURLToPath(import.meta.url));
-const protoPath = path.resolve(runtimeDir, '../../proto/clawman/v1/clawman.proto');
+const protoPath = path.resolve(runtimeDir, '../proto/clawman/v1/clawman.proto');
 
 function loadClientConstructor(): grpc.ServiceClientConstructor {
   const definition = protoLoader.loadSync(protoPath, {
