@@ -379,6 +379,10 @@ func (s *Store) MarkMessagesPending(ctx context.Context, seqs []int64) error {
 	return s.markMessagesStatus(ctx, "mark_messages_pending", seqs, statusPending)
 }
 
+func (s *Store) MarkMessagesIgnored(ctx context.Context, seqs []int64) error {
+	return s.markMessagesStatus(ctx, "mark_messages_ignored", seqs, statusIgnored)
+}
+
 func (s *Store) ResetSentMessages(ctx context.Context) error {
 	defer dbTimer("reset_sent_messages")()
 

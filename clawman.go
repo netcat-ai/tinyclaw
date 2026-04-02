@@ -30,6 +30,7 @@ const (
 	dispatchPollInterval       = time.Second
 	coldStartWindow            = 10 * time.Minute
 	dispatchRoomTimeout        = 6 * time.Minute
+	pendingDispatchWindow      = 10 * time.Minute
 )
 
 var errFatalIngest = errors.New("fatal ingest error")
@@ -363,7 +364,19 @@ func (r *Clawman) dispatchRoom(ctx context.Context, roomID string) {
 		return
 	}
 
-	rc, err := r.buildRoomContext(ctx, roomID, pendingMessages)
+	recentMessages, staleSeqs := partitionDispatchablePending(pendingMessages, time.Now().UTC().Add(-pendingDispatchWindow))
+	if len(staleSeqs) > 0 {
+		if err := r.store.MarkMessagesIgnored(ctx, staleSeqs); err != nil {
+			slog.Error("mark stale pending messages ignored failed", "room_id", roomID, "err", err)
+			return
+		}
+		slog.Warn("ignored stale pending messages", "room_id", roomID, "count", len(staleSeqs))
+	}
+	if len(recentMessages) == 0 {
+		return
+	}
+
+	rc, err := r.buildRoomContext(ctx, roomID, recentMessages)
 	if err != nil {
 		slog.Error("build room context failed", "room_id", roomID, "err", err)
 		return
@@ -378,15 +391,15 @@ func (r *Clawman) dispatchRoom(ctx context.Context, roomID string) {
 	dispatchCtx, cancel := context.WithTimeout(ctx, dispatchRoomTimeout)
 	defer cancel()
 
-	reply, err := r.invokeRoomAgent(dispatchCtx, roomID, rc.msg, pendingMessages)
+	reply, err := r.invokeRoomAgent(dispatchCtx, roomID, rc.msg, recentMessages)
 	if err != nil {
 		slog.Error("invoke sandbox failed", "room_id", roomID, "err", err)
 		return
 	}
 
-	pendingSeqs := make([]int64, 0, len(pendingMessages))
+	pendingSeqs := make([]int64, 0, len(recentMessages))
 	var maxSeq int64
-	for _, pending := range pendingMessages {
+	for _, pending := range recentMessages {
 		pendingSeqs = append(pendingSeqs, pending.Seq)
 		if pending.Seq > maxSeq {
 			maxSeq = pending.Seq
@@ -404,6 +417,27 @@ func (r *Clawman) dispatchRoom(ctx context.Context, roomID string) {
 	if err := r.store.MarkMessagesDone(ctx, pendingSeqs); err != nil {
 		slog.Error("mark messages done failed", "room_id", roomID, "err", err)
 	}
+}
+
+func partitionDispatchablePending(messages []MessageRecord, cutoff time.Time) ([]MessageRecord, []int64) {
+	if len(messages) == 0 {
+		return nil, nil
+	}
+
+	dispatchable := make([]MessageRecord, 0, len(messages))
+	staleSeqs := make([]int64, 0)
+	for _, message := range messages {
+		eventTime := message.MsgTime
+		if eventTime.IsZero() {
+			eventTime = message.CreatedAt
+		}
+		if !eventTime.IsZero() && eventTime.Before(cutoff) {
+			staleSeqs = append(staleSeqs, message.Seq)
+			continue
+		}
+		dispatchable = append(dispatchable, message)
+	}
+	return dispatchable, staleSeqs
 }
 
 func (r *Clawman) enqueueJob(ctx context.Context, targetName, content string, maxSeq int64) error {

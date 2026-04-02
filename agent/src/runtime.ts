@@ -45,6 +45,26 @@ function parsePayload(payload: string): unknown {
   }
 }
 
+function truncateForLog(value: string, limit = 100): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= limit) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, limit)}...`;
+}
+
+function buildMessageSummary(message: AgentRequest): Array<Record<string, unknown>> {
+  return message.messages.map(item => ({
+    seq: item.seq,
+    msgid: item.msgid,
+    from_id: item.fromId,
+    from_name: item.fromName ?? '',
+    msg_time: item.msgTime ?? '',
+    payload_length: item.payload.length,
+    payload_preview: truncateForLog(item.payload, 100),
+  }));
+}
+
 function buildClaudePrompt(message: AgentRequest): string {
   const lines = [
     'You are handling a TinyClaw room message.',
@@ -136,6 +156,7 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
 
     const startedAt = this.deps.now();
     const abortController = new AbortController();
+    const prompt = buildClaudePrompt(message);
     let timedOut = false;
     let finalResult: ExecutionResult | null = null;
     let finalError: string | null = null;
@@ -162,14 +183,28 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
         msg: 'claude_runtime_started',
         room_id: message.roomId,
         msgid: message.msgid,
+        message_count: message.messages.length,
         timeout_ms: this.env.claudeRuntimeTimeoutMs,
         model: this.env.claudeModel,
       }),
     );
 
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        msg: 'claude_runtime_query_input',
+        room_id: message.roomId,
+        msgid: message.msgid,
+        message_count: message.messages.length,
+        messages: buildMessageSummary(message),
+        prompt_length: prompt.length,
+        prompt_preview: truncateForLog(prompt, 100),
+      }),
+    );
+
     try {
       queryHandle = this.deps.createQuery({
-        prompt: buildClaudePrompt(message),
+        prompt,
         options: {
           abortController,
           cwd: this.env.agentWorkdir,
