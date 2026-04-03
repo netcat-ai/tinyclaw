@@ -13,8 +13,7 @@ import (
 type fakeJobStore struct {
 	getMaxJobSeqFn     func(context.Context, string) (int64, error)
 	listJobsSinceSeqFn func(context.Context, string, int64, time.Time) ([]Job, error)
-	validateClientFn   func(context.Context, string, string) (bool, error)
-	resolveBotIDFn     func(context.Context, string) (string, error)
+	authenticateFn     func(context.Context, string, string) (string, bool, error)
 }
 
 func (f fakeJobStore) GetMaxJobSeq(ctx context.Context, botID string) (int64, error) {
@@ -25,12 +24,8 @@ func (f fakeJobStore) ListJobsSinceSeq(ctx context.Context, botID string, afterS
 	return f.listJobsSinceSeqFn(ctx, botID, afterSeq, cutoff)
 }
 
-func (f fakeJobStore) ValidateAppClient(ctx context.Context, clientID, clientSecret string) (bool, error) {
-	return f.validateClientFn(ctx, clientID, clientSecret)
-}
-
-func (f fakeJobStore) ResolveBotIDByAppClient(ctx context.Context, clientID string) (string, error) {
-	return f.resolveBotIDFn(ctx, clientID)
+func (f fakeJobStore) AuthenticateAppClient(ctx context.Context, clientID, clientSecret string) (string, bool, error) {
+	return f.authenticateFn(ctx, clientID, clientSecret)
 }
 
 func TestHandleListJobsRequiresBasicAuth(t *testing.T) {
@@ -40,8 +35,9 @@ func TestHandleListJobsRequiresBasicAuth(t *testing.T) {
 			listJobsSinceSeqFn: func(context.Context, string, int64, time.Time) ([]Job, error) {
 				return nil, nil
 			},
-			validateClientFn: func(context.Context, string, string) (bool, error) { return false, nil },
-			resolveBotIDFn:   func(context.Context, string) (string, error) { return "", nil },
+			authenticateFn: func(context.Context, string, string) (string, bool, error) {
+				return "", false, nil
+			},
 		},
 	}
 
@@ -68,14 +64,14 @@ func TestHandleListJobsBootstrapReturnsEmptyAndMaxSeq(t *testing.T) {
 				t.Fatal("listJobsSinceSeq should not be called during bootstrap")
 				return nil, nil
 			},
-			validateClientFn: func(_ context.Context, clientID, clientSecret string) (bool, error) {
-				return clientID == "phone-a" && clientSecret == "secret", nil
-			},
-			resolveBotIDFn: func(_ context.Context, clientID string) (string, error) {
+			authenticateFn: func(_ context.Context, clientID, clientSecret string) (string, bool, error) {
 				if clientID != "phone-a" {
 					t.Fatalf("clientID = %q, want phone-a", clientID)
 				}
-				return "moss", nil
+				if clientSecret != "secret" {
+					t.Fatalf("clientSecret = %q, want secret", clientSecret)
+				}
+				return "moss", true, nil
 			},
 		},
 	}
@@ -134,14 +130,14 @@ func TestHandleListJobsReturnsFilteredJobs(t *testing.T) {
 					},
 				}, nil
 			},
-			validateClientFn: func(_ context.Context, clientID, clientSecret string) (bool, error) {
-				return clientID == "phone-a" && clientSecret == "secret", nil
-			},
-			resolveBotIDFn: func(_ context.Context, clientID string) (string, error) {
+			authenticateFn: func(_ context.Context, clientID, clientSecret string) (string, bool, error) {
 				if clientID != "phone-a" {
 					t.Fatalf("clientID = %q, want phone-a", clientID)
 				}
-				return "moss", nil
+				if clientSecret != "secret" {
+					t.Fatalf("clientSecret = %q, want secret", clientSecret)
+				}
+				return "moss", true, nil
 			},
 		},
 	}

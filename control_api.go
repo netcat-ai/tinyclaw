@@ -16,8 +16,7 @@ const jobRetentionWindow = 10 * time.Minute
 type jobStore interface {
 	GetMaxJobSeq(ctx context.Context, botID string) (int64, error)
 	ListJobsSinceSeq(ctx context.Context, botID string, afterSeq int64, cutoff time.Time) ([]Job, error)
-	ValidateAppClient(ctx context.Context, clientID, clientSecret string) (bool, error)
-	ResolveBotIDByAppClient(ctx context.Context, clientID string) (string, error)
+	AuthenticateAppClient(ctx context.Context, clientID, clientSecret string) (string, bool, error)
 }
 
 type controlAPI struct {
@@ -138,19 +137,7 @@ func (api *controlAPI) authenticateClient(r *http.Request) (string, bool, error)
 	if !ok {
 		return "", false, nil
 	}
-
-	valid, err := api.store.ValidateAppClient(r.Context(), strings.TrimSpace(clientID), strings.TrimSpace(clientSecret))
-	if err != nil {
-		return "", false, err
-	}
-	if !valid {
-		return "", false, nil
-	}
-	botID, err := api.store.ResolveBotIDByAppClient(r.Context(), strings.TrimSpace(clientID))
-	if err != nil {
-		return "", false, err
-	}
-	return botID, true, nil
+	return api.store.AuthenticateAppClient(r.Context(), strings.TrimSpace(clientID), strings.TrimSpace(clientSecret))
 }
 
 func writeAPIJSON(w http.ResponseWriter, statusCode int, payload any) {

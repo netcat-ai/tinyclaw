@@ -534,56 +534,45 @@ func (s *Store) ListJobsSinceSeq(ctx context.Context, botID string, afterSeq int
 	return jobs, nil
 }
 
-func (s *Store) ValidateAppClient(ctx context.Context, clientID, clientSecret string) (bool, error) {
-	defer dbTimer("validate_app_client")()
+func (s *Store) AuthenticateAppClient(ctx context.Context, clientID, clientSecret string) (string, bool, error) {
+	defer dbTimer("authenticate_app_client")()
 
-	var exists bool
-	if err := s.db.QueryRowContext(
-		ctx,
-		`
-		SELECT EXISTS (
-			SELECT 1
-			FROM wecom_app_clients
-			WHERE client_id = $1
-			  AND client_secret = $2
-			  AND enabled = TRUE
-		)
-		`,
-		clientID,
-		clientSecret,
-	).Scan(&exists); err != nil {
-		return false, fmt.Errorf("validate app client: %w", err)
+	clientID = strings.TrimSpace(clientID)
+	clientSecret = strings.TrimSpace(clientSecret)
+	if clientID == "" {
+		return "", false, fmt.Errorf("client id is empty")
 	}
-	return exists, nil
-}
-
-func (s *Store) ResolveBotIDByAppClient(ctx context.Context, clientID string) (string, error) {
-	defer dbTimer("resolve_bot_id_by_app_client")()
-
-	if strings.TrimSpace(clientID) == "" {
-		return "", fmt.Errorf("client id is empty")
+	if clientSecret == "" {
+		return "", false, fmt.Errorf("client secret is empty")
 	}
 
+	var storedSecret string
 	var botID string
+	var enabled bool
 	if err := s.db.QueryRowContext(
 		ctx,
 		`
-		SELECT bot_id
+		SELECT client_secret, bot_id, enabled
 		FROM wecom_app_clients
 		WHERE client_id = $1
-		  AND enabled = TRUE
 		`,
-		strings.TrimSpace(clientID),
-	).Scan(&botID); err != nil {
+		clientID,
+	).Scan(&storedSecret, &botID, &enabled); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", fmt.Errorf("no enabled bot binding for client %s", clientID)
+			return "", false, fmt.Errorf("invalid client: %s", clientID)
 		}
-		return "", fmt.Errorf("resolve bot id by app client: %w", err)
+		return "", false, fmt.Errorf("authenticate app client: %w", err)
+	}
+	if !enabled {
+		return "", false, fmt.Errorf("client disabled: %s", clientID)
+	}
+	if storedSecret != clientSecret {
+		return "", false, fmt.Errorf("invalid secret for client: %s", clientID)
 	}
 	if strings.TrimSpace(botID) == "" {
-		return "", fmt.Errorf("app client %s has empty bot id", clientID)
+		return "", false, fmt.Errorf("app client %s has empty bot id", clientID)
 	}
-	return botID, nil
+	return botID, true, nil
 }
 
 func nullIfEmpty(value string) any {
