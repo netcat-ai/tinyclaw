@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,7 +40,7 @@ type MessageRecord struct {
 type Job struct {
 	ID             string
 	Seq            int64
-	ClientID       string
+	BotID          string
 	RecipientAlias string
 	Message        string
 	MaxSeq         int64
@@ -111,7 +112,7 @@ func (s *Store) InitSchema(ctx context.Context) error {
 		CREATE TABLE IF NOT EXISTS jobs (
 			id TEXT PRIMARY KEY,
 			seq BIGSERIAL UNIQUE,
-			client_id TEXT NOT NULL,
+			bot_id TEXT NOT NULL,
 			recipient_alias TEXT NOT NULL,
 			message TEXT NOT NULL,
 			max_seq BIGINT NOT NULL,
@@ -119,19 +120,24 @@ func (s *Store) InitSchema(ctx context.Context) error {
 		)
 		`,
 		`
-		CREATE INDEX IF NOT EXISTS idx_jobs_client_seq
-		ON jobs (client_id, seq)
+		CREATE INDEX IF NOT EXISTS idx_jobs_bot_seq
+		ON jobs (bot_id, seq)
 		`,
 		`
-		CREATE INDEX IF NOT EXISTS idx_jobs_client_created_at
-		ON jobs (client_id, created_at)
+		CREATE INDEX IF NOT EXISTS idx_jobs_bot_created_at
+		ON jobs (bot_id, created_at)
 		`,
 		`
 		CREATE TABLE IF NOT EXISTS wecom_app_clients (
 			client_id TEXT PRIMARY KEY,
+			bot_id TEXT NOT NULL,
 			client_secret TEXT NOT NULL,
 			enabled BOOLEAN NOT NULL DEFAULT TRUE
 		)
+		`,
+		`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_wecom_app_clients_bot_id
+		ON wecom_app_clients (bot_id)
 		`,
 	}
 
@@ -423,12 +429,12 @@ func (s *Store) markMessagesStatus(ctx context.Context, metricName string, seqs 
 	return nil
 }
 
-func (s *Store) EnqueueJob(ctx context.Context, clientID, recipientAlias, message string, maxSeq int64) (Job, error) {
+func (s *Store) EnqueueJob(ctx context.Context, botID, recipientAlias, message string, maxSeq int64) (Job, error) {
 	defer dbTimer("enqueue_job")()
 
 	job := Job{
 		ID:             uuid.NewString(),
-		ClientID:       clientID,
+		BotID:          botID,
 		RecipientAlias: recipientAlias,
 		Message:        message,
 		MaxSeq:         maxSeq,
@@ -440,7 +446,7 @@ func (s *Store) EnqueueJob(ctx context.Context, clientID, recipientAlias, messag
 		`
 		INSERT INTO jobs (
 			id,
-			client_id,
+			bot_id,
 			recipient_alias,
 			message,
 			max_seq,
@@ -450,7 +456,7 @@ func (s *Store) EnqueueJob(ctx context.Context, clientID, recipientAlias, messag
 		RETURNING seq
 		`,
 		job.ID,
-		job.ClientID,
+		job.BotID,
 		job.RecipientAlias,
 		job.Message,
 		job.MaxSeq,
@@ -463,7 +469,7 @@ func (s *Store) EnqueueJob(ctx context.Context, clientID, recipientAlias, messag
 	return job, nil
 }
 
-func (s *Store) GetMaxJobSeq(ctx context.Context, clientID string) (int64, error) {
+func (s *Store) GetMaxJobSeq(ctx context.Context, botID string) (int64, error) {
 	defer dbTimer("get_max_job_seq")()
 
 	var maxSeq sql.NullInt64
@@ -472,9 +478,9 @@ func (s *Store) GetMaxJobSeq(ctx context.Context, clientID string) (int64, error
 		`
 		SELECT MAX(seq)
 		FROM jobs
-		WHERE client_id = $1
+		WHERE bot_id = $1
 		`,
-		clientID,
+		botID,
 	).Scan(&maxSeq); err != nil {
 		return 0, fmt.Errorf("get max job seq: %w", err)
 	}
@@ -484,20 +490,20 @@ func (s *Store) GetMaxJobSeq(ctx context.Context, clientID string) (int64, error
 	return maxSeq.Int64, nil
 }
 
-func (s *Store) ListJobsSinceSeq(ctx context.Context, clientID string, afterSeq int64, cutoff time.Time) ([]Job, error) {
+func (s *Store) ListJobsSinceSeq(ctx context.Context, botID string, afterSeq int64, cutoff time.Time) ([]Job, error) {
 	defer dbTimer("list_jobs_since_seq")()
 
 	rows, err := s.db.QueryContext(
 		ctx,
 		`
-		SELECT id, seq, client_id, recipient_alias, message, max_seq, created_at
+		SELECT id, seq, bot_id, recipient_alias, message, max_seq, created_at
 		FROM jobs
-		WHERE client_id = $1
+		WHERE bot_id = $1
 		  AND seq > $2
 		  AND created_at >= $3
 		ORDER BY seq ASC
 		`,
-		clientID,
+		botID,
 		afterSeq,
 		cutoff,
 	)
@@ -512,7 +518,7 @@ func (s *Store) ListJobsSinceSeq(ctx context.Context, clientID string, afterSeq 
 		if err := rows.Scan(
 			&job.ID,
 			&job.Seq,
-			&job.ClientID,
+			&job.BotID,
 			&job.RecipientAlias,
 			&job.Message,
 			&job.MaxSeq,
@@ -549,6 +555,35 @@ func (s *Store) ValidateAppClient(ctx context.Context, clientID, clientSecret st
 		return false, fmt.Errorf("validate app client: %w", err)
 	}
 	return exists, nil
+}
+
+func (s *Store) ResolveBotIDByAppClient(ctx context.Context, clientID string) (string, error) {
+	defer dbTimer("resolve_bot_id_by_app_client")()
+
+	if strings.TrimSpace(clientID) == "" {
+		return "", fmt.Errorf("client id is empty")
+	}
+
+	var botID string
+	if err := s.db.QueryRowContext(
+		ctx,
+		`
+		SELECT bot_id
+		FROM wecom_app_clients
+		WHERE client_id = $1
+		  AND enabled = TRUE
+		`,
+		strings.TrimSpace(clientID),
+	).Scan(&botID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("no enabled bot binding for client %s", clientID)
+		}
+		return "", fmt.Errorf("resolve bot id by app client: %w", err)
+	}
+	if strings.TrimSpace(botID) == "" {
+		return "", fmt.Errorf("app client %s has empty bot id", clientID)
+	}
+	return botID, nil
 }
 
 func nullIfEmpty(value string) any {

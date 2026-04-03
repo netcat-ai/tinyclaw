@@ -108,7 +108,7 @@ SDK client.Open() -> create SandboxClaim -> wait Sandbox ready
 10. 触发阶段按需补充解析群详情；发送方昵称在 ingest 阶段 best-effort 写入 `from_name`，失败不阻塞入库。
 11. 通过官方 Go SDK `Open()` 确保该 room 的 sandbox session ready；进程内 room session cache 遇到 `ErrOrphanedClaim` 时会先 `Close()` 再重建。
 12. 主服务复用当前 room 的 sandbox claim 元数据，经 `sandbox-router` 直接 `POST /agent`。
-13. agent 成功返回后，主服务把回复写入 `jobs(client_id, recipient_alias, message, max_seq)`。
+13. agent 成功返回后，主服务把回复写入 `jobs(bot_id, recipient_alias, message, max_seq)`。
 14. 只有当 `jobs` 写入成功后，主服务才把本轮参与处理的 `messages` 标记为 `done`。
 
 ### 5.2 Router 调用契约
@@ -155,16 +155,16 @@ X-Sandbox-Port: <agent-server-port>
 ### 5.3 PostgreSQL 职责
 v0 中主服务只依赖最小 PostgreSQL 事实源：
 - `messages`：企业微信 archive 入站事实、待处理状态、拉取 checkpoint
-- `jobs`：发给 Android 无障碍发送端的外发任务队列
-- `wecom_app_clients`：Android 发送端拉取认证配置
+- `jobs`：按 `bot_id` 分队列、发给 Android 无障碍发送端的外发任务队列
+- `wecom_app_clients`：Android 发送端拉取认证配置，以及 `client_id -> bot_id` 的绑定
 
 补充语义：
 - `messages` 的流程状态固定为 `ignored / buffered / pending / done`。
 - `messages.seq` 单调递增；系统通过 `MAX(messages.seq)` 推导下一次 archive pull 的起点。
 - 群聊未触发消息保持 `status=buffered`，用于后续触发时补齐上下文。
 - dispatch/`jobs` 写入失败不会回滚 `messages.seq`；后续轮询会基于已持久化的 `pending` 消息继续重试，而不会丢失上下文。
-- `jobs.seq` 单调递增；Android 发送端通过 `GET /api/wecom/jobs?seq=<last_seq>` 拉取增量任务。
-- Android 发送端通过 HTTP Basic 认证访问 control API；服务端依据 `wecom_app_clients(client_id, client_secret)` 校验。
+- `jobs.seq` 单调递增；Android 发送端通过 `GET /api/wecom/jobs?seq=<last_seq>` 拉取当前 `bot_id` 的增量任务。
+- Android 发送端通过 HTTP Basic 认证访问 control API；服务端先依据 `wecom_app_clients(client_id, client_secret)` 校验，再解析该 `client_id` 绑定的 `bot_id` 过滤 `jobs`。
 
 ### 5.4 当前代码中的消息批次语义
 截至 2026-04-01，仓库中没有独立的业务轮次实体；一次处理由 `clawman` 在 dispatch 阶段按 room 组装当前 `pending` 消息批次：

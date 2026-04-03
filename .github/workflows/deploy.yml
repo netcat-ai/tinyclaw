@@ -60,7 +60,6 @@ jobs:
           MANUAL_IMAGE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.image_tag || '' }}
           WECOM_CORP_ID: ${{ vars.WECOM_CORP_ID }}
           WECOM_BOT_ID: ${{ vars.WECOM_BOT_ID }}
-          WECOM_APP_CLIENT_ID: ${{ vars.WECOM_APP_CLIENT_ID }}
           SANDBOX_TEMPLATE_NAME: ${{ vars.SANDBOX_TEMPLATE_NAME }}
           CONTROL_API_ADDR: ${{ vars.CONTROL_API_ADDR }}
           CLAWMAN_GRPC_ADDR: ${{ vars.CLAWMAN_GRPC_ADDR }}
@@ -81,7 +80,6 @@ jobs:
           kubectl -n claw create configmap tinyclaw-config \
             --from-literal=WECOM_CORP_ID="${WECOM_CORP_ID}" \
             --from-literal=WECOM_BOT_ID="${WECOM_BOT_ID}" \
-            --from-literal=WECOM_APP_CLIENT_ID="${WECOM_APP_CLIENT_ID}" \
             --from-literal=SANDBOX_TEMPLATE_NAME="${SANDBOX_TEMPLATE_NAME}" \
             --from-literal=CONTROL_API_ADDR="${CONTROL_API_ADDR}" \
             --from-literal=CLAWMAN_GRPC_ADDR="${CLAWMAN_GRPC_ADDR}" \

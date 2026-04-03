@@ -27,8 +27,6 @@ type Config struct {
 	SandboxTemplateName    string
 	SandboxReadyTimeoutSec int
 
-	WeComAppClientID string
-
 	ControlAPIAddr        string
 	ClawmanGRPCListenAddr string
 	ClawmanGRPCAddr       string
@@ -55,8 +53,6 @@ func LoadConfig() (Config, error) {
 		SandboxNamespace:       sandboxNamespace,
 		SandboxTemplateName:    envOrDefault("SANDBOX_TEMPLATE_NAME", defaultSandboxTemplate),
 		SandboxReadyTimeoutSec: parseIntEnv("SANDBOX_READY_TIMEOUT_SEC", 180),
-
-		WeComAppClientID: strings.TrimSpace(os.Getenv("WECOM_APP_CLIENT_ID")),
 
 		ControlAPIAddr:        envOrDefault("CONTROL_API_ADDR", ":8081"),
 		ClawmanGRPCListenAddr: envOrDefault("CLAWMAN_GRPC_LISTEN_ADDR", ":8092"),

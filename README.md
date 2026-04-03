@@ -161,7 +161,7 @@ TinyClaw 现在提供一个最小 outbox 拉取接口，给 Android 无障碍发
 - `CLAWMAN_GRPC_LISTEN_ADDR`
 - `CLAWMAN_GRPC_ADDR`
 - `CONTROL_API_ADDR`
-- `WECOM_APP_CLIENT_ID`
+- `WECOM_BOT_ID`
 
 默认值：
 - `SANDBOX_NAMESPACE=claw`
@@ -194,7 +194,6 @@ agent 运行时关键配置：
 - 需要在 GitHub 仓库 variables 中配置：
   - `WECOM_CORP_ID`
   - `WECOM_BOT_ID`
-  - `WECOM_APP_CLIENT_ID`
   - `ANTHROPIC_BASE_URL`
 - 可选覆盖的 GitHub variables：
   - `SANDBOX_TEMPLATE_NAME`

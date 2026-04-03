@@ -6,7 +6,6 @@ metadata:
 data:
   WECOM_CORP_ID: "replace-me"
   WECOM_BOT_ID: "moss"
-  WECOM_APP_CLIENT_ID: "android-primary"
   WECOM_GROUP_TRIGGER_MENTIONS: "moss,私云助理,私云虾虾"
   WECOM_GROUP_TRIGGER_KEYWORDS: "虾虾,小助理"
   SANDBOX_TEMPLATE_NAME: "tinyclaw-agent-template"

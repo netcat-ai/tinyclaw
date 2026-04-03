@@ -149,7 +149,7 @@ Content-Type: application/json
 ### 5.2 sandbox -> 主服务
 - v0 不走主动回调。
 - sandbox 直接同步返回 HTTP 响应。
-- 主服务收到结果后写入 PostgreSQL `jobs(client_id, recipient_alias, message, max_seq)`，并在写入成功后更新 `messages(status=done)`。
+- 主服务收到结果后写入 PostgreSQL `jobs(bot_id, recipient_alias, message, max_seq)`，并在写入成功后更新 `messages(status=done)`。
 
 ## 6. Runtime 环境变量契约
 

@@ -14,9 +14,10 @@ import (
 const jobRetentionWindow = 10 * time.Minute
 
 type jobStore interface {
-	GetMaxJobSeq(ctx context.Context, clientID string) (int64, error)
-	ListJobsSinceSeq(ctx context.Context, clientID string, afterSeq int64, cutoff time.Time) ([]Job, error)
+	GetMaxJobSeq(ctx context.Context, botID string) (int64, error)
+	ListJobsSinceSeq(ctx context.Context, botID string, afterSeq int64, cutoff time.Time) ([]Job, error)
 	ValidateAppClient(ctx context.Context, clientID, clientSecret string) (bool, error)
+	ResolveBotIDByAppClient(ctx context.Context, clientID string) (string, error)
 }
 
 type controlAPI struct {
@@ -70,7 +71,7 @@ func (api *controlAPI) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientID, ok, err := api.authenticateClient(r)
+	botID, ok, err := api.authenticateClient(r)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "auth_failed", err.Error())
 		return
@@ -90,7 +91,7 @@ func (api *controlAPI) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	maxSeq, err := api.store.GetMaxJobSeq(r.Context(), clientID)
+	maxSeq, err := api.store.GetMaxJobSeq(r.Context(), botID)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "list_failed", err.Error())
 		return
@@ -104,7 +105,7 @@ func (api *controlAPI) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jobs, err := api.store.ListJobsSinceSeq(r.Context(), clientID, afterSeq, time.Now().UTC().Add(-jobRetentionWindow))
+	jobs, err := api.store.ListJobsSinceSeq(r.Context(), botID, afterSeq, time.Now().UTC().Add(-jobRetentionWindow))
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "list_failed", err.Error())
 		return
@@ -145,7 +146,11 @@ func (api *controlAPI) authenticateClient(r *http.Request) (string, bool, error)
 	if !valid {
 		return "", false, nil
 	}
-	return strings.TrimSpace(clientID), true, nil
+	botID, err := api.store.ResolveBotIDByAppClient(r.Context(), strings.TrimSpace(clientID))
+	if err != nil {
+		return "", false, err
+	}
+	return botID, true, nil
 }
 
 func writeAPIJSON(w http.ResponseWriter, statusCode int, payload any) {
