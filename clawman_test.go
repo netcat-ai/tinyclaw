@@ -706,3 +706,85 @@ func TestResolveGroupUsesArchiveAPIForInternalSender(t *testing.T) {
 		t.Fatalf("customer group API calls = %d, want 0", customerGroupCalls)
 	}
 }
+
+func TestResolveGroupReturnsUnknownGroupErrorWhenNeitherAPIRecognizesRoom(t *testing.T) {
+	var customerGroupCalls int
+	var archiveGroupCalls int
+
+	server := newWeComTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/msgaudit/groupchat/get":
+			archiveGroupCalls++
+			writeJSON(t, w, map[string]any{
+				"errcode": 301059,
+				"errmsg":  "only support inner room",
+			})
+		case "/cgi-bin/externalcontact/groupchat/get":
+			customerGroupCalls++
+			writeJSON(t, w, map[string]any{
+				"errcode": 90501,
+				"errmsg":  "chat is not external group chat",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	clawman := newTestClawman(t, server.URL)
+	_, err := clawman.ResolveGroup(context.Background(), "room-unknown", nil)
+	if err == nil {
+		t.Fatal("ResolveGroup error = nil, want non-nil")
+	}
+	if !isUnknownGroupError(err) {
+		t.Fatalf("ResolveGroup error = %v, want unknownGroupError", err)
+	}
+	if archiveGroupCalls != 1 {
+		t.Fatalf("archive group API calls = %d, want 1", archiveGroupCalls)
+	}
+	if customerGroupCalls != 1 {
+		t.Fatalf("customer group API calls = %d, want 1", customerGroupCalls)
+	}
+}
+
+func TestResolveGroupReturnsUnknownGroupErrorForExternalSenderWhenRoomUnsupported(t *testing.T) {
+	var customerGroupCalls int
+	var archiveGroupCalls int
+
+	server := newWeComTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/msgaudit/groupchat/get":
+			archiveGroupCalls++
+			writeJSON(t, w, map[string]any{
+				"errcode": 301059,
+				"errmsg":  "only support inner room",
+			})
+		case "/cgi-bin/externalcontact/groupchat/get":
+			customerGroupCalls++
+			writeJSON(t, w, map[string]any{
+				"errcode": 90501,
+				"errmsg":  "chat is not external group chat",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	clawman := newTestClawman(t, server.URL)
+	_, err := clawman.ResolveGroup(context.Background(), "room-unknown", &Identity{
+		UserID: "wm123",
+		Type:   "external",
+		Name:   "外部联系人A",
+	})
+	if err == nil {
+		t.Fatal("ResolveGroup error = nil, want non-nil")
+	}
+	if !isUnknownGroupError(err) {
+		t.Fatalf("ResolveGroup error = %v, want unknownGroupError", err)
+	}
+	if archiveGroupCalls != 1 {
+		t.Fatalf("archive group API calls = %d, want 1", archiveGroupCalls)
+	}
+	if customerGroupCalls != 1 {
+		t.Fatalf("customer group API calls = %d, want 1", customerGroupCalls)
+	}
+}

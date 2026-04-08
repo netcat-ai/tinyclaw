@@ -172,6 +172,42 @@ type roomContext struct {
 	sender *Identity
 }
 
+type unknownGroupError struct {
+	roomID      string
+	internalErr error
+	customerErr error
+}
+
+func (e *unknownGroupError) Error() string {
+	return fmt.Sprintf(
+		"room %s is neither supported internal group nor external group (internal=%v, customer=%v)",
+		e.roomID,
+		e.internalErr,
+		e.customerErr,
+	)
+}
+
+func isUnknownGroupError(err error) bool {
+	var target *unknownGroupError
+	return errors.As(err, &target)
+}
+
+func apiErrorCode(err error) int {
+	var apiErr *wecom.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.Code
+	}
+	return 0
+}
+
+func isUnsupportedInternalGroupError(err error) bool {
+	return apiErrorCode(err) == 301059
+}
+
+func isUnsupportedCustomerGroupError(err error) bool {
+	return apiErrorCode(err) == 90501
+}
+
 func chatTypeForDispatch(msg *WeComMessage) string {
 	if msg != nil && strings.TrimSpace(msg.RoomID) != "" {
 		return roomChatTypeGroup
@@ -383,6 +419,15 @@ func (r *Clawman) dispatchRoom(ctx context.Context, roomID string) {
 		return
 	}
 
+	pendingSeqs := make([]int64, 0, len(recentMessages))
+	var maxSeq int64
+	for _, pending := range recentMessages {
+		pendingSeqs = append(pendingSeqs, pending.Seq)
+		if pending.Seq > maxSeq {
+			maxSeq = pending.Seq
+		}
+	}
+
 	rc, err := r.buildRoomContext(ctx, roomID, recentMessages)
 	if err != nil {
 		slog.Error("build room context failed", "room_id", roomID, "err", err)
@@ -391,6 +436,14 @@ func (r *Clawman) dispatchRoom(ctx context.Context, roomID string) {
 
 	targetName, err := r.resolveRoutingTarget(ctx, rc.msg, rc.sender)
 	if err != nil {
+		if isUnknownGroupError(err) {
+			if markErr := r.store.MarkMessagesIgnored(ctx, pendingSeqs); markErr != nil {
+				slog.Error("mark unknown-group messages ignored failed", "room_id", roomID, "err", markErr)
+				return
+			}
+			slog.Warn("ignored messages for unsupported group room", "room_id", roomID, "count", len(pendingSeqs), "err", err)
+			return
+		}
 		slog.Error("resolve routing target failed", "room_id", roomID, "err", err)
 		return
 	}
@@ -417,15 +470,6 @@ func (r *Clawman) dispatchRoom(ctx context.Context, roomID string) {
 
 	dispatchCtx, cancel := context.WithTimeout(ctx, dispatchRoomTimeout)
 	defer cancel()
-
-	pendingSeqs := make([]int64, 0, len(recentMessages))
-	var maxSeq int64
-	for _, pending := range recentMessages {
-		pendingSeqs = append(pendingSeqs, pending.Seq)
-		if pending.Seq > maxSeq {
-			maxSeq = pending.Seq
-		}
-	}
 
 	reply, err := r.invokeRoomAgent(dispatchCtx, roomID, rc.msg, recentMessages, targetName, maxSeq)
 	if err != nil {
@@ -833,19 +877,62 @@ func (r *Clawman) ResolveGroup(ctx context.Context, roomID string, sender *Ident
 }
 
 func (r *Clawman) resolveGroup(ctx context.Context, roomID string, sender *Identity) (*GroupDetail, error) {
-	if sender != nil {
-		switch sender.Type {
-		case "external", "guest":
-			return r.resolveCustomerGroup(ctx, roomID)
+	var internalErr error
+	var customerErr error
+
+	if sender != nil && (sender.Type == "external" || sender.Type == "guest") {
+		customerGroup, err := r.resolveCustomerGroup(ctx, roomID)
+		if err == nil {
+			return customerGroup, nil
 		}
+		customerErr = err
+		if !isUnsupportedCustomerGroupError(customerErr) {
+			return nil, customerErr
+		}
+		internalGroup, err := r.resolveInternalGroup(ctx, roomID)
+		if err == nil {
+			return internalGroup, nil
+		}
+		internalErr = err
+		if isUnsupportedInternalGroupError(internalErr) {
+			return nil, &unknownGroupError{
+				roomID:      roomID,
+				internalErr: internalErr,
+				customerErr: customerErr,
+			}
+		}
+		return nil, internalErr
 	}
 
-	// Try internal group first, fallback to customer group.
-	internalGroup, internalErr := r.resolveInternalGroup(ctx, roomID)
-	if internalErr == nil {
+	internalGroup, err := r.resolveInternalGroup(ctx, roomID)
+	if err == nil {
 		return internalGroup, nil
 	}
-	return r.resolveCustomerGroup(ctx, roomID)
+	internalErr = err
+
+	customerGroup, err := r.resolveCustomerGroup(ctx, roomID)
+	if err == nil {
+		return customerGroup, nil
+	}
+	customerErr = err
+
+	if isUnsupportedInternalGroupError(internalErr) && isUnsupportedCustomerGroupError(customerErr) {
+		return nil, &unknownGroupError{
+			roomID:      roomID,
+			internalErr: internalErr,
+			customerErr: customerErr,
+		}
+	}
+	if customerErr != nil {
+		if isUnsupportedCustomerGroupError(customerErr) && internalErr != nil {
+			return nil, internalErr
+		}
+		return nil, customerErr
+	}
+	if internalErr != nil {
+		return nil, internalErr
+	}
+	return nil, fmt.Errorf("resolve group %s: no group resolver matched", roomID)
 }
 
 func (r *Clawman) resolveInternalGroup(ctx context.Context, roomID string) (*GroupDetail, error) {
