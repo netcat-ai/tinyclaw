@@ -172,6 +172,13 @@ type roomContext struct {
 	sender *Identity
 }
 
+func chatTypeForDispatch(msg *WeComMessage) string {
+	if msg != nil && strings.TrimSpace(msg.RoomID) != "" {
+		return roomChatTypeGroup
+	}
+	return roomChatTypeDirect
+}
+
 func (r *Clawman) runIngestLoop(ctx context.Context) error {
 	ticker := time.NewTicker(ingestPollInterval)
 	defer ticker.Stop()
@@ -386,6 +393,26 @@ func (r *Clawman) dispatchRoom(ctx context.Context, roomID string) {
 	if err != nil {
 		slog.Error("resolve routing target failed", "room_id", roomID, "err", err)
 		return
+	}
+
+	incomingChatType := chatTypeForDispatch(rc.msg)
+	roomRecord, err := r.store.EnsureRoomForDispatch(ctx, RoomRecord{
+		TenantID: r.cfg.WeComCorpID,
+		RoomID:   roomID,
+		ChatType: incomingChatType,
+		Title:    targetName,
+	})
+	if err != nil {
+		slog.Error("ensure room for dispatch failed", "room_id", roomID, "err", err)
+		return
+	}
+	if roomRecord.ChatType != incomingChatType {
+		slog.Warn(
+			"room chat_type conflict detected; keeping existing value",
+			"room_id", roomID,
+			"existing_chat_type", roomRecord.ChatType,
+			"incoming_chat_type", incomingChatType,
+		)
 	}
 
 	dispatchCtx, cancel := context.WithTimeout(ctx, dispatchRoomTimeout)

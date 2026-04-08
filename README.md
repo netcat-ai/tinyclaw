@@ -37,6 +37,7 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
 - 主服务直接管理 `SandboxClaim` 生命周期，并按 `room_id` 维护进程内 room session。
 - sandbox 启动后通过 gRPC 主动连接 `clawman`，`clawman` 再把对应 room 的 `messages[]` 批次下发到该连接。
 - `agent` 在 sandbox 内保留 `/healthz` 作为探针入口，实际消息处理通过 gRPC bridge 完成。
+- `clawman` 在 room 首次进入 dispatch 时确保最小 `rooms` 元数据存在；Claude session 复用逻辑保留在 agent 内部。
 - 私聊消息直接进入 `pending`；群聊消息只有命中 `@` 提及或触发关键字时才进入 `pending`，未触发消息先以 `status=buffered` 保留，等后续触发消息一并带入上下文。
 - 冷启动且 `messages` 为空时，仅最近 10 分钟内的消息允许进入 `pending/buffered`；更早的 backlog 仍会落库，但统一写成 `status=ignored`。
 - 如果消息已写入 `messages(status=pending)`，但在后续 gRPC 下发、sandbox 结果处理或 `jobs` 写入阶段失败，消息不会丢失；dispatch worker 会持续复用这批 `pending` 消息重试。
@@ -51,11 +52,12 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
    - 私聊消息和群聊触发消息写成 `status=pending`
 4. 若当前消息是群聊触发消息，会在同一个事务中把该 `room_id` 下历史 `buffered` 消息一起提升为 `pending`，避免只处理触发语句而丢掉前文上下文。
 5. dispatch worker 每秒扫描 `status=pending` 的 room，按 `room_id` 聚合所有待处理消息。
-6. 触发处理时，`sandbox.Orchestrator` 按 `room_id` 查找或创建 `SandboxClaim`，并等待对应 sandbox ready。
-7. sandbox 主动连接 `clawman` 的 gRPC server；`clawman` 把聚合后的 `messages[]` 批次下发到该 room 对应的连接。
-8. agent runtime 用 `claude_agent_sdk` 执行；`SandboxTemplate` 当前通过 `CLAUDE_SYSTEM_PROMPT_APPEND` 注入系统提示词。
-9. sandbox 返回最终输出后，主服务把结果写入 `jobs` outbox。
-10. 只要 outbox 写入成功，主服务就会把本轮参与处理的 `messages` 标记为 `done`；Android 发送端后续通过 control API 拉取并发送文本。
+6. 触发处理时，`clawman` 先确保该 room 的最小 `rooms` 元数据存在。
+7. `sandbox.Orchestrator` 按 `room_id` 查找或创建 `SandboxClaim`，并等待对应 sandbox ready。
+8. sandbox 主动连接 `clawman` 的 gRPC server；`clawman` 把聚合后的 `messages[]` 批次下发到该 room 对应的连接。
+9. agent runtime 用 `claude_agent_sdk` 执行；当前实现会在同一 sandbox 生命周期内由 agent 自己复用 Claude session，避免每次 query 都开新 session；`SandboxTemplate` 当前通过 `CLAUDE_SYSTEM_PROMPT_APPEND` 注入系统提示词。
+10. sandbox 返回最终输出后，主服务把结果写入 `jobs` outbox。
+11. 只要 outbox 写入成功，主服务就会把本轮参与处理的 `messages` 标记为 `done`；Android 发送端后续通过 control API 拉取并发送文本。
 
 ## Android 外发拉取
 
@@ -93,9 +95,9 @@ TinyClaw 现在提供一个最小 outbox 拉取接口，给 Android 无障碍发
 2. 官方控制面接口采用 `SandboxTemplate + SandboxClaim`，不再由业务侧直接创建 `Sandbox`。
 3. sandbox 不再自拉 Redis ingress。
 4. sandbox 生命周期当前通过 `clawman` 直接管理 `SandboxClaim`，room 级复用先采用进程内 session cache。
-5. 主服务当前只保留最小 PostgreSQL 事实源：`messages`、`jobs`、`wecom_app_clients`。
+5. 主服务当前使用最小 PostgreSQL 结构：`messages`、`rooms`、`jobs`、`wecom_app_clients`；其中 `rooms` 只承载平台级 room 元数据。
 6. 主服务当前按 `room_id` 维护进程内 sandbox session，并以 SDK `Open()` 作为 session 可调用条件。
-7. 不建设独立 `room registry` 表，暂不维护中心化 `last_seen_at`。
+7. 维护最小 `rooms` 表用于平台级 room 元数据，但暂不建设带 `last_seen_at`/调度状态的重型 `room registry`。
 8. 空闲策略先采用软休眠；硬休眠、warm pool 和自动销毁后置到后续阶段。
 
 ## 下一阶段通信决议（2026-04-01）

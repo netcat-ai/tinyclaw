@@ -138,6 +138,8 @@ function resolveClaudeCodeExecutable(): string {
 }
 
 export class ClaudeAgentSdkRuntime implements AgentRuntime {
+  private currentSessionID: string | null = null;
+
   constructor(
     private readonly env: AgentEnv,
     private readonly deps: RuntimeDeps = runtimeDeps,
@@ -158,6 +160,7 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
     const startedAt = this.deps.now();
     const abortController = new AbortController();
     const prompt = buildClaudePrompt(message);
+    const shouldResume = this.currentSessionID !== null;
     let timedOut = false;
     let finalResult: ExecutionResult | null = null;
     let finalError: string | null = null;
@@ -185,6 +188,7 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
         room_id: message.roomId,
         msgid: message.msgid,
         message_count: message.messages.length,
+        claude_session_mode: shouldResume ? 'resume' : 'create',
         timeout_ms: this.env.claudeRuntimeTimeoutMs,
         model: this.env.claudeModel,
       }),
@@ -211,6 +215,7 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
           cwd: this.env.agentWorkdir,
           model: this.env.claudeModel,
           maxTurns: this.env.claudeMaxTurns,
+          resume: shouldResume ? this.currentSessionID ?? undefined : undefined,
           pathToClaudeCodeExecutable: resolveClaudeCodeExecutable(),
           tools: {
             type: 'preset',
@@ -232,8 +237,25 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
       });
 
       for await (const sdkMessage of queryHandle) {
+        if (
+          sdkMessage.type === 'system' &&
+          sdkMessage.subtype === 'init' &&
+          typeof sdkMessage.session_id === 'string' &&
+          sdkMessage.session_id !== ''
+        ) {
+          this.currentSessionID = sdkMessage.session_id;
+          continue;
+        }
+
         if (sdkMessage.type !== 'result') {
           continue;
+        }
+
+        if (
+          typeof sdkMessage.session_id === 'string' &&
+          sdkMessage.session_id !== ''
+        ) {
+          this.currentSessionID = sdkMessage.session_id;
         }
 
         if (sdkMessage.subtype === 'success') {

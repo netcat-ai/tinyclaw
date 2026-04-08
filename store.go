@@ -37,6 +37,20 @@ type MessageRecord struct {
 	CreatedAt time.Time
 }
 
+const (
+	roomChatTypeDirect = "direct"
+	roomChatTypeGroup  = "group"
+)
+
+type RoomRecord struct {
+	TenantID  string
+	RoomID    string
+	ChatType  string
+	Title     string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 type Job struct {
 	ID             string
 	Seq            int64
@@ -104,14 +118,30 @@ func (s *Store) InitSchema(ctx context.Context) error {
 		WHERE status = 'pending'
 		`,
 		`
-		CREATE INDEX IF NOT EXISTS idx_messages_sent_by_room
-		ON messages (tenant_id, status, room_id, seq)
-		WHERE status = 'sent'
-		`,
+			CREATE INDEX IF NOT EXISTS idx_messages_sent_by_room
+			ON messages (tenant_id, status, room_id, seq)
+			WHERE status = 'sent'
+			`,
 		`
-		CREATE TABLE IF NOT EXISTS jobs (
-			id TEXT PRIMARY KEY,
-			seq BIGSERIAL UNIQUE,
+			CREATE TABLE IF NOT EXISTS rooms (
+				tenant_id TEXT NOT NULL,
+				room_id TEXT NOT NULL,
+				chat_type TEXT NOT NULL,
+				title TEXT NOT NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				PRIMARY KEY (tenant_id, room_id),
+				CHECK (chat_type IN ('direct', 'group'))
+			)
+			`,
+		`
+			CREATE INDEX IF NOT EXISTS idx_rooms_updated_at
+			ON rooms (updated_at DESC)
+			`,
+		`
+			CREATE TABLE IF NOT EXISTS jobs (
+				id TEXT PRIMARY KEY,
+				seq BIGSERIAL UNIQUE,
 			bot_id TEXT NOT NULL,
 			recipient_alias TEXT NOT NULL,
 			message TEXT NOT NULL,
@@ -371,6 +401,59 @@ func (s *Store) ListPendingMessages(ctx context.Context, tenantID, roomID string
 		return nil, fmt.Errorf("iterate pending messages: %w", err)
 	}
 	return records, nil
+}
+
+func (s *Store) EnsureRoomForDispatch(ctx context.Context, room RoomRecord) (RoomRecord, error) {
+	defer dbTimer("ensure_room_for_dispatch")()
+
+	room.TenantID = strings.TrimSpace(room.TenantID)
+	room.RoomID = strings.TrimSpace(room.RoomID)
+	room.ChatType = strings.TrimSpace(room.ChatType)
+	room.Title = strings.TrimSpace(room.Title)
+	switch {
+	case room.TenantID == "":
+		return RoomRecord{}, fmt.Errorf("tenant_id is required")
+	case room.RoomID == "":
+		return RoomRecord{}, fmt.Errorf("room_id is required")
+	case room.ChatType != roomChatTypeDirect && room.ChatType != roomChatTypeGroup:
+		return RoomRecord{}, fmt.Errorf("invalid chat_type: %s", room.ChatType)
+	case room.Title == "":
+		return RoomRecord{}, fmt.Errorf("title is required")
+	}
+
+	var ensured RoomRecord
+	err := s.db.QueryRowContext(
+		ctx,
+		`
+		INSERT INTO rooms (
+			tenant_id,
+			room_id,
+			chat_type,
+			title
+		)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (tenant_id, room_id) DO UPDATE
+		SET title = EXCLUDED.title,
+		    updated_at = NOW()
+		RETURNING tenant_id, room_id, chat_type, title, created_at, updated_at
+		`,
+		room.TenantID,
+		room.RoomID,
+		room.ChatType,
+		room.Title,
+	).Scan(
+		&ensured.TenantID,
+		&ensured.RoomID,
+		&ensured.ChatType,
+		&ensured.Title,
+		&ensured.CreatedAt,
+		&ensured.UpdatedAt,
+	)
+	if err != nil {
+		return RoomRecord{}, fmt.Errorf("ensure room for dispatch: %w", err)
+	}
+
+	return ensured, nil
 }
 
 func (s *Store) MarkMessagesDone(ctx context.Context, seqs []int64) error {

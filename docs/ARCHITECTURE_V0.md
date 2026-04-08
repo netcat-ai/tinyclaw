@@ -106,10 +106,12 @@ SDK client.Open() -> create SandboxClaim -> wait Sandbox ready
 8. dispatch 阶段按 `room_id` 聚合，同一个 room 在同一轮只触发一次 agent 调用。
 9. 触发处理时，先按 `tenant_id + room_id` 读取所有 `status=pending` 的消息，作为当前 room 尚未处理的结构化上下文窗口。
 10. 触发阶段按需补充解析群详情；发送方昵称在 ingest 阶段 best-effort 写入 `from_name`，失败不阻塞入库。
-11. 通过官方 Go SDK `Open()` 确保该 room 的 sandbox session ready；进程内 room session cache 遇到 `ErrOrphanedClaim` 时会先 `Close()` 再重建。
-12. 主服务复用当前 room 的 sandbox claim 元数据，经 `sandbox-router` 直接 `POST /agent`。
-13. agent 成功返回后，主服务把回复写入 `jobs(bot_id, recipient_alias, message, max_seq)`。
-14. 只有当 `jobs` 写入成功后，主服务才把本轮参与处理的 `messages` 标记为 `done`。
+11. dispatch 在启动 sandbox 前确保 `rooms(tenant_id, room_id)` 元数据存在；该记录只在 room 首次进入 agent 生命周期时创建。
+12. 通过官方 Go SDK `Open()` 确保该 room 的 sandbox session ready；进程内 room session cache 遇到 `ErrOrphanedClaim` 时会先 `Close()` 再重建。
+13. 主服务复用当前 room 的 sandbox claim 元数据，经 gRPC gateway 把 `messages[]` 发给 agent。
+14. agent 在当前 sandbox 生命周期内自行维护 Claude session create / resume，避免每次 query 都开新 session。
+15. agent 成功返回后，主服务把回复写入 `jobs(bot_id, recipient_alias, message, max_seq)`。
+16. 只有当 `jobs` 写入成功后，主服务才把本轮参与处理的 `messages` 标记为 `done`。
 
 ### 5.2 Router 调用契约
 当前主服务让官方 Go SDK 通过 direct-url 模式连接 `sandbox-router`，并复用 SDK 已建立的 sandbox claim 元数据直接调用：
@@ -153,13 +155,15 @@ X-Sandbox-Port: <agent-server-port>
 ```
 
 ### 5.3 PostgreSQL 职责
-v0 中主服务只依赖最小 PostgreSQL 事实源：
+v0 中主服务当前依赖以下 PostgreSQL 结构：
 - `messages`：企业微信 archive 入站事实、待处理状态、拉取 checkpoint
+- `rooms`：已进入 agent 生命周期的 room 元数据
 - `jobs`：按 `bot_id` 分队列、发给 Android 无障碍发送端的外发任务队列
 - `wecom_app_clients`：Android 发送端拉取认证配置，以及 `client_id -> bot_id` 的绑定
 
 补充语义：
 - `messages` 的流程状态固定为 `ignored / buffered / pending / done`。
+- `rooms` 只在 room 首次进入 dispatch 时创建；它不是 transcript 表，也不承载原始消息事实。
 - `messages.seq` 单调递增；系统通过 `MAX(messages.seq)` 推导下一次 archive pull 的起点。
 - 群聊未触发消息保持 `status=buffered`，用于后续触发时补齐上下文。
 - dispatch/`jobs` 写入失败不会回滚 `messages.seq`；后续轮询会基于已持久化的 `pending` 消息继续重试，而不会丢失上下文。
@@ -230,7 +234,7 @@ PID 1: tini / entrypoint
 ### 7.2 Sandbox Orchestrator
 - 通过官方 Go SDK 创建 room 级 sandbox session。
 - 通过 SDK `Open()` 等待 claim ready。
-- 不单独维护 room registry 表。
+- 维护最小 `rooms` 表，用于保存平台级 room 元数据。
 - 当前用进程内 room session cache 复用活跃 sandbox。
 
 ### 7.3 Reply Delivery

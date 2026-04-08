@@ -60,6 +60,7 @@
 
 ## PostgreSQL 最小范围（当前版）
 - `messages`：企业微信 archive 入站事实、状态机、`seq` checkpoint
+- `rooms`：agent-managed room 元数据
 - `jobs`：Android 发送端增量拉取的外发任务
 - `wecom_app_clients`：Android 客户端认证配置
 

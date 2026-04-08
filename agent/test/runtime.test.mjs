@@ -100,3 +100,74 @@ test('claude runtime times out and closes the query', async () => {
     cleanup();
   }
 });
+
+test('claude runtime creates then resumes the configured session id', async () => {
+  const optionsSeen = [];
+
+  const { env, cleanup } = buildEnv({ claudeRuntimeTimeoutMs: 500 });
+  const runtime = new ClaudeAgentSdkRuntime(env, {
+    now: () => Date.now(),
+    createQuery: ({ options }) => {
+      optionsSeen.push(options);
+      let emittedInit = false;
+      let emittedResult = false;
+
+      return {
+        async next() {
+          if (!emittedInit) {
+            emittedInit = true;
+            return {
+              done: false,
+              value: {
+                type: 'system',
+                subtype: 'init',
+                session_id: '11111111-1111-4111-8111-111111111111',
+              },
+            };
+          }
+          if (!emittedResult) {
+            emittedResult = true;
+            return {
+              done: false,
+              value: {
+                type: 'result',
+                subtype: 'success',
+                result: 'ok',
+                session_id: '11111111-1111-4111-8111-111111111111',
+              },
+            };
+          }
+          return { done: true, value: undefined };
+        },
+        async return() {
+          return { done: true, value: undefined };
+        },
+        async throw(error) {
+          throw error;
+        },
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+        close() {},
+      };
+    },
+  });
+
+  try {
+    const first = await runtime.run(buildMessage());
+    const second = await runtime.run(buildMessage());
+
+    assert.equal(first.stdout, 'ok');
+    assert.equal(second.stdout, 'ok');
+    assert.equal(optionsSeen.length, 2);
+    assert.equal(optionsSeen[0].sessionId, undefined);
+    assert.equal(optionsSeen[0].resume, undefined);
+    assert.equal(optionsSeen[1].sessionId, undefined);
+    assert.equal(
+      optionsSeen[1].resume,
+      '11111111-1111-4111-8111-111111111111',
+    );
+  } finally {
+    cleanup();
+  }
+});
