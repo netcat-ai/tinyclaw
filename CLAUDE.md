@@ -9,10 +9,10 @@ Cloud-based AI Agent Runtime for WeChat Work (企业微信).
 Current architecture:
 - `clawman` pulls encrypted messages from the WeChat Work Finance SDK.
 - `clawman` splits ingest and dispatch into separate loops; `messages.seq` is the archive checkpoint.
-- `clawman` manages `SandboxClaim` resources directly.
+- `clawman` manages deterministic `SandboxClaim` resources directly.
 - room sandboxes connect back to `clawman` over gRPC and receive `messages[]` batches.
 - The sandboxed `agent` exposes `/healthz` for probes and processes messages through the gRPC bridge.
-- All pulled archive items are persisted to PostgreSQL `messages`; after sandbox success, `clawman` writes reply tasks into PostgreSQL `jobs`, and marks the corresponding messages `done` only after the enqueue succeeds.
+- All pulled archive items are persisted to PostgreSQL `messages`; dispatch advances message state through `pending -> sent -> done`, resets leftover `sent` rows back to `pending` on startup, and writes reply tasks into PostgreSQL `jobs`.
 
 ## Build & Run
 
@@ -42,7 +42,7 @@ WeChat Work Finance SDK
   -> SandboxClaim ensure
   -> sandbox gRPC client connects to clawman
   -> clawman sends messages[] batches
-  -> PostgreSQL jobs(seq/client_id/recipient_alias/message/max_seq)
+  -> PostgreSQL jobs(seq/bot_id/recipient_alias/message/max_seq)
   -> Android WeCom sender app
 ```
 
@@ -61,6 +61,7 @@ Key files:
 | Table | Purpose |
 |---------|---------|
 | `messages` | Inbound archive facts, status machine, and `seq` checkpoint source |
+| `rooms` | Minimal room metadata created on first dispatch |
 | `jobs` | Outbound reply tasks polled by the Android sender app |
 | `wecom_app_clients` | Client credentials for the control API |
 

@@ -14,26 +14,29 @@ tinyclaw 是一个面向企业微信会话的 AI Agent Runtime：
 - 不做复杂多 agent 协作。
 - 不做跨租户共享记忆。
 - 不在 v0 引入 warm pool / snapshot / hibernate 自动恢复。
+- 不让 sandbox 直接持有企业微信等外部渠道协议状态。
 
 ## 2. 架构总览
 
 ```text
 +---------------------------+       +----------------------------------+
 | WeCom Session Archive API |-----> | Ingress Service (clawman)        |
-| Android WeCom Sender App  |<----->| - control API for send jobs      |
-+---------------------------+       | - persist archive into messages  |
+| Android WeCom Sender App  |<----->| - persist archive into messages  |
++---------------------------+       | - scan pending rooms             |
+                                    | - manage SandboxClaim lifecycle  |
+                                    | - gRPC message gateway server    |
                                     | - persist jobs outbox            |
-                                    | - scan pending rooms             |
-                                    | - manage sandbox via Go SDK      |
-                                    | - invoke /agent via SDK Run      |
+                                    | - control API / metrics          |
                                     +----------------+-----------------+
                                                      |
-                                   +-----------------v------------------+
-                                   | PostgreSQL                           |
-                                    | - messages                           |
-                                    | - jobs                               |
-                                    | - wecom_app_clients                  |
-                                    +-------------------------------------+
+                                                     v
+                                    +----------------------------------+
+                                    | PostgreSQL                       |
+                                    | - messages                       |
+                                    | - rooms                          |
+                                    | - jobs                           |
+                                    | - wecom_app_clients              |
+                                    +----------------------------------+
 
                                                      |
                                                      v
@@ -45,11 +48,10 @@ tinyclaw 是一个面向企业微信会话的 AI Agent Runtime：
                                                   v
                               +-------------------------------------------+
                               | Sandbox Pod per room                      |
-                              | - tinyclaw agent HTTP server              |
-                              | - /healthz                                |
-                              | - /agent                                  |
-                              | - /execute /upload /download /list /exists|
+                              | - tinyclaw agent /healthz                 |
+                              | - gRPC client bridge                      |
                               | - claude_agent_sdk / echo runtime         |
+                              | - workspace                               |
                               +-------------------------------------------+
 ```
 
@@ -66,33 +68,34 @@ room_id = {roomid_or_from}
 - `tenant_id` 与 `chat_type` 作为独立字段保留，用于审计、统计和权限判断。
 
 ### 3.2 隔离策略
-- 控制面隔离：每个活跃 `room_id` 在当前进程内持有一个对应的 SDK sandbox handle。
+- 控制面隔离：每个 `room_id` 对应一个确定性的 `SandboxClaim.name`。
 - 运行时隔离：每个 room 一个 sandbox pod。
 - 文件系统隔离：每个 sandbox 拥有独立 `/workspace`。
-- 网络隔离：由 agent-sandbox 模板和网络策略控制，默认按最小权限配置。
+- 网络隔离：由 `SandboxTemplate` 和平台网络策略控制，默认按最小权限配置。
 
 ## 4. 控制面设计
 
 ### 4.1 官方资源模型
 - `SandboxTemplate`
-  - 描述统一的 agent 镜像、端口、探针和运行时环境。
+  - 描述统一 agent 镜像、端口、探针和运行时环境。
 - `SandboxClaim`
-  - 由官方 Go SDK 在 `Open()` 时创建并等待 ready。
-  - 当前 SDK 不支持自定义 claim 名称，claim identity 由 SDK 内部生成并保存在进程内 handle。
+  - 由 `clawman` 直接创建或复用。
+  - 当前 claim 名称由 `room_id` 的稳定哈希推导，claim 上写入 `tinyclaw/room-id` 注解。
+
 ### 4.2 生命周期约定
 
 ```text
-room_id -> process-local SDK client
-SDK client.Open() -> create SandboxClaim -> wait Sandbox ready
+room_id -> deterministic SandboxClaim.name
+Ensure claim exists -> wait Ready=True -> wait sandbox gRPC connect
 ```
 
 说明：
-- 当前版的 room 复用范围是单进程生命周期。
-- 如果主服务重启，官方 Go SDK 当前不会自动找回旧 claim；后续需评估稳定复用策略。
+- 当前版的 room 级复用仍依赖单进程内 `room_id -> claimName` cache。
+- 因为 claim 名称稳定，服务异常退出后理论上可重新连接已有 claim；但当前 graceful shutdown 会主动删除本进程创建过的 claims。
 
 ## 5. 数据面设计
 
-### 5.1 Ingress 流程
+### 5.1 Ingress 与 dispatch 流程
 1. `clawman` 运行两个独立协程：ingest worker 每 3 秒执行一次 archive pull，dispatch worker 每秒扫描一次 `messages(status=pending)`。
 2. ingest worker 先查询当前 tenant 的 `MAX(messages.seq)`，再调用 `GetChatData(seq, 100)`；`messages.seq` 是唯一拉取 checkpoint。
 3. 对每条 archive item 按 `seq` 升序执行解密、JSON 解析与字段校验，并把完整解密结果写入 `messages.payload`。
@@ -100,91 +103,76 @@ SDK client.Open() -> create SandboxClaim -> wait Sandbox ready
    - bot/self、冷启动窗口外的历史消息、非法 payload 写成 `status=ignored`
    - 群聊未触发消息写成 `status=buffered`
    - 私聊消息和群聊触发消息写成 `status=pending`
-5. 若 `DecryptData` 失败，视为致命 ingest 错误，当前 worker 直接返回错误并退出服务，而不是把该消息写成 `ignored`。
+5. 若 `DecryptData` 失败，视为致命 ingest 错误，当前 worker 直接返回错误并退出服务。
 6. 若当前消息是群聊触发消息，ingest 会在同一个事务中把该 `room_id` 下已有 `buffered` 消息一并提升为 `pending`。
-7. 冷启动且 `messages` 为空时，只允许最近 10 分钟内的消息进入 `pending/buffered`；更早的 archive backlog 仍会写入 `messages`，但统一标记为 `ignored`。
+7. 冷启动且 `messages` 为空时，只允许最近 10 分钟内的消息进入 `pending/buffered`；更早 archive backlog 统一写入 `ignored`。
 8. dispatch 阶段按 `room_id` 聚合，同一个 room 在同一轮只触发一次 agent 调用。
 9. 触发处理时，先按 `tenant_id + room_id` 读取所有 `status=pending` 的消息，作为当前 room 尚未处理的结构化上下文窗口。
 10. 触发阶段按需补充解析群详情；发送方昵称在 ingest 阶段 best-effort 写入 `from_name`，失败不阻塞入库。
-11. dispatch 在启动 sandbox 前确保 `rooms(tenant_id, room_id)` 元数据存在；该记录只在 room 首次进入 agent 生命周期时创建。
-12. 通过官方 Go SDK `Open()` 确保该 room 的 sandbox session ready；进程内 room session cache 遇到 `ErrOrphanedClaim` 时会先 `Close()` 再重建。
-13. 主服务复用当前 room 的 sandbox claim 元数据，经 gRPC gateway 把 `messages[]` 发给 agent。
-14. agent 在当前 sandbox 生命周期内自行维护 Claude session create / resume，避免每次 query 都开新 session。
-15. agent 成功返回后，主服务把回复写入 `jobs(bot_id, recipient_alias, message, max_seq)`。
-16. 只有当 `jobs` 写入成功后，主服务才把本轮参与处理的 `messages` 标记为 `done`。
+11. dispatch 在启动 sandbox 前确保 `rooms(tenant_id, room_id)` 元数据存在。
+12. `sandbox.Orchestrator` 确保对应 claim 存在并 ready；随后等待该 room 的 sandbox gRPC 连接到 `clawman`。
+13. `clawman` 通过 gRPC 把当前批次 `messages[]` 下发给 sandbox，并在下发成功后把这批消息从 `pending` 标记为 `sent`。
+14. sandbox 返回 `result` 时，主服务写入 `jobs`；只有 `jobs` 写入成功后，这批消息才从 `sent` 更新为 `done`。
+15. 若 sandbox 返回 `error`、等待超时或 `jobs` 写入失败，主服务会把这批消息从 `sent` 恢复为 `pending`。
+16. 服务启动时执行 `ResetSentMessages()`，把上一次运行残留的 `sent` 统一恢复为 `pending`。
 
-### 5.2 Router 调用契约
-当前主服务让官方 Go SDK 通过 direct-url 模式连接 `sandbox-router`，并复用 SDK 已建立的 sandbox claim 元数据直接调用：
+### 5.2 `clawman <-> sandbox` gRPC 契约
+当前最小协议定义在 `proto/clawman/v1/clawman.proto`：
 
-```text
-POST {SANDBOX_ROUTER_URL}/agent
-X-Sandbox-ID: <claim-name>
-X-Sandbox-Namespace: <namespace>
-X-Sandbox-Port: <agent-server-port>
-```
+```proto
+message Message {
+  string kind = 1;
+  string sandbox_id = 2;
+  string room_id = 3;
+  string request_id = 4;
+  repeated AgentMessage messages = 5;
+  string output = 6;
+  string error = 7;
+}
 
-请求体最小集：
-
-```json
-{
-  "msgid": "wecom_msg_abc",
-  "room_id": "chat_123",
-  "tenant_id": "corp_id",
-  "chat_type": "group",
-  "messages": [
-    {
-      "seq": 123,
-      "msgid": "wecom_msg_abc",
-      "from_id": "zhangsan",
-      "from_name": "张三",
-      "msg_time": "2026-03-21T10:00:00Z",
-      "payload": "{\"msgtype\":\"text\",\"text\":{\"content\":\"你好\"}}"
-    }
-  ]
+service Clawman {
+  rpc RoomChat(stream Message) returns (stream Message);
 }
 ```
 
-返回体最小集：
-
-```json
-{
-  "stdout": "agent reply",
-  "stderr": "",
-  "exit_code": 0
-}
-```
+当前约定：
+- sandbox 建连后的第一条消息必须是 `kind=connect`，并携带 `sandbox_id`。
+- `room_id` 可以由 sandbox 显式声明，也可以由 `clawman` 通过 `sandbox_id -> claim annotation` 反查。
+- `clawman -> sandbox` 当前只发送 `kind=messages`。
+- `sandbox -> clawman` 当前只返回：
+  - `kind=result`
+  - `kind=error`
 
 ### 5.3 PostgreSQL 职责
 v0 中主服务当前依赖以下 PostgreSQL 结构：
-- `messages`：企业微信 archive 入站事实、待处理状态、拉取 checkpoint
+- `messages`：企业微信 archive 入站事实、状态机、`seq` checkpoint
 - `rooms`：已进入 agent 生命周期的 room 元数据
 - `jobs`：按 `bot_id` 分队列、发给 Android 无障碍发送端的外发任务队列
 - `wecom_app_clients`：Android 发送端拉取认证配置，以及 `client_id -> bot_id` 的绑定
 
 补充语义：
-- `messages` 的流程状态固定为 `ignored / buffered / pending / done`。
+- `messages` 的流程状态固定为 `ignored / buffered / pending / sent / done`。
 - `rooms` 只在 room 首次进入 dispatch 时创建；它不是 transcript 表，也不承载原始消息事实。
 - `messages.seq` 单调递增；系统通过 `MAX(messages.seq)` 推导下一次 archive pull 的起点。
 - 群聊未触发消息保持 `status=buffered`，用于后续触发时补齐上下文。
-- dispatch/`jobs` 写入失败不会回滚 `messages.seq`；后续轮询会基于已持久化的 `pending` 消息继续重试，而不会丢失上下文。
 - `jobs.seq` 单调递增；Android 发送端通过 `GET /api/wecom/jobs?seq=<last_seq>` 拉取当前 `bot_id` 的增量任务。
 - Android 发送端通过 HTTP Basic 认证访问 control API；服务端先依据 `wecom_app_clients(client_id, client_secret)` 校验，再解析该 `client_id` 绑定的 `bot_id` 过滤 `jobs`。
 
 ### 5.4 当前代码中的消息批次语义
-截至 2026-04-01，仓库中没有独立的业务轮次实体；一次处理由 `clawman` 在 dispatch 阶段按 room 组装当前 `pending` 消息批次：
+截至 2026-04-10，仓库中没有独立的业务轮次实体；一次处理由 `clawman` 在 dispatch 阶段按 room 组装当前 `pending` 消息批次：
 
 1. ingest 先把 archive item 写入 `messages`，状态为 `ignored / buffered / pending`。
 2. dispatch 按 `room_id` 列出所有 pending room，并读取该 room 下当前全部 `messages(status=pending)`。
-3. 这批按 `seq` 排序的 pending 消息会被一次性组装成单个 `sandbox.AgentRequest{messages[]}`，并调用一次 sandbox。
-4. 只要本轮 reply 成功写入 `jobs`，这批消息才会整体从 `pending` 更新为 `done`。
-5. 如果 sandbox 调用失败、`jobs` 写入失败，或 `done` 更新失败，则不会生成独立批次记录；系统只是保留原来的 `pending` 消息，由下一轮 dispatch 再次整批重放。
+3. 这批按 `seq` 排序的 pending 消息会被一次性组装成单个 `Message{kind=messages, messages[]}`，并通过 gRPC 下发给 sandbox。
+4. gRPC 下发成功后，这批消息会整体从 `pending` 更新为 `sent`。
+5. 只有当 sandbox 返回 `result` 且 reply 成功写入 `jobs` 时，这批消息才会继续从 `sent` 更新为 `done`。
+6. 如果 sandbox 返回 `error`、等待结果超时或 `jobs` 写入失败，主服务会把这批 `sent` 消息恢复为 `pending`，由下一轮 dispatch 重新投递。
+7. 如果 `jobs` 已成功写入但 `messages.done` 更新失败，这批消息会停在 `sent`，并在下次服务启动时被 `ResetSentMessages()` 恢复到 `pending`。
 
-这意味着 v0 当前实现里：
+这意味着当前实现里：
 - 处理边界是“当前时刻该 room 下全部 pending 消息”，而不是显式持久化的业务实体。
-- 请求边界目前不稳定；重试时会重新基于当时的 pending 集合组装请求。
-- 中断、取消、增量流式输出等语义尚未进入主状态机。
-
-因此，若后续把内部通信改为 room 级 gRPC 消息传输，应继续围绕 `messages` 与消息批次来设计，而不是引入新的业务轮次概念。
+- 请求边界仍然不稳定；重试时会重新基于当时的 pending 集合组装请求。
+- 当前只有最小 `result/error` 语义；中断、取消、增量流式输出等 richer 事件尚未进入主状态机。
 
 ## 6. Agent Runtime 设计
 
@@ -194,15 +182,12 @@ v0 中主服务当前依赖以下 PostgreSQL 结构：
 - `claude_agent_sdk`
   - 用于真实 Claude 执行。
 
-### 6.2 入口契约
-- HTTP:
+### 6.2 入口与连接契约
+- HTTP：
   - `GET /healthz`
-  - `POST /agent`
-  - `POST /execute`
-  - `POST /upload`
-  - `GET /download/{path}`
-  - `GET /list/{path}`
-  - `GET /exists/{path}`
+- gRPC：
+  - 作为 client 主动连接 `CLAWMAN_GRPC_ADDR`
+  - 使用 `RoomChat(stream Message)` 持续接收 `messages[]` 批次
 - 运行目录：
   - `AGENT_WORKDIR`
   - `AGENT_TMPDIR`
@@ -210,6 +195,10 @@ v0 中主服务当前依赖以下 PostgreSQL 结构：
   - `ANTHROPIC_API_KEY` 或 `CLAUDE_CODE_OAUTH_TOKEN`
 - Claude system prompt：
   - `CLAUDE_SYSTEM_PROMPT_APPEND`
+
+说明：
+- 当前 agent runtime 不再暴露 `POST /agent`。
+- 当前 room 级上下文通过 gRPC `messages[]` 传入，而不是通过 HTTP JSON 请求体传入。
 
 ### 6.3 进程模型
 
@@ -221,7 +210,7 @@ PID 1: tini / entrypoint
 约束：
 - 不在镜像内运行 supervisor。
 - 失败由 sandbox / K8s 拉起。
-- 空闲时保持 HTTP server 存活，由控制面决定是否回收。
+- 空闲时保持 `/healthz` server 与 gRPC bridge 进程存活，由控制面决定是否回收。
 
 ## 7. 主服务职责
 
@@ -229,79 +218,77 @@ PID 1: tini / entrypoint
 - 拉取企业微信消息。
 - 解密与标准化。
 - 解析用户和群详情并缓存。
-- 调用 sandbox。
+- 驱动 room 级 dispatch。
 
 ### 7.2 Sandbox Orchestrator
-- 通过官方 Go SDK 创建 room 级 sandbox session。
-- 通过 SDK `Open()` 等待 claim ready。
+- 为每个 `room_id` 推导确定性的 `SandboxClaim.name`。
+- 创建或复用 `SandboxClaim`，并等待 `Ready=True`。
 - 维护最小 `rooms` 表，用于保存平台级 room 元数据。
-- 当前用进程内 room session cache 复用活跃 sandbox。
+- 当前用进程内 room session cache 复用活跃 room 的 claim 信息。
 
 ### 7.3 Reply Delivery
 - 在 `dispatchRoom` 成功拿到 agent reply 后，把结果写入 PostgreSQL `jobs` outbox。
-- 只有 `jobs` 写入成功后，当前这批 `messages` 才会从 `pending` 更新到 `done`。
-- 如果 `jobs` 写入失败，当前这批消息保持 `pending`，等待后续 dispatch 重试。
+- 只有 `jobs` 写入成功后，当前这批 `messages` 才会从 `sent` 更新到 `done`。
+- 如果 sandbox 返回错误、上下文取消或 `jobs` 写入失败，当前这批消息会回退到 `pending`，等待后续 dispatch 重试。
 
-## 8. 失败处理
+## 8. 失败处理与恢复
 - `SandboxClaim` 创建失败：
   - 当前触发消息已经写入 `messages(status=pending)`；dispatch 会在后续轮询中继续重试。
-- sandbox 未 ready：
-  - 视为当前触发消息 dispatch 失败，但不影响已经持久化的 `messages.seq`。
-- sandbox 返回 5xx：
-  - 当前触发消息保留重试机会，但不会回滚已经持久化的 `messages.seq`。
+- sandbox 长时间未 ready：
+  - 视为当前 room dispatch 失败，不影响已持久化的 `messages.seq`。
+- gRPC 批次下发失败：
+  - 消息仍保持 `pending`，由后续 dispatch 重试。
+- sandbox 返回 `error`：
+  - 当前批次从 `sent` 恢复为 `pending`。
+- 上下文超时 / 服务退出：
+  - 当前批次会回退为 `pending`；若进程中断时有残留 `sent`，启动时统一恢复。
 - 企业微信详情解析失败：
-  - 发送者昵称解析失败不会阻塞入库；如果后续群详情解析失败，则由 pending room 在后续轮询中重试。
+  - 发送者昵称解析失败不会阻塞入库；若后续群详情解析失败，则由该 room 在后续轮询中重试。
 - bot 自发消息：
   - 仍然会落一条 `messages(status=ignored)`，但不会进入 dispatch。
 - `jobs` 写入失败：
-  - 当前消息保持 `messages(status=pending)`，由后续 dispatch 继续重试。
+  - 当前批次回退到 `pending`，由后续 dispatch 继续重试。
 
 已知窗口：
-- 如果 `jobs` 已成功写入，但 `messages.done` 更新失败，后续 dispatch 可能重复写入同一回复任务；当前版本先接受这一权衡。
-
-现网含义：
-- 冷启动且 `messages` 为空时，只会处理最近 10 分钟消息；更早的 archive backlog 统一写入 `ignored`，避免误回复历史对话。
-- 非冷启动场景下，服务恢复后会从 `MAX(messages.seq)` 继续拉取；如果已有 `pending` 消息尚未完成处理，dispatch 会继续复用同一批消息重试，而不是重复插入。
+- 如果 `jobs` 已成功写入，但 `messages.done` 更新失败，当前版本不会立即重试；这批消息会停留在 `sent`，依赖后续服务重启时 `ResetSentMessages()` 恢复，存在重复出队窗口。
 
 ## 9. 可观测性
-核心指标建议：
-- `sandbox_claim_ready_latency_ms`
-- `sandbox_invoke_latency_ms`
-- `sandbox_http_error_rate`
-- `reply_e2e_ms`
-- `job_enqueue_error_rate`
+当前代码已经暴露：
+- `tinyclaw_messages_pulled_total`
+- `tinyclaw_messages_dispatched_total`
+- `tinyclaw_messages_skipped_total{reason}`
+- `tinyclaw_sandbox_invocations_total{result}`
+- `tinyclaw_sandbox_duration_seconds`
+- `tinyclaw_db_duration_seconds{operation}`
+- `tinyclaw_pull_cycle_errors_total`
+
+当前缺口：
+- 尚未把 `activeSandboxes` 真正接到 room / claim 生命周期。
+- 尚未提供 `sent` backlog、`jobs.done` 更新失败次数、gRPC 断线次数等关键运维指标。
+- 尚未沉淀告警阈值和 runbook。
 
 ## 10. v0 当前结论
-v0 方案的重点已经从“Redis 驱动 sandbox 自拉”切换为“官方 agent-sandbox Go SDK + router/direct-url + PostgreSQL 最小事实源”：
-- 控制面更贴近官方演进方向。
-- 模板复用能力更强。
+v0 方案的重点已经从“Redis 驱动 sandbox 自拉”切换为“官方 `SandboxTemplate + SandboxClaim` 控制面 + `clawman` gRPC message gateway + PostgreSQL 最小事实源”：
+- 控制面更贴近官方 agent-sandbox 资源模型。
+- 数据面已经脱离 `sandbox-router + HTTP /agent`。
 - sandbox 不再依赖 per-room Redis 凭据和 consumer group。
-- 主服务职责更清晰，后续接 warm pool、snapshot、router gateway 都更顺。
+- 主服务职责更清晰，后续可在此基础上继续扩 richer streaming、scheduler、memory 和 warm pool。
 
-## 11. 2026-04-01 通信方向校准
-本节用于固化 2026-04-01 的讨论结论；它描述的是下一阶段首选方向，不覆盖上文对 v0 当前实现的事实描述。
+## 11. 2026-04-10 之后的扩展方向
+本节描述的是下一阶段优先方向，不覆盖上文对当前实现的事实描述。
 
 ### 11.1 保留的架构原则
 - `room_id -> sandbox` 仍然是核心隔离边界。
-- room 之间允许并行执行；同一 room 内的执行顺序和中断语义由单个 sandbox 承担。
 - 外部渠道事实源、审计、重试与投递仍然收敛在 `clawman`。
+- 群聊粗 trigger 仍在 `clawman`，不下放到 sandbox。
 
-### 11.2 否定的方案
-- 不回退到“每个 sandbox 自拉 Redis 队列”的 mailbox 模式。
-- 不让 sandbox 直接实现企业微信/飞书/email 等外部渠道客户端。
-- 不把集群内内部协议继续设计成仿第三方 `getupdates/sendmessage` 的长轮询协议。
-
-### 11.3 下一阶段推荐方向
-- `clawman` 收敛为统一 `message gateway`，持有外部渠道认证、cursor 和发送逻辑。
-- sandbox 只消费已按 room 路由好的规范化消息，并回传规范化事件：
+### 11.2 下一阶段推荐方向
+- 在现有 `result/error` 之上扩 richer streaming 事件：
   - `typing`
   - `assistant_delta`
   - `assistant_final`
   - `tool_event`
   - `failed`
-- 内部主协议优先采用 `gRPC bidirectional streaming`，将 `clawman <-> sandbox` 建模为 room 级长会话。
-- `WebSocket` 仍可作为探索期备选，但其额外协议约束、错误模型和版本演进需要自行维护，因此不作为当前首选。
-
-### 11.4 边界说明
-- 当前 v0 实现仍然是 `sandbox-router + HTTP /agent` 的同步调用链路。
-- 下一阶段若切到 streaming，会替换“最终态 JSON RPC”这层数据面契约，但不会改变 `room -> sandbox` 的隔离模型，也不会改变 `clawman` 持有外部渠道状态这一原则。
+- 为 gRPC 连接补齐鉴权、心跳、断线恢复和更细粒度错误模型。
+- 为 `sent -> done` 补后台恢复与幂等策略，而不是只依赖进程重启恢复。
+- 在不破坏现有 `messages` 事实源的前提下，引入 memory、scheduler 和文件上下文能力。

@@ -180,3 +180,17 @@ agent启动后就去从redis队列中拉取对应的消息，开始消费。
 4. 该隐式处理批次只有在 sandbox 成功返回且 `jobs` 写入成功后，才会整体把这批消息更新为 `done`。
 5. 如果 sandbox 调用失败、`jobs` 写入失败，或 `done` 更新失败，系统不会留下独立批次状态，而是保留原始 `pending` 消息，由后续 dispatch 继续重试。
 6. 这意味着后续若切到 room 级 gRPC 消息传输，应继续围绕 `messages` 与消息批次设计，而不是引入新的业务轮次概念。
+
+---
+
+## 11. gRPC message gateway 最小版落地（2026-04-10）
+
+### 变更结论
+1. 当前代码里的数据面已经从 `sandbox-router + HTTP /agent` 切到 `clawman` 暴露 `RoomChat(stream Message)`，sandbox 作为 gRPC client 主动连接。
+2. sandbox 内 `agent` 当前只保留 `GET /healthz`；真实消息处理通过 `agent/src/grpc.ts` 在同一条 gRPC stream 上收 `messages[]`、回 `result/error`。
+3. `SandboxClaim.name` 已改为按 `room_id` 推导的确定性值，并通过 claim annotation 记录 `tinyclaw/room-id`，便于由 `sandbox_id` 反查所属 room。
+4. `messages` 状态机已扩成 `ignored / buffered / pending / sent / done`：
+   - gRPC 批次发送成功后，当前批次会先从 `pending` 标记为 `sent`
+   - sandbox 返回 `error`、上下文取消或 `jobs` 写入失败时，再回退到 `pending`
+   - 服务启动时会执行 `ResetSentMessages()`，把残留 `sent` 恢复为 `pending`
+5. `jobs` 当前按 `bot_id` 分队列，control API 通过 `wecom_app_clients(client_id, client_secret)` 做鉴权后，再把 `client_id` 映射到 `bot_id` 过滤任务；`jobs` 本身不再直绑 `client_id`。

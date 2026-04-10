@@ -20,7 +20,7 @@
 隐藏批注：
 
 ```md
-<!-- TODO(codex): 把这里的 Redis mailbox 方案标记为历史讨论，不再作为推荐方案 -->
+<!-- TODO(codex): 把这里的历史方案明确标记为已弃用 -->
 ```
 
 约定：
@@ -28,20 +28,22 @@
 - 只是给后续文档整理或实现工作的指令，用隐藏批注。
 - 尽量显式写出“批注”或 `TODO(codex)`，并附上预期动作，便于后续自动识别和执行。
 
-## 当前实现
-TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
+## 当前项目状态（2026-04-10）
+TinyClaw 当前已经完成最小可运行闭环，且数据面已切到 `clawman gRPC server + sandbox gRPC client`：
 - `clawman` 从企业微信会话存档拉取消息、解密并标准化。
-- `clawman` 当前拆成两个协程：ingest worker 每 3 秒拉取一次会话存档并逐条入库，dispatch worker 每秒扫描 `messages(status=pending)` 并按 `room_id` 聚合调用 sandbox。
-- `messages.seq` 作为唯一拉取 checkpoint，不再保留独立 cursor 表；拉取恢复位置由 `MAX(messages.seq)` 推导。
-- 除了解密失败这种致命 ingress 错误外，所有拉到的 archive item 都会先落到 PostgreSQL `messages`；bot/self、冷启动历史消息和非法 payload 通过 `status=ignored` 保留事实但不进入处理链路。
-- 主服务直接管理 `SandboxClaim` 生命周期，并按 `room_id` 维护进程内 room session。
-- sandbox 启动后通过 gRPC 主动连接 `clawman`，`clawman` 再把对应 room 的 `messages[]` 批次下发到该连接。
-- `agent` 在 sandbox 内保留 `/healthz` 作为探针入口，实际消息处理通过 gRPC bridge 完成。
-- `clawman` 在 room 首次进入 dispatch 时确保最小 `rooms` 元数据存在；Claude session 复用逻辑保留在 agent 内部。
+- `clawman` 当前拆成两个协程：ingest worker 每 3 秒拉取一次会话存档并逐条入库，dispatch worker 每秒扫描待处理 room。
+- `messages.seq` 作为唯一拉取 checkpoint，不再保留独立 cursor 表；恢复位置由 `MAX(messages.seq)` 推导。
+- 除了解密失败这类致命 ingress 错误外，所有 archive item 都会先落到 PostgreSQL `messages`。
+- `messages` 当前状态机为 `ignored / buffered / pending / sent / done`。
 - 私聊消息直接进入 `pending`；群聊消息只有命中 `@` 提及或触发关键字时才进入 `pending`，未触发消息先以 `status=buffered` 保留，等后续触发消息一并带入上下文。
-- 冷启动且 `messages` 为空时，仅最近 10 分钟内的消息允许进入 `pending/buffered`；更早的 backlog 仍会落库，但统一写成 `status=ignored`。
-- 如果消息已写入 `messages(status=pending)`，但在后续 gRPC 下发、sandbox 结果处理或 `jobs` 写入阶段失败，消息不会丢失；dispatch worker 会持续复用这批 `pending` 消息重试。
-- 主服务提供一个轻量 control API，dispatch 成功后把 agent reply 写入 PostgreSQL `jobs` outbox，再由 Android 发送端按 `client_id` 轮询拉取并发送。
+- 冷启动且 `messages` 为空时，仅最近 10 分钟内的消息允许进入 `pending/buffered`；更早 backlog 仍会落库，但统一写成 `status=ignored`。
+- 主服务直接管理 `SandboxClaim` 生命周期，并按 `room_id` 生成确定性的 claim 名称；claim 上补 `tinyclaw/room-id` 注解，便于 sandbox 反查所属 room。
+- sandbox 启动后通过 gRPC `RoomChat(stream Message)` 主动连接 `clawman`；`clawman` 再把对应 room 的 `messages[]` 批次下发到该连接。
+- `agent` 在 sandbox 内仅保留 `/healthz` 作为探针入口，实际消息处理通过 gRPC bridge 完成，不再暴露 `POST /agent`。
+- `clawman` 在 room 首次进入 dispatch 时确保最小 `rooms` 元数据存在；Claude session 复用逻辑保留在 agent 内部。
+- dispatch 把一批消息成功送达 sandbox 后，会先把这批 `messages` 标记为 `sent`；sandbox 返回 `error`、上下文超时或 `jobs` 写入失败时，再回退到 `pending` 重试。
+- 服务启动时会执行一次 `ResetSentMessages()`，把遗留的 `sent` 统一恢复到 `pending`，避免上次处理中断后长期卡住。
+- 主服务提供一个轻量 control API；dispatch 成功后把 agent reply 写入 PostgreSQL `jobs`，Android 发送端再通过轮询拉取并发送。
 
 ## 当前消息流程
 1. ingest worker 从 `messages` 查询当前 `MAX(seq)`，以此作为 `GetChatData(seq, limit)` 的起点，当前固定 `limit=100`。
@@ -53,11 +55,18 @@ TinyClaw 当前已经切到官方 `agent-sandbox` 资源与通信模型：
 4. 若当前消息是群聊触发消息，会在同一个事务中把该 `room_id` 下历史 `buffered` 消息一起提升为 `pending`，避免只处理触发语句而丢掉前文上下文。
 5. dispatch worker 每秒扫描 `status=pending` 的 room，按 `room_id` 聚合所有待处理消息。
 6. 触发处理时，`clawman` 先确保该 room 的最小 `rooms` 元数据存在。
-7. `sandbox.Orchestrator` 按 `room_id` 查找或创建 `SandboxClaim`，并等待对应 sandbox ready。
-8. sandbox 主动连接 `clawman` 的 gRPC server；`clawman` 把聚合后的 `messages[]` 批次下发到该 room 对应的连接。
-9. agent runtime 用 `claude_agent_sdk` 执行；当前实现会在同一 sandbox 生命周期内由 agent 自己复用 Claude session，避免每次 query 都开新 session；`SandboxTemplate` 当前通过 `CLAUDE_SYSTEM_PROMPT_APPEND` 注入系统提示词。
-10. sandbox 返回最终输出后，主服务把结果写入 `jobs` outbox。
-11. 只要 outbox 写入成功，主服务就会把本轮参与处理的 `messages` 标记为 `done`；Android 发送端后续通过 control API 拉取并发送文本。
+7. `sandbox.Orchestrator` 按 `room_id` 推导确定性的 `SandboxClaim.name`，确保 claim 存在并等待 `Ready=True`。
+8. sandbox 主动连接 `clawman` 的 gRPC server；第一条消息必须是 `kind=connect`，携带 `sandbox_id`。
+9. `clawman` 以 `Message{kind=messages, request_id, messages[]}` 的形式把当前批次消息送到对应 room 的流连接。
+10. gRPC 下发成功后，主服务先把这批 `messages` 标记为 `sent`。
+11. agent runtime 用 `claude_agent_sdk` 执行；当前实现会在同一 sandbox 生命周期内由 agent 自己复用 Claude session，避免每次 query 都开新 session。
+12. sandbox 在同一条流上返回 `kind=result` 或 `kind=error`：
+   - `result`：携带最终输出文本
+   - `error`：表示本轮处理失败
+13. 收到 `result` 后，主服务把结果写入 `jobs` outbox。
+14. 只有当 `jobs` 写入成功后，主服务才会把本轮 `messages` 从 `sent` 更新为 `done`。
+15. 若 sandbox 返回 `error`、等待结果超时，或 `jobs` 写入失败，主服务会把这批 `sent` 消息恢复为 `pending`，交给后续 dispatch 重试。
+16. 若 `jobs` 已成功写入但 `messages.done` 更新失败，这批消息会停留在 `sent`；当前版本依赖服务重启时的 `ResetSentMessages()` 把它们重新放回重试队列。
 
 ## Android 外发拉取
 
@@ -69,10 +78,11 @@ TinyClaw 现在提供一个最小 outbox 拉取接口，给 Android 无障碍发
 
 - 这是“手机主动轮询 TinyClaw”的 pull 模式，不是 TinyClaw 主动打到手机。
 - `recipient_alias` 由手机本地联系人配置解析，所以服务端不需要知道企业微信 UI 细节。
-- 每条 `jobs` 在写入时就已经绑定 `client_id`，App 只拉属于自己的消息。
+- `jobs` 记录绑定的是 `bot_id`，不是 `client_id`。
 - App 使用 HTTP Basic 认证：
   - username = `client_id`
   - password = `client_secret`
+- 服务端先校验 `wecom_app_clients(client_id, client_secret, enabled)`，再把该 `client_id` 映射到对应 `bot_id` 过滤 `jobs`。
 - 当客户端首次请求 `seq=0` 时，服务端只返回 `next_seq`，不返回历史消息。
 
 ## Agent Scaffold
@@ -90,31 +100,24 @@ TinyClaw 现在提供一个最小 outbox 拉取接口，给 Android 无障碍发
 - `claude_agent_sdk` 运行时会显式查找 `claude` 可执行程序，可通过 `CLAUDE_CODE_EXECUTABLE` 覆盖。
 - 本地开发时，`agent` 会自动尝试加载 `agent/.env` 和仓库根目录 `.env`；测试可通过 `AGENT_LOAD_DOTENV=0` 关闭。
 
-## 当前共识（2026-03-16）
+## 当前共识（2026-04-10）
 1. 统一房间标识：`room_id = {roomid_or_from}`，群聊取 `roomid`，私聊取 `from`；`tenant_id` 和 `chat_type` 作为独立字段保留。
-2. 官方控制面接口采用 `SandboxTemplate + SandboxClaim`，不再由业务侧直接创建 `Sandbox`。
-3. sandbox 不再自拉 Redis ingress。
-4. sandbox 生命周期当前通过 `clawman` 直接管理 `SandboxClaim`，room 级复用先采用进程内 session cache。
-5. 主服务当前使用最小 PostgreSQL 结构：`messages`、`rooms`、`jobs`、`wecom_app_clients`；其中 `rooms` 只承载平台级 room 元数据。
-6. 主服务当前按 `room_id` 维护进程内 sandbox session，并以 SDK `Open()` 作为 session 可调用条件。
-7. 维护最小 `rooms` 表用于平台级 room 元数据，但暂不建设带 `last_seen_at`/调度状态的重型 `room registry`。
-8. 空闲策略先采用软休眠；硬休眠、warm pool 和自动销毁后置到后续阶段。
-
-## 下一阶段通信决议（2026-04-01）
-1. 继续保持 `room_id -> sandbox` 的隔离模型；每个 room 的工作目录、执行状态和并发控制仍收敛在独立 sandbox 内。
-2. `clawman` 下一阶段收敛为统一 `message gateway`：负责企业微信/飞书/email 等外部通道的 ingress、egress、认证、cursor 与审计。
-3. sandbox 不直接实现外部渠道客户端，不直接维护 `GetUpdates`/`sendmessage` 等第三方协议状态，也不再回退到“每个 sandbox 自拉 Redis 队列”。
-4. `clawman` 与 sandbox 之间改为 room 级内部消息传输协议；第一阶段只传递 `messages[]`，由 agent 自行判断新消息、追加消息与中断。
-5. `gRPC server` 放在 `clawman`，sandbox 作为 `gRPC client` 主动连接。
-6. 集群内内部通信优先考虑 `gRPC streaming`；`WebSocket` 可作为探索期备选，但不再优先设计成内部 `getupdates/sendmessage` 式长轮询协议。
-7. 外发动作仍由 `clawman` 统一落地到具体渠道；sandbox 不直接携带第三方发送协议状态。
+2. 控制面统一采用 `SandboxTemplate + SandboxClaim`；`SandboxClaim.name` 当前由 `room_id` 推导出确定性值，而不是依赖随机 claim identity。
+3. 数据面当前采用 `clawman gRPC server + sandbox gRPC client`；主服务不再通过 `sandbox-router + HTTP /agent` 调用 sandbox。
+4. `agent` 在 sandbox 内保留 `/healthz` 作为探针；真正的消息处理入口是 `RoomChat(stream Message)`。
+5. PostgreSQL 最小结构当前为 `messages`、`rooms`、`jobs`、`wecom_app_clients`；其中 `rooms` 只承载平台级 room 元数据。
+6. `messages` 状态机当前固定为 `ignored / buffered / pending / sent / done`；服务启动时统一把残留 `sent` 恢复到 `pending`。
+7. 群聊粗 trigger 仍保留在 `clawman`；sandbox 不负责企业微信 trigger、cursor、认证或外发协议状态。
+8. 当前 room 级复用仍以单进程内 `room_id -> claimName` cache 为主，但确定性 claim 名称已经为跨重连重用打下基础。
 
 ## 当前待办
-- 为进程内 `ttlCache` 增加过期项回收，避免长生命周期进程中缓存键只增不减。
-- 为 room sandbox session cache 增加回收策略，避免历史 `room_id` 持续堆积。
-- 评估如何在官方 Go SDK 支持前恢复跨重启的 room -> sandbox 稳定复用。
-- 评估“`jobs` 写入成功但 `messages.done` 更新失败”带来的重复出队窗口，并决定是否需要补幂等或去重策略。
-- 设计并验证 `clawman` gRPC server 与 sandbox gRPC client 的 `messages[]` 传输契约。
+- 为进程内 `ttlCache` 增加主动过期回收，避免长生命周期进程中缓存键只增不减。
+- 为 room session cache 与 `SandboxClaim` 生命周期增加回收策略，避免历史 `room_id` 和遗留 claim 持续堆积。
+- 处理“`jobs` 写入成功但 `messages.done` 更新失败”后消息卡在 `sent` 的恢复路径，并决定是否补幂等或去重策略。
+- 补齐 `clawman` gRPC gateway 的鉴权、心跳/断线诊断和更细粒度观测。
+- 在真实环境完成冷启动、热路径、失败恢复和 Android 拉取链路联调。
+- 设计 richer streaming 事件（如 `typing`、`assistant_delta`、tool 事件），而不是只停留在 `result/error`。
+- 评估长期 memory、文件上下文、scheduler 和 warm pool 的引入顺序。
 
 ## 项目目标
 构建云端 AI Agent Runtime，让企业员工可在企业微信私聊/群聊中与 agent 交互：
@@ -165,6 +168,7 @@ TinyClaw 现在提供一个最小 outbox 拉取接口，给 Android 无障碍发
 - `CLAWMAN_GRPC_ADDR`
 - `CONTROL_API_ADDR`
 - `WECOM_BOT_ID`
+- `METRICS_ADDR`
 
 默认值：
 - `SANDBOX_NAMESPACE=claw`
@@ -172,8 +176,9 @@ TinyClaw 现在提供一个最小 outbox 拉取接口，给 Android 无障碍发
 - `SANDBOX_WAKE_PLACEHOLDER=虾虾正在起床，请稍等一下下～`
   关闭方式：显式设为 `off` / `false` / `0` / `no`；空字符串会回到默认文案
 - `CLAWMAN_GRPC_LISTEN_ADDR=:8092`
-- `CLAWMAN_GRPC_ADDR=clawman.{namespace}.svc.cluster.local:8092`
+- `CLAWMAN_GRPC_ADDR=clawman-svc.{namespace}.svc.cluster.local:8092`
 - `CONTROL_API_ADDR=:8081`
+- `METRICS_ADDR=:9090`
 - `WECOM_GROUP_TRIGGER_MENTIONS={WECOM_BOT_ID}`（若未显式配置）
 - `WECOM_GROUP_TRIGGER_KEYWORDS=`（默认空）
 
@@ -184,6 +189,7 @@ agent 运行时关键配置：
 - `ANTHROPIC_API_KEY` 或 `CLAUDE_CODE_OAUTH_TOKEN`
 - `ANTHROPIC_BASE_URL`
 - `CLAUDE_SYSTEM_PROMPT_APPEND`
+- `CLAWMAN_GRPC_ADDR`
 
 ## CI/CD 前置条件
 - `deploy-claw` job 通过 `tailscale/github-action@v4`（OAuth client）接入 tailnet 后再执行 `kubectl`。
@@ -205,3 +211,4 @@ agent 运行时关键配置：
   - `SANDBOX_WAKE_PLACEHOLDER`
   - `CLAWMAN_GRPC_LISTEN_ADDR`
   - `CLAWMAN_GRPC_ADDR`
+  - `METRICS_ADDR`
