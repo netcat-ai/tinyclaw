@@ -38,6 +38,16 @@ spec:
                 configMapKeyRef:
                   name: tinyclaw-config
                   key: CLAWMAN_GRPC_ADDR
+            - name: CLAWMAN_INTERNAL_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: tinyclaw-config
+                  key: CLAWMAN_INTERNAL_BASE_URL
+            - name: CLAWMAN_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: tinyclaw-secret
+                  key: CLAWMAN_INTERNAL_TOKEN
             - name: CLAUDE_RUNTIME_TIMEOUT_MS
               value: "240000"
             - name: CLAUDE_SYSTEM_PROMPT_APPEND

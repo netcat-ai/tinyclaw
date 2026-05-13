@@ -3,6 +3,8 @@ export type AgentRuntimeMode = 'echo' | 'claude_agent_sdk';
 export interface AgentEnv {
   serverPort: number;
   clawmanGrpcAddr?: string;
+  clawmanInternalBaseURL?: string;
+  clawmanInternalToken?: string;
   anthropicApiKey?: string;
   anthropicBaseUrl?: string;
   claudeCodeOauthToken?: string;

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -14,6 +16,10 @@ type fakeJobStore struct {
 	getMaxJobSeqFn     func(context.Context, string) (int64, error)
 	listJobsSinceSeqFn func(context.Context, string, int64, time.Time) ([]Job, error)
 	authenticateFn     func(context.Context, string, string) (string, bool, error)
+}
+
+type fakeMediaService struct {
+	fetchImageFn func(context.Context, mediaFetchRequest) (mediaBlob, error)
 }
 
 func (f fakeJobStore) GetMaxJobSeq(ctx context.Context, botID string) (int64, error) {
@@ -26,6 +32,10 @@ func (f fakeJobStore) ListJobsSinceSeq(ctx context.Context, botID string, afterS
 
 func (f fakeJobStore) AuthenticateAppClient(ctx context.Context, clientID, clientSecret string) (string, bool, error) {
 	return f.authenticateFn(ctx, clientID, clientSecret)
+}
+
+func (f fakeMediaService) FetchImage(ctx context.Context, req mediaFetchRequest) (mediaBlob, error) {
+	return f.fetchImageFn(ctx, req)
 }
 
 func TestHandleListJobsRequiresBasicAuth(t *testing.T) {
@@ -164,5 +174,105 @@ func TestHandleListJobsReturnsFilteredJobs(t *testing.T) {
 	}
 	if payload.Jobs[0].ID != "job-1" || payload.Jobs[0].Seq != 7 || payload.Jobs[0].MaxSeq != 8721 {
 		t.Fatalf("unexpected job: %+v", payload.Jobs[0])
+	}
+}
+
+func TestHandleFetchMediaRequiresBearerToken(t *testing.T) {
+	api := &controlAPI{
+		internalToken: "secret-token",
+		media: fakeMediaService{
+			fetchImageFn: func(context.Context, mediaFetchRequest) (mediaBlob, error) {
+				t.Fatal("FetchImage should not be called without auth")
+				return mediaBlob{}, nil
+			},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/media/fetch", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+
+	api.handleFetchMedia(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestHandleFetchMediaReturnsBinaryBody(t *testing.T) {
+	api := &controlAPI{
+		internalToken: "secret-token",
+		media: fakeMediaService{
+			fetchImageFn: func(_ context.Context, req mediaFetchRequest) (mediaBlob, error) {
+				if req.RoomID != "room-1" || req.Seq != 7 || req.MsgID != "msg-7" || req.SDKFileID != "sdk-7" {
+					t.Fatalf("unexpected request: %+v", req)
+				}
+				return mediaBlob{
+					Data:        []byte("PNGDATA"),
+					ContentType: "image/png",
+					FileName:    "msg-7.png",
+				}, nil
+			},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/media/fetch", strings.NewReader(`{"room_id":"room-1","seq":7,"msgid":"msg-7","sdk_file_id":"sdk-7"}`))
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := httptest.NewRecorder()
+
+	api.handleFetchMedia(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if rec.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("content-type = %q, want image/png", rec.Header().Get("Content-Type"))
+	}
+	if rec.Header().Get("X-TinyClaw-File-Name") != "msg-7.png" {
+		t.Fatalf("file name header = %q, want msg-7.png", rec.Header().Get("X-TinyClaw-File-Name"))
+	}
+	if rec.Body.String() != "PNGDATA" {
+		t.Fatalf("body = %q, want PNGDATA", rec.Body.String())
+	}
+}
+
+func TestHandleFetchMediaMapsNotFound(t *testing.T) {
+	api := &controlAPI{
+		internalToken: "secret-token",
+		media: fakeMediaService{
+			fetchImageFn: func(context.Context, mediaFetchRequest) (mediaBlob, error) {
+				return mediaBlob{}, errMediaMessageNotFound
+			},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/media/fetch", strings.NewReader(`{"room_id":"room-1","seq":7,"msgid":"msg-7","sdk_file_id":"sdk-7"}`))
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := httptest.NewRecorder()
+
+	api.handleFetchMedia(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestHandleFetchMediaMapsUnexpectedError(t *testing.T) {
+	api := &controlAPI{
+		internalToken: "secret-token",
+		media: fakeMediaService{
+			fetchImageFn: func(context.Context, mediaFetchRequest) (mediaBlob, error) {
+				return mediaBlob{}, errors.New("boom")
+			},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/media/fetch", strings.NewReader(`{"room_id":"room-1","seq":7,"msgid":"msg-7","sdk_file_id":"sdk-7"}`))
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := httptest.NewRecorder()
+
+	api.handleFetchMedia(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
 	}
 }

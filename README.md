@@ -41,6 +41,7 @@ TinyClaw 当前已经完成最小可运行闭环，且数据面已切到 `clawma
 - sandbox 启动后通过 gRPC `RoomChat(stream Message)` 主动连接 `clawman`；`clawman` 再把对应 room 的 `messages[]` 批次下发到该连接。
 - `agent` 在 sandbox 内仅保留 `/healthz` 作为探针入口，实际消息处理通过 gRPC bridge 完成，不再暴露 `POST /agent`。
 - `clawman` 在 room 首次进入 dispatch 时确保最小 `rooms` 元数据存在；Claude session 复用逻辑保留在 agent 内部。
+- `clawman` 额外提供内部媒体下载接口 `POST /internal/media/fetch`；agent 在需要看图时可通过自定义工具按消息中的 `sdkfileid` 拉取图片到本地工作目录。
 - dispatch 把一批消息成功送达 sandbox 后，会先把这批 `messages` 标记为 `sent`；sandbox 返回 `error`、上下文超时或 `jobs` 写入失败时，再回退到 `pending` 重试。
 - 服务启动时会执行一次 `ResetSentMessages()`，把遗留的 `sent` 统一恢复到 `pending`，避免上次处理中断后长期卡住。
 - 主服务提供一个轻量 control API；dispatch 成功后把 agent reply 写入 PostgreSQL `jobs`，Android 发送端再通过轮询拉取并发送。
@@ -60,13 +61,14 @@ TinyClaw 当前已经完成最小可运行闭环，且数据面已切到 `clawma
 9. `clawman` 以 `Message{kind=messages, request_id, messages[]}` 的形式把当前批次消息送到对应 room 的流连接。
 10. gRPC 下发成功后，主服务先把这批 `messages` 标记为 `sent`。
 11. agent runtime 用 `claude_agent_sdk` 执行；当前实现会在同一 sandbox 生命周期内由 agent 自己复用 Claude session，避免每次 query 都开新 session。
-12. sandbox 在同一条流上返回 `kind=result` 或 `kind=error`：
+12. 若本轮需要查看图片，agent 会调用自定义工具 `fetch_wecom_image`；该工具再请求 `POST /internal/media/fetch`，校验 `room_id + seq + msgid + sdkfileid` 后把图片下载到 `/workspace/incoming-media/<room_id>/`，并把本地路径返回给 Claude。
+13. sandbox 在同一条流上返回 `kind=result` 或 `kind=error`：
    - `result`：携带最终输出文本
    - `error`：表示本轮处理失败
-13. 收到 `result` 后，主服务把结果写入 `jobs` outbox。
-14. 只有当 `jobs` 写入成功后，主服务才会把本轮 `messages` 从 `sent` 更新为 `done`。
-15. 若 sandbox 返回 `error`、等待结果超时，或 `jobs` 写入失败，主服务会把这批 `sent` 消息恢复为 `pending`，交给后续 dispatch 重试。
-16. 若 `jobs` 已成功写入但 `messages.done` 更新失败，这批消息会停留在 `sent`；当前版本依赖服务重启时的 `ResetSentMessages()` 把它们重新放回重试队列。
+14. 收到 `result` 后，主服务把结果写入 `jobs` outbox。
+15. 只有当 `jobs` 写入成功后，主服务才会把本轮 `messages` 从 `sent` 更新为 `done`。
+16. 若 sandbox 返回 `error`、等待结果超时，或 `jobs` 写入失败，主服务会把这批 `sent` 消息恢复为 `pending`，交给后续 dispatch 重试。
+17. 若 `jobs` 已成功写入但 `messages.done` 更新失败，这批消息会停留在 `sent`；当前版本依赖服务重启时的 `ResetSentMessages()` 把它们重新放回重试队列。
 
 ## Android 外发拉取
 
@@ -167,6 +169,7 @@ TinyClaw 现在提供一个最小 outbox 拉取接口，给 Android 无障碍发
 - `CLAWMAN_GRPC_LISTEN_ADDR`
 - `CLAWMAN_GRPC_ADDR`
 - `CONTROL_API_ADDR`
+- `CLAWMAN_INTERNAL_TOKEN`
 - `WECOM_BOT_ID`
 - `METRICS_ADDR`
 
@@ -178,6 +181,7 @@ TinyClaw 现在提供一个最小 outbox 拉取接口，给 Android 无障碍发
 - `CLAWMAN_GRPC_LISTEN_ADDR=:8092`
 - `CLAWMAN_GRPC_ADDR=clawman-svc.{namespace}.svc.cluster.local:8092`
 - `CONTROL_API_ADDR=:8081`
+- `CLAWMAN_INTERNAL_TOKEN=`（默认空；为空时内部媒体接口禁用）
 - `METRICS_ADDR=:9090`
 - `WECOM_GROUP_TRIGGER_MENTIONS={WECOM_BOT_ID}`（若未显式配置）
 - `WECOM_GROUP_TRIGGER_KEYWORDS=`（默认空）
@@ -190,6 +194,8 @@ agent 运行时关键配置：
 - `ANTHROPIC_BASE_URL`
 - `CLAUDE_SYSTEM_PROMPT_APPEND`
 - `CLAWMAN_GRPC_ADDR`
+- `CLAWMAN_INTERNAL_BASE_URL`
+- `CLAWMAN_INTERNAL_TOKEN`
 
 ## CI/CD 前置条件
 - `deploy-claw` job 通过 `tailscale/github-action@v4`（OAuth client）接入 tailnet 后再执行 `kubectl`。

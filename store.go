@@ -403,6 +403,51 @@ func (s *Store) ListPendingMessages(ctx context.Context, tenantID, roomID string
 	return records, nil
 }
 
+func (s *Store) GetMessageByIdentity(ctx context.Context, tenantID, roomID string, seq int64, msgID string) (MessageRecord, bool, error) {
+	defer dbTimer("get_message_by_identity")()
+
+	var record MessageRecord
+	var msgTime sql.NullTime
+	err := s.db.QueryRowContext(
+		ctx,
+		`
+		SELECT seq, tenant_id, msgid, room_id, from_id, from_name, payload, status, msg_time, created_at
+		FROM messages
+		WHERE tenant_id = $1
+		  AND room_id = $2
+		  AND seq = $3
+		  AND msgid = $4
+		LIMIT 1
+		`,
+		tenantID,
+		roomID,
+		seq,
+		msgID,
+	).Scan(
+		&record.Seq,
+		&record.TenantID,
+		&record.MsgID,
+		&record.RoomID,
+		&record.FromID,
+		&record.FromName,
+		&record.Payload,
+		&record.Status,
+		&msgTime,
+		&record.CreatedAt,
+	)
+	switch {
+	case err == nil:
+		if msgTime.Valid {
+			record.MsgTime = msgTime.Time
+		}
+		return record, true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return MessageRecord{}, false, nil
+	default:
+		return MessageRecord{}, false, fmt.Errorf("get message by identity: %w", err)
+	}
+}
+
 func (s *Store) EnsureRoomForDispatch(ctx context.Context, room RoomRecord) (RoomRecord, error) {
 	defer dbTimer("ensure_room_for_dispatch")()
 

@@ -13,4 +13,5 @@ data:
   CONTROL_API_ADDR: ":8081"
   CLAWMAN_GRPC_ADDR: "clawman.claw.svc.cluster.local:8092"
   CLAWMAN_GRPC_LISTEN_ADDR: ":8092"
+  CLAWMAN_INTERNAL_BASE_URL: "http://clawman.claw.svc.cluster.local:8081"
   ANTHROPIC_BASE_URL: "https://api.anthropic.com"

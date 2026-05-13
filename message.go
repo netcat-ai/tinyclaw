@@ -13,22 +13,32 @@ type wecomPayload struct {
 		Content string `json:"content"`
 	} `json:"markdown,omitempty"`
 	Image *struct {
-		URL string `json:"url"`
+		URL       string `json:"url"`
+		SDKFileID string `json:"sdkfileid"`
 	} `json:"image,omitempty"`
 	File *struct {
-		Name string `json:"name"`
+		Name      string `json:"name"`
+		SDKFileID string `json:"sdkfileid"`
 	} `json:"file,omitempty"`
 	MsgType string `json:"msgtype"`
 }
 
-func extractWeComMessageText(raw string) (string, error) {
+func parseWeComPayload(raw string) (wecomPayload, error) {
 	if raw == "" {
-		return "", fmt.Errorf("empty raw payload")
+		return wecomPayload{}, fmt.Errorf("empty raw payload")
 	}
 
 	var payload wecomPayload
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return "", fmt.Errorf("invalid wecom raw payload: %w", err)
+		return wecomPayload{}, fmt.Errorf("invalid wecom raw payload: %w", err)
+	}
+	return payload, nil
+}
+
+func extractWeComMessageText(raw string) (string, error) {
+	payload, err := parseWeComPayload(raw)
+	if err != nil {
+		return "", err
 	}
 
 	switch {
@@ -45,4 +55,15 @@ func extractWeComMessageText(raw string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported wecom message payload")
 	}
+}
+
+func extractWeComImageSDKFileID(raw string) (string, bool, error) {
+	payload, err := parseWeComPayload(raw)
+	if err != nil {
+		return "", false, err
+	}
+	if payload.MsgType != "image" || payload.Image == nil {
+		return "", false, nil
+	}
+	return payload.Image.SDKFileID, payload.Image.SDKFileID != "", nil
 }

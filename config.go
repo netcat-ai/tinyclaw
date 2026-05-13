@@ -32,6 +32,7 @@ type Config struct {
 	ControlAPIAddr        string
 	ClawmanGRPCListenAddr string
 	ClawmanGRPCAddr       string
+	ClawmanInternalToken  string
 
 	MetricsAddr string
 }
@@ -63,6 +64,7 @@ func LoadConfig() (Config, error) {
 			"CLAWMAN_GRPC_ADDR",
 			fmt.Sprintf("clawman-svc.%s.svc.cluster.local:8092", sandboxNamespace),
 		),
+		ClawmanInternalToken: os.Getenv("CLAWMAN_INTERNAL_TOKEN"),
 
 		MetricsAddr: envOrDefault("METRICS_ADDR", ":9090"),
 	}

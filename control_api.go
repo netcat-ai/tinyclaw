@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -20,7 +21,9 @@ type jobStore interface {
 }
 
 type controlAPI struct {
-	store jobStore
+	store         jobStore
+	media         mediaService
+	internalToken string
 }
 
 type jobResponse struct {
@@ -36,14 +39,23 @@ type jobsPageResponse struct {
 	NextSeq int64         `json:"next_seq"`
 }
 
-func serveControlAPI(ctx context.Context, cfg Config, store *Store) {
-	api := &controlAPI{store: store}
+type mediaService interface {
+	FetchImage(context.Context, mediaFetchRequest) (mediaBlob, error)
+}
+
+func serveControlAPI(ctx context.Context, cfg Config, store *Store, media mediaService) {
+	api := &controlAPI{
+		store:         store,
+		media:         media,
+		internalToken: strings.TrimSpace(cfg.ClawmanInternalToken),
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeAPIJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("/api/wecom/jobs", api.handleListJobs)
+	mux.HandleFunc("/internal/media/fetch", api.handleFetchMedia)
 
 	srv := &http.Server{
 		Addr:              cfg.ControlAPIAddr,
@@ -138,6 +150,69 @@ func (api *controlAPI) authenticateClient(r *http.Request) (string, bool, error)
 		return "", false, nil
 	}
 	return api.store.AuthenticateAppClient(r.Context(), strings.TrimSpace(clientID), strings.TrimSpace(clientSecret))
+}
+
+func (api *controlAPI) handleFetchMedia(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
+		return
+	}
+	if strings.TrimSpace(api.internalToken) == "" {
+		writeAPIError(w, http.StatusServiceUnavailable, "disabled", "internal media API is disabled")
+		return
+	}
+	if !api.authenticateInternalBearer(r) {
+		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid internal bearer token")
+		return
+	}
+	if api.media == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "disabled", "media service is unavailable")
+		return
+	}
+
+	defer r.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "read request body failed")
+		return
+	}
+
+	var req mediaFetchRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "request body must be valid JSON")
+		return
+	}
+
+	blob, err := api.media.FetchImage(r.Context(), req)
+	if err != nil {
+		switch {
+		case errors.Is(err, errMediaMessageNotFound):
+			writeAPIError(w, http.StatusNotFound, "not_found", err.Error())
+		case errors.Is(err, errMediaPayloadMismatch), errors.Is(err, errMediaNotDownloadable):
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		case errors.Is(err, errMediaDownloadDisabled):
+			writeAPIError(w, http.StatusServiceUnavailable, "disabled", err.Error())
+		default:
+			writeAPIError(w, http.StatusInternalServerError, "fetch_failed", err.Error())
+		}
+		return
+	}
+
+	w.Header().Set("Content-Type", blob.ContentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(blob.Data)))
+	w.Header().Set("X-TinyClaw-File-Name", blob.FileName)
+	w.Header().Set("X-TinyClaw-MsgId", req.MsgID)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(blob.Data)
+}
+
+func (api *controlAPI) authenticateInternalBearer(r *http.Request) bool {
+	value := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(value, "Bearer ") {
+		return false
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(value, "Bearer "))
+	return token != "" && token == api.internalToken
 }
 
 func writeAPIJSON(w http.ResponseWriter, statusCode int, payload any) {

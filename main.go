@@ -72,12 +72,18 @@ func main() {
 	}
 	defer clawman.Close()
 
+	mediaSvc := &clawmanMediaService{
+		tenantID: cfg.WeComCorpID,
+		store:    store,
+		sdk:      clawman.sdk,
+	}
+
 	runCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	// Start metrics server
 	go serveMetrics(runCtx, cfg.MetricsAddr)
-	go serveControlAPI(runCtx, cfg, store)
+	go serveControlAPI(runCtx, cfg, store, mediaSvc)
 	go func() {
 		if err := gateway.Serve(runCtx); err != nil {
 			slog.Error("clawman grpc gateway stopped with error", "err", err)

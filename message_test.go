@@ -49,3 +49,29 @@ func TestExtractWeComMessageText_InvalidPayload(t *testing.T) {
 		t.Fatal("extractWeComMessageText error = nil, want non-nil")
 	}
 }
+
+func TestExtractWeComImageSDKFileID(t *testing.T) {
+	got, ok, err := extractWeComImageSDKFileID(`{"msgtype":"image","image":{"sdkfileid":"sdk-file-1"}}`)
+	if err != nil {
+		t.Fatalf("extractWeComImageSDKFileID error: %v", err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if got != "sdk-file-1" {
+		t.Fatalf("sdk file id = %q, want sdk-file-1", got)
+	}
+}
+
+func TestExtractWeComImageSDKFileID_NonImageMessage(t *testing.T) {
+	got, ok, err := extractWeComImageSDKFileID(`{"msgtype":"text","text":{"content":"hello"}}`)
+	if err != nil {
+		t.Fatalf("extractWeComImageSDKFileID error: %v", err)
+	}
+	if ok {
+		t.Fatal("ok = true, want false")
+	}
+	if got != "" {
+		t.Fatalf("sdk file id = %q, want empty", got)
+	}
+}

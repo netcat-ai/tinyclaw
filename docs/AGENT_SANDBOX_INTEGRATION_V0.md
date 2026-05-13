@@ -24,6 +24,7 @@
    - 拉取企业微信消息并标准化。
    - 按 `room_id` 创建或复用 `SandboxClaim`。
    - 暴露 `RoomChat(stream Message)` gRPC server。
+   - 暴露内部 `POST /internal/media/fetch`，按需返回图片二进制。
    - 将入站消息写入 PostgreSQL `messages`。
    - agent 返回后把 reply 写入 PostgreSQL `jobs`，并推进 `messages` 状态。
 
@@ -36,6 +37,7 @@
    - 暴露 `GET /healthz`。
    - 启动后主动连接 `clawman` gRPC gateway。
    - 调用 Claude runtime 或 echo runtime。
+   - 通过 in-process MCP custom tool 在需要时下载图片到本地工作目录。
    - 管理本地工作目录与临时文件，不直接读写 Redis ingress。
 
 ## 3. 资源映射
@@ -71,6 +73,8 @@ annotations:
 - Claude 凭据注入方式
 - 运行目录
 - `CLAWMAN_GRPC_ADDR`
+- `CLAWMAN_INTERNAL_BASE_URL`
+- `CLAWMAN_INTERNAL_TOKEN`
 
 推荐最小模板：
 - 容器端口：`8888`
@@ -80,6 +84,8 @@ annotations:
 - `AGENT_RUNTIME_MODE=claude_agent_sdk`
 - `AGENT_WORKDIR=/workspace`
 - `CLAWMAN_GRPC_ADDR=clawman-svc.claw.svc.cluster.local:8092`
+- `CLAWMAN_INTERNAL_BASE_URL=http://clawman-svc.claw.svc.cluster.local:8081`
+- `CLAWMAN_INTERNAL_TOKEN=<shared-secret>`
 
 ### 4.2 SandboxClaim
 `clawman` 会为 room 创建或复用 claim：
@@ -111,6 +117,31 @@ clawman-svc.claw.svc.cluster.local:8092
 - sandbox 启动后主动拨号该地址。
 - 第一条消息必须是 `kind=connect`，携带 `sandbox_id`。
 - 当前版本先不做传输层鉴权。
+
+### 4.4 Internal Media API
+当前实现额外暴露一个仅供 sandbox 使用的内部 HTTP 接口：
+
+```text
+POST /internal/media/fetch
+Authorization: Bearer <CLAWMAN_INTERNAL_TOKEN>
+```
+
+请求体：
+
+```json
+{
+  "room_id": "room-123",
+  "seq": 123,
+  "msgid": "wecom_msg_abc",
+  "sdk_file_id": "sdkfileid-xxx"
+}
+```
+
+说明：
+- `clawman` 会先按 `tenant_id + room_id + seq + msgid` 查 `messages`。
+- 然后校验该消息确实是 `msgtype=image`，且 payload 中的 `sdkfileid` 与请求一致。
+- 校验通过后，服务端调用企业微信存档 SDK `GetMediaData` 拉取图片并返回二进制。
+- `CLAWMAN_INTERNAL_TOKEN` 为空时，该接口保持禁用。
 
 ## 5. 数据面契约
 
@@ -170,6 +201,15 @@ clawman-svc.claw.svc.cluster.local:8092
 - `error` 表示本轮处理失败，`clawman` 会把当前批次从 `sent` 恢复到 `pending`。
 - 当前不保留应用层 `ack`；gRPC `Send` 成功只代表批次已送达 agent 进程，不代表业务已完成。
 
+### 5.3 图片消息按需落地
+当前图片处理链路：
+
+1. `messages.payload` 保留企业微信原始图片 payload，包括 `image.sdkfileid`。
+2. runtime 向 Claude 暴露一个 in-process MCP custom tool：`fetch_wecom_image`。
+3. Claude 需要查看图片时，自行调用 `fetch_wecom_image(room_id, seq, msgid, sdk_file_id)`。
+4. tool 内部请求 `POST /internal/media/fetch` 拉取图片，并把文件落到 `AGENT_WORKDIR/incoming-media/<room_id>/`。
+5. tool 返回本地路径、文件名和内容类型，Claude 再基于该本地文件继续处理。
+
 ## 6. Runtime 环境变量契约
 
 必需：
@@ -177,6 +217,7 @@ clawman-svc.claw.svc.cluster.local:8092
 ```text
 AGENT_SERVER_PORT          # 默认 8888
 CLAWMAN_GRPC_ADDR          # clawman gRPC gateway
+CLAWMAN_INTERNAL_TOKEN     # 内部图片下载 bearer token
 ANTHROPIC_API_KEY          # 与 CLAUDE_CODE_OAUTH_TOKEN 二选一（echo 模式可省略）
 CLAUDE_CODE_OAUTH_TOKEN
 ```
@@ -188,6 +229,7 @@ ANTHROPIC_BASE_URL
 AGENT_RUNTIME_MODE         # echo | claude_agent_sdk
 AGENT_WORKDIR
 AGENT_TMPDIR
+CLAWMAN_INTERNAL_BASE_URL  # 缺省时由 CLAWMAN_GRPC_ADDR 推导 host，并默认端口 8081
 AGENT_IDLE_AFTER_SEC
 AGENT_LOG_LEVEL
 CLAUDE_MODEL
@@ -201,6 +243,7 @@ CLAUDE_RUNTIME_TIMEOUT_MS
 说明：
 - `ROOM_ID`、`REDIS_ADDR`、`CONSUMER_GROUP_*` 不再属于 agent runtime 契约。
 - room 级上下文从每次 gRPC `messages[]` 批次中传入。
+- 图片二进制不复用 `RoomChat(stream Message)` 传输，而是通过内部 HTTP API 按需下载。
 
 ## 7. 文件系统与卷布局
 

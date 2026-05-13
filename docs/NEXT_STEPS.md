@@ -39,6 +39,9 @@
 3. 引入 scheduler / reminder 输入源，但仍由 `clawman` 持久化与调度，不下放到 sandbox。
 4. 接入长期 memory 与文件上下文能力，保持 `messages` 为原始事实源。
 5. 评估 warm pool、idle / hibernate / terminate 自动化策略。
+6. 设计 skill gateway：
+   - 由 `clawman` 提供私有 `find_skill / install_skill` 能力。
+   - 评估是否把 [FindSkills](https://www.findskills.org/) 作为外部 skill discovery 上游，而 `clawman` 负责 trust、allowlist、缓存与安装分发。
 
 ## 部署专项
 1. 固化 `SandboxTemplate` 契约：

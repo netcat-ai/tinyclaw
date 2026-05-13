@@ -1,0 +1,295 @@
+- main [ref=e2]:
+  - generic [ref=e3]:
+    - heading "TinyClaw 目标架构设计报告" [level=1] [ref=e4]
+    - paragraph [ref=e5]: 本报告定义 TinyClaw 的目标架构。系统以 gRPC 写入消息、PostgreSQL 状态机、 主服务模型运行、sandbox 工具执行、jobs outbox 为核心边界。
+    - generic [ref=e6]:
+      - generic [ref=e7]: 日期：2026-05-13
+      - generic [ref=e8]: 范围：目标架构
+      - generic [ref=e9]: 约束：最佳实践优先
+  - generic [ref=e10]:
+    - heading "1. 目标" [level=2] [ref=e11]
+    - paragraph [ref=e12]: TinyClaw 的目标形态是一个消息驱动的 AI worker 服务。入口只负责写入事实， 调度层负责可靠处理，模型层在主服务内完成推理，sandbox 只执行需要隔离的工具。
+    - list [ref=e13]:
+      - listitem [ref=e14]:
+        - text: 唯一正式入口：
+        - code [ref=e15]: SubmitMessages
+        - text: gRPC。
+      - listitem [ref=e16]:
+        - text: 唯一入站事实源：
+        - code [ref=e17]: messages
+        - text: 。
+      - listitem [ref=e18]: 唯一处理驱动：pending message dispatcher。
+      - listitem [ref=e19]:
+        - text: 默认模型调用：主服务内
+        - code [ref=e20]: AgentRunner
+        - text: 。
+      - listitem [ref=e21]:
+        - text: 隔离执行：sandbox
+        - code [ref=e22]: ToolExecutor
+        - text: 。
+      - listitem [ref=e23]:
+        - text: 唯一外发事实源：
+        - code [ref=e24]: jobs
+        - text: outbox。
+    - generic [ref=e25]: 入口 RPC 不直接调用模型，不直接写 jobs，不绕过 messages 状态机。
+  - generic [ref=e26]:
+    - heading "2. 架构原则" [level=2] [ref=e27]
+    - generic [ref=e28]:
+      - generic [ref=e29]:
+        - heading "事实先落库" [level=3] [ref=e30]
+        - paragraph [ref=e31]:
+          - text: 任何输入先写入
+          - code [ref=e32]: messages
+          - text: ，再由 dispatcher 异步处理。
+      - generic [ref=e33]:
+        - heading "单一状态机" [level=3] [ref=e34]
+        - paragraph [ref=e35]:
+          - text: 消息只通过
+          - code [ref=e36]: pending -> processing -> done/failed
+          - text: 推进。
+      - generic [ref=e37]:
+        - heading "主服务持有推理循环" [level=3] [ref=e38]
+        - paragraph [ref=e39]: prompt、模型调用、tool loop、最终回复生成都在主服务内完成。
+      - generic [ref=e40]:
+        - heading "sandbox 最小职责" [level=3] [ref=e41]
+        - paragraph [ref=e42]: sandbox 只执行工具调用，不拥有会话调度、消息状态和外发状态。
+  - generic [ref=e43]:
+    - heading "3. 总体架构" [level=2] [ref=e44]
+    - code [ref=e46]: Message Producer └─ SubmitMessages(gRPC) │ ▼ +-----------------------------+ | Ingress API | | - authenticate | | - validate | | - normalize | | - insert messages | +-------------+---------------+ │ ▼ +-----------------------------+ | PostgreSQL messages | | pending / processing / | | done / failed | +-------------+---------------+ │ ▼ +-----------------------------+ | Dispatcher | | - claim work atomically | | - load room context | | - call AgentRunner | +-------------+---------------+ │ ▼ +-----------------------------+ | AgentRunner in clawman | | - prompt builder | | - model client | | - tool call loop | +-------------+---------------+ │ tool calls ▼ +-----------------------------+ | Sandbox ToolExecutor | | - execute isolated tools | | - return structured result | +-------------+---------------+ │ ▼ +-----------------------------+ | PostgreSQL jobs | | - reply outbox | | - Android pull | +-----------------------------+
+  - generic [ref=e47]:
+    - heading "4. 领域模型" [level=2] [ref=e48]
+    - heading "4.1 messages" [level=3] [ref=e49]
+    - paragraph [ref=e50]:
+      - code [ref=e51]: messages
+      - text: 保存所有入站事实和处理状态。它不保存模型中间推理， 也不保存工具调用明细。
+    - code [ref=e53]: CREATE TABLE messages ( id UUID PRIMARY KEY, tenant_id TEXT NOT NULL, source TEXT NOT NULL, source_message_id TEXT NOT NULL, room_id TEXT NOT NULL, chat_type TEXT NOT NULL CHECK (chat_type IN ('direct', 'group')), from_id TEXT NOT NULL, from_name TEXT NOT NULL DEFAULT '', payload JSONB NOT NULL, status TEXT NOT NULL CHECK ( status IN ('pending', 'processing', 'done', 'failed') ), available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), locked_at TIMESTAMPTZ, attempt_count INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '', msg_time TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE (tenant_id, source, source_message_id) );
+    - heading "4.2 rooms" [level=3] [ref=e54]
+    - paragraph [ref=e55]:
+      - code [ref=e56]: rooms
+      - text: 保存 room 级元数据和运行策略，不承担消息游标。
+    - code [ref=e58]: "CREATE TABLE rooms ( tenant_id TEXT NOT NULL, room_id TEXT NOT NULL, chat_type TEXT NOT NULL CHECK (chat_type IN ('direct', 'group')), title TEXT NOT NULL DEFAULT '', runner_policy JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (tenant_id, room_id) );"
+    - heading "4.3 jobs" [level=3] [ref=e59]
+    - paragraph [ref=e60]:
+      - code [ref=e61]: jobs
+      - text: 是外发 outbox。只有最终需要发送给用户的回复进入 jobs。
+    - code [ref=e63]: CREATE TABLE jobs ( id UUID PRIMARY KEY, seq BIGSERIAL UNIQUE, tenant_id TEXT NOT NULL, bot_id TEXT NOT NULL, recipient_alias TEXT NOT NULL, message TEXT NOT NULL, source_message_ids UUID[] NOT NULL, idempotency_key TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE (tenant_id, idempotency_key) );
+    - heading "4.4 tool_calls" [level=3] [ref=e64]
+    - paragraph [ref=e65]:
+      - code [ref=e66]: tool_calls
+      - text: 保存工具调用审计和重试边界。工具执行是独立状态机， 不污染 messages 状态。
+    - code [ref=e68]: CREATE TABLE tool_calls ( id UUID PRIMARY KEY, tenant_id TEXT NOT NULL, room_id TEXT NOT NULL, message_batch_id UUID NOT NULL, tool_name TEXT NOT NULL, input JSONB NOT NULL, output JSONB, status TEXT NOT NULL CHECK ( status IN ('pending', 'running', 'succeeded', 'failed') ), error TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW() );
+  - generic [ref=e69]:
+    - heading "5. gRPC 契约" [level=2] [ref=e70]
+    - heading "5.1 Ingress API" [level=3] [ref=e71]
+    - code [ref=e73]: "service ClawmanIngress { rpc SubmitMessages(SubmitMessagesRequest) returns (SubmitMessagesResponse); }"
+    - code [ref=e75]: "message SubmitMessagesRequest { string tenant_id = 1; repeated InboundMessage messages = 2; } message InboundMessage { string source = 1; string source_message_id = 2; string room_id = 3; string chat_type = 4; string from_id = 5; string from_name = 6; string msg_time = 7; bytes payload_json = 8; } message SubmitMessagesResponse { int32 accepted = 1; int32 duplicated = 2; repeated string message_ids = 3; }"
+    - heading "5.2 Tool Runtime API" [level=3] [ref=e76]
+    - code [ref=e78]: "service ToolRuntime { rpc ExecuteTool(ExecuteToolRequest) returns (ExecuteToolResponse); } message ExecuteToolRequest { string tenant_id = 1; string room_id = 2; string call_id = 3; string tool_name = 4; bytes input_json = 5; } message ExecuteToolResponse { string call_id = 1; bytes output_json = 2; }"
+    - generic [ref=e79]: 工具执行使用 unary RPC。需要流式输出时再单独引入 streaming tool API， 不把普通工具调用一开始就设计成双向流。
+  - generic [ref=e80]:
+    - heading "6. 处理流程" [level=2] [ref=e81]
+    - list [ref=e82]:
+      - listitem [ref=e83]:
+        - text: Producer 调用
+        - code [ref=e84]: SubmitMessages
+        - text: 。
+      - listitem [ref=e85]:
+        - text: Ingress 校验租户、来源、room、payload，并按幂等键写入
+        - code [ref=e86]: messages
+        - text: 。
+      - listitem [ref=e87]:
+        - text: Dispatcher 原子 claim 一组 pending 消息，状态改为
+        - code [ref=e88]: processing
+        - text: 。
+      - listitem [ref=e89]: Dispatcher 读取 room metadata 和当前处理批次上下文。
+      - listitem [ref=e90]:
+        - code [ref=e91]: AgentRunner
+        - text: 构造 prompt 并调用模型。
+      - listitem [ref=e92]:
+        - text: 模型请求 tool 时，
+        - code [ref=e93]: AgentRunner
+        - text: 调用
+        - code [ref=e94]: ToolExecutor
+        - text: 。
+      - listitem [ref=e95]:
+        - code [ref=e96]: ToolExecutor
+        - text: 确保 sandbox 存在，执行工具并返回结构化结果。
+      - listitem [ref=e97]:
+        - code [ref=e98]: AgentRunner
+        - text: 继续模型循环，直到得到最终回复。
+      - listitem [ref=e99]:
+        - text: 服务以幂等键写入
+        - code [ref=e100]: jobs
+        - text: 。
+      - listitem [ref=e101]:
+        - text: 写入 jobs 成功后，消息状态改为
+        - code [ref=e102]: done
+        - text: 。
+  - generic [ref=e103]:
+    - heading "7. 状态机" [level=2] [ref=e104]
+    - table [ref=e105]:
+      - rowgroup [ref=e106]:
+        - row "状态 含义 下一步" [ref=e107]:
+          - columnheader "状态" [ref=e108]
+          - columnheader "含义" [ref=e109]
+          - columnheader "下一步" [ref=e110]
+      - rowgroup [ref=e111]:
+        - row "pending 已入库，等待处理 processing" [ref=e112]:
+          - cell "pending" [ref=e113]:
+            - code [ref=e114]: pending
+          - cell "已入库，等待处理" [ref=e115]
+          - cell "processing" [ref=e116]:
+            - code [ref=e117]: processing
+        - row "processing 已被 worker claim，正在运行模型或工具 done / failed" [ref=e118]:
+          - cell "processing" [ref=e119]:
+            - code [ref=e120]: processing
+          - cell "已被 worker claim，正在运行模型或工具" [ref=e121]
+          - cell "done / failed" [ref=e122]:
+            - code [ref=e123]: done
+            - text: /
+            - code [ref=e124]: failed
+        - row "done 最终回复已写入 jobs 终态" [ref=e125]:
+          - cell "done" [ref=e126]:
+            - code [ref=e127]: done
+          - cell "最终回复已写入 jobs" [ref=e128]
+          - cell "终态" [ref=e129]
+        - row "failed 超过重试上限或不可恢复错误 人工处理或重新投递" [ref=e130]:
+          - cell "failed" [ref=e131]:
+            - code [ref=e132]: failed
+          - cell "超过重试上限或不可恢复错误" [ref=e133]
+          - cell "人工处理或重新投递" [ref=e134]
+    - paragraph [ref=e135]:
+      - text: 无效消息由 ingress 直接拒绝，不写入
+      - code [ref=e136]: messages
+      - text: 。worker claim 使用数据库事务和
+      - code [ref=e137]: FOR UPDATE SKIP LOCKED
+      - text: ，避免多 worker 重复处理同一批消息。
+  - generic [ref=e138]:
+    - heading "8. 核心接口" [level=2] [ref=e139]
+    - code [ref=e141]: "type MessageIngress interface { Submit(ctx context.Context, req SubmitMessagesRequest) (SubmitMessagesResult, error) } type AgentRunner interface { Run(ctx context.Context, req AgentRequest) (AgentResult, error) } type ToolExecutor interface { Execute(ctx context.Context, req ToolRequest) (ToolResult, error) } type JobOutbox interface { Enqueue(ctx context.Context, job Job) (Job, error) }"
+    - paragraph [ref=e142]: 这些接口是模块边界。每个接口只表达一个业务职责。
+  - generic [ref=e143]:
+    - heading "9. 部署形态" [level=2] [ref=e144]
+    - table [ref=e145]:
+      - rowgroup [ref=e146]:
+        - row "组件 职责 伸缩方式" [ref=e147]:
+          - columnheader "组件" [ref=e148]
+          - columnheader "职责" [ref=e149]
+          - columnheader "伸缩方式" [ref=e150]
+      - rowgroup [ref=e151]:
+        - row "clawman-api gRPC ingress、Android jobs API、metrics 水平扩容，无本地状态" [ref=e152]:
+          - cell "clawman-api" [ref=e153]:
+            - code [ref=e154]: clawman-api
+          - cell "gRPC ingress、Android jobs API、metrics" [ref=e155]
+          - cell "水平扩容，无本地状态" [ref=e156]
+        - row "clawman-worker dispatcher、AgentRunner、ToolExecutor client 水平扩容，数据库锁协调" [ref=e157]:
+          - cell "clawman-worker" [ref=e158]:
+            - code [ref=e159]: clawman-worker
+          - cell "dispatcher、AgentRunner、ToolExecutor client" [ref=e160]
+          - cell "水平扩容，数据库锁协调" [ref=e161]
+        - row "tool-sandbox 隔离工具执行 按 room 或 tool call 创建，空闲回收" [ref=e162]:
+          - cell "tool-sandbox" [ref=e163]:
+            - code [ref=e164]: tool-sandbox
+          - cell "隔离工具执行" [ref=e165]
+          - cell "按 room 或 tool call 创建，空闲回收" [ref=e166]
+        - row "postgresql messages、jobs、rooms、tool_calls 托管数据库或平台层服务" [ref=e167]:
+          - cell "postgresql" [ref=e168]:
+            - code [ref=e169]: postgresql
+          - cell "messages、jobs、rooms、tool_calls" [ref=e170]
+          - cell "托管数据库或平台层服务" [ref=e171]
+  - generic [ref=e172]:
+    - heading "10. 配置" [level=2] [ref=e173]
+    - table [ref=e174]:
+      - rowgroup [ref=e175]:
+        - row "配置 用途" [ref=e176]:
+          - columnheader "配置" [ref=e177]
+          - columnheader "用途" [ref=e178]
+      - rowgroup [ref=e179]:
+        - row "DATABASE_URL PostgreSQL 连接串" [ref=e180]:
+          - cell "DATABASE_URL" [ref=e181]:
+            - code [ref=e182]: DATABASE_URL
+          - cell "PostgreSQL 连接串" [ref=e183]
+        - row "CLAWMAN_GRPC_LISTEN_ADDR Ingress gRPC 监听地址" [ref=e184]:
+          - cell "CLAWMAN_GRPC_LISTEN_ADDR" [ref=e185]:
+            - code [ref=e186]: CLAWMAN_GRPC_LISTEN_ADDR
+          - cell "Ingress gRPC 监听地址" [ref=e187]
+        - row "CONTROL_API_ADDR jobs pull API 和 healthz" [ref=e188]:
+          - cell "CONTROL_API_ADDR" [ref=e189]:
+            - code [ref=e190]: CONTROL_API_ADDR
+          - cell "jobs pull API 和 healthz" [ref=e191]
+        - row "MODEL_PROVIDER 模型提供方" [ref=e192]:
+          - cell "MODEL_PROVIDER" [ref=e193]:
+            - code [ref=e194]: MODEL_PROVIDER
+          - cell "模型提供方" [ref=e195]
+        - row "MODEL_NAME 默认模型" [ref=e196]:
+          - cell "MODEL_NAME" [ref=e197]:
+            - code [ref=e198]: MODEL_NAME
+          - cell "默认模型" [ref=e199]
+        - row "MODEL_API_KEY 主服务内模型调用凭据" [ref=e200]:
+          - cell "MODEL_API_KEY" [ref=e201]:
+            - code [ref=e202]: MODEL_API_KEY
+          - cell "主服务内模型调用凭据" [ref=e203]
+        - row "SANDBOX_NAMESPACE 工具 sandbox 所在命名空间" [ref=e204]:
+          - cell "SANDBOX_NAMESPACE" [ref=e205]:
+            - code [ref=e206]: SANDBOX_NAMESPACE
+          - cell "工具 sandbox 所在命名空间" [ref=e207]
+        - row "SANDBOX_TEMPLATE_NAME 工具 sandbox 模板" [ref=e208]:
+          - cell "SANDBOX_TEMPLATE_NAME" [ref=e209]:
+            - code [ref=e210]: SANDBOX_TEMPLATE_NAME
+          - cell "工具 sandbox 模板" [ref=e211]
+  - generic [ref=e212]:
+    - heading "11. 实施顺序" [level=2] [ref=e213]
+    - list [ref=e214]:
+      - listitem [ref=e215]:
+        - text: 按目标 schema 重建
+        - code [ref=e216]: messages
+        - text: 、
+        - code [ref=e217]: jobs
+        - text: 、
+        - code [ref=e218]: rooms
+        - text: 、
+        - code [ref=e219]: tool_calls
+        - text: 。
+      - listitem [ref=e220]:
+        - text: 实现
+        - code [ref=e221]: ClawmanIngress.SubmitMessages
+        - text: 。
+      - listitem [ref=e222]:
+        - text: 实现数据库 claim worker：
+        - code [ref=e223]: pending -> processing
+        - text: 。
+      - listitem [ref=e224]:
+        - text: 实现主服务
+        - code [ref=e225]: AgentRunner
+        - text: 。
+      - listitem [ref=e226]: 实现幂等 jobs outbox。
+      - listitem [ref=e227]:
+        - text: 实现 sandbox
+        - code [ref=e228]: ToolRuntime.ExecuteTool
+        - text: 。
+      - listitem [ref=e229]:
+        - text: 把 tool loop 接入
+        - code [ref=e230]: AgentRunner
+        - text: 。
+      - listitem [ref=e231]: 补 metrics、structured logs、失败重试和 idle sandbox 回收。
+  - generic [ref=e232]:
+    - heading "12. 验收标准" [level=2] [ref=e233]
+    - list [ref=e234]:
+      - listitem [ref=e235]:
+        - text: gRPC 提交消息后，消息以幂等方式写入
+        - code [ref=e236]: messages
+        - text: 。
+      - listitem [ref=e237]: worker 可并发运行，且不会重复 claim 同一条消息。
+      - listitem [ref=e238]:
+        - text: 普通文本消息不启动 sandbox，也能生成回复并写入
+        - code [ref=e239]: jobs
+        - text: 。
+      - listitem [ref=e240]:
+        - text: 需要工具时才启动 sandbox，并记录
+        - code [ref=e241]: tool_calls
+        - text: 。
+      - listitem [ref=e242]: 模型失败、工具失败、jobs 写入失败都有明确状态和重试策略。
+      - listitem [ref=e243]:
+        - code [ref=e244]: jobs
+        - text: 使用幂等键，重复处理不会重复外发。
+      - listitem [ref=e245]: 所有关键路径都有 metrics 和结构化日志。

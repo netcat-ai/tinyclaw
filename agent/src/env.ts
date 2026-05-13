@@ -61,6 +61,10 @@ export function loadEnv(): AgentEnv {
   return {
     serverPort: parseInteger('AGENT_SERVER_PORT', 8888),
     clawmanGrpcAddr: process.env.CLAWMAN_GRPC_ADDR?.trim() || undefined,
+    clawmanInternalBaseURL:
+      process.env.CLAWMAN_INTERNAL_BASE_URL?.trim() || undefined,
+    clawmanInternalToken:
+      process.env.CLAWMAN_INTERNAL_TOKEN?.trim() || undefined,
     anthropicApiKey: process.env.ANTHROPIC_API_KEY?.trim() || undefined,
     anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL?.trim() || undefined,
     claudeCodeOauthToken:
