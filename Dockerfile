@@ -21,8 +21,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY --from=builder /out/tinyclaw /app/tinyclaw
-COPY --from=builder /src/wecom/finance/lib /app/wecom/finance/lib
+COPY --from=builder /src/channel/wecom/finance/lib /app/channel/wecom/finance/lib
 
-ENV LD_LIBRARY_PATH=/app/wecom/finance/lib
+ENV LD_LIBRARY_PATH=/app/channel/wecom/finance/lib
 
 ENTRYPOINT ["/app/tinyclaw"]

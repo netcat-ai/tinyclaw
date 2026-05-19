@@ -8,8 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"tinyclaw/wecom"
-	"tinyclaw/wecom/finance"
+	"tinyclaw/channel/wecom"
+	"tinyclaw/channel/wecom/finance"
 )
 
 func newTestClawman(t *testing.T, serverURL string) *Clawman {

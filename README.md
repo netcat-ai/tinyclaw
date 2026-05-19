@@ -27,7 +27,7 @@ API requests use `Authorization: Bearer $CLAWMAN_API_TOKEN`.
 internal/core      Core Model types and Trigger Policy
 internal/storage   PostgreSQL implementation for Core Model persistence
 internal/api       HTTP adapter for Core Model routes
-wecom/             Legacy WeCom SDK helpers and clients
+channel/wecom/     Legacy WeCom SDK helpers and clients
 ```
 
 The root `main` package wires configuration, storage, metrics, the Core Model API, and remaining legacy WeCom archive ingestion.

@@ -10,7 +10,7 @@ import (
 	"path"
 	"strings"
 
-	"tinyclaw/wecom/finance"
+	"tinyclaw/channel/wecom/finance"
 )
 
 var (

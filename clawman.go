@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"tinyclaw/wecom"
-	"tinyclaw/wecom/finance"
+	"tinyclaw/channel/wecom"
+	"tinyclaw/channel/wecom/finance"
 )
 
 const (

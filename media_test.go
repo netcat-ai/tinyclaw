@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"tinyclaw/wecom/finance"
+	"tinyclaw/channel/wecom/finance"
 )
 
 type fakeMediaLookupStore struct {
