@@ -26,10 +26,10 @@
 
 ## PostgreSQL 当前范围
 
-- `core_rooms`：TinyClaw room，与外部 channel room 映射。
-- `core_messages`：room 内入站消息事实，`dispatch_state` 记录等待、忽略或绑定的 invocation。
-- `core_invocations`：room 级 agent 执行。
-- `core_deliveries`：invocation 产生的外发消息。
+- `rooms`：TinyClaw room，与外部 channel room 映射。
+- `messages`：room 内入站消息事实，`dispatch_state` 记录等待、忽略或绑定的 invocation。
+- `invocations`：room 级 agent 执行。
+- `deliveries`：invocation 产生的外发消息。
 
 ## 验收标准
 

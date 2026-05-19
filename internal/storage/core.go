@@ -191,8 +191,8 @@ func (s *CoreStore) ListCoreDeliveries(ctx context.Context, channel string, afte
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT d.id, d.seq, d.room_id, d.invocation_id, d.payload, d.status, d.created_at, d.acked_at
-		FROM core_deliveries d
-		JOIN core_rooms r ON r.id = d.room_id
+		FROM deliveries d
+		JOIN rooms r ON r.id = d.room_id
 		WHERE r.channel = $1
 		  AND d.seq > $2
 		  AND d.status = $3

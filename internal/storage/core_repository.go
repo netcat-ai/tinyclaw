@@ -35,7 +35,7 @@ func upsertCoreRoomTx(ctx context.Context, tx *sql.Tx, input core.InboundMessage
 	var displayName sql.NullString
 	var triggerPolicy []byte
 	err := tx.QueryRowContext(ctx, `
-		INSERT INTO core_rooms (
+		INSERT INTO rooms (
 			tenant_id,
 			channel,
 			channel_room_id,
@@ -72,7 +72,7 @@ func upsertCoreRoomTx(ctx context.Context, tx *sql.Tx, input core.InboundMessage
 func insertCoreMessageTx(ctx context.Context, tx *sql.Tx, roomID int64, input core.InboundMessageInput) (bool, core.Message, error) {
 	var id int64
 	err := tx.QueryRowContext(ctx, `
-		INSERT INTO core_messages (
+		INSERT INTO messages (
 			room_id,
 			source_message_id,
 			sender_id,
@@ -99,7 +99,7 @@ func insertCoreMessageTx(ctx context.Context, tx *sql.Tx, roomID int64, input co
 func getCoreMessageByIDTx(ctx context.Context, tx *sql.Tx, id int64) (core.Message, error) {
 	row := tx.QueryRowContext(ctx, `
 		SELECT id, room_id, source_message_id, sender_id, sender_name, payload, message_time, dispatch_state, created_at
-		FROM core_messages
+		FROM messages
 		WHERE id = $1
 	`, id)
 	return scanCoreMessage(row)
@@ -108,7 +108,7 @@ func getCoreMessageByIDTx(ctx context.Context, tx *sql.Tx, id int64) (core.Messa
 func getCoreMessageBySourceTx(ctx context.Context, tx *sql.Tx, roomID int64, sourceMessageID string) (core.Message, error) {
 	row := tx.QueryRowContext(ctx, `
 		SELECT id, room_id, source_message_id, sender_id, sender_name, payload, message_time, dispatch_state, created_at
-		FROM core_messages
+		FROM messages
 		WHERE room_id = $1
 		  AND source_message_id = $2
 	`, roomID, sourceMessageID)
@@ -117,7 +117,7 @@ func getCoreMessageBySourceTx(ctx context.Context, tx *sql.Tx, roomID int64, sou
 
 func updateCoreMessageDispatchStateTx(ctx context.Context, tx *sql.Tx, messageID int64, dispatchState int64) (core.Message, error) {
 	row := tx.QueryRowContext(ctx, `
-		UPDATE core_messages
+		UPDATE messages
 		SET dispatch_state = $2
 		WHERE id = $1
 		RETURNING id, room_id, source_message_id, sender_id, sender_name, payload, message_time, dispatch_state, created_at
@@ -128,7 +128,7 @@ func updateCoreMessageDispatchStateTx(ctx context.Context, tx *sql.Tx, messageID
 func getActiveInvocationForRoomTx(ctx context.Context, tx *sql.Tx, roomID int64) (core.Invocation, bool, error) {
 	row := tx.QueryRowContext(ctx, `
 		SELECT id, room_id, status, trigger_message_id, input_snapshot, output_snapshot, created_at, started_at, completed_at
-		FROM core_invocations
+		FROM invocations
 		WHERE room_id = $1
 		  AND status IN ($2, $3)
 		ORDER BY id DESC
@@ -156,7 +156,7 @@ func createInvocationFromWaitingMessagesTx(ctx context.Context, tx *sql.Tx, room
 
 	var invocation core.Invocation
 	row := tx.QueryRowContext(ctx, `
-		INSERT INTO core_invocations (
+		INSERT INTO invocations (
 			room_id,
 			status,
 			trigger_message_id,
@@ -170,7 +170,7 @@ func createInvocationFromWaitingMessagesTx(ctx context.Context, tx *sql.Tx, room
 		return core.Invocation{}, fmt.Errorf("create core invocation: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE core_messages
+		UPDATE messages
 		SET dispatch_state = $2
 		WHERE room_id = $1
 		  AND dispatch_state = $3
@@ -183,7 +183,7 @@ func createInvocationFromWaitingMessagesTx(ctx context.Context, tx *sql.Tx, room
 func listWaitingMessageIDsTx(ctx context.Context, tx *sql.Tx, roomID int64) ([]int64, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id
-		FROM core_messages
+		FROM messages
 		WHERE room_id = $1
 		  AND dispatch_state = $2
 		ORDER BY message_time ASC, id ASC
@@ -209,7 +209,7 @@ func listWaitingMessageIDsTx(ctx context.Context, tx *sql.Tx, roomID int64) ([]i
 
 func updateInvocationTerminalTx(ctx context.Context, tx *sql.Tx, invocationID int64, status string, output json.RawMessage) (core.Invocation, error) {
 	row := tx.QueryRowContext(ctx, `
-		UPDATE core_invocations
+		UPDATE invocations
 		SET status = $2,
 		    output_snapshot = $3,
 		    completed_at = NOW()
@@ -229,7 +229,7 @@ func updateInvocationTerminalTx(ctx context.Context, tx *sql.Tx, invocationID in
 
 func createCoreDeliveryTx(ctx context.Context, tx *sql.Tx, roomID int64, invocationID int64, payload json.RawMessage) (core.Delivery, error) {
 	row := tx.QueryRowContext(ctx, `
-		INSERT INTO core_deliveries (
+		INSERT INTO deliveries (
 			room_id,
 			invocation_id,
 			payload,
@@ -249,7 +249,7 @@ func ackCoreDelivery(ctx context.Context, db *sql.DB, id int64) (core.Delivery, 
 	var delivery core.Delivery
 	var ackedAt sql.NullTime
 	err := db.QueryRowContext(ctx, `
-		UPDATE core_deliveries
+		UPDATE deliveries
 		SET status = $2,
 		    acked_at = NOW()
 		WHERE id = $1
