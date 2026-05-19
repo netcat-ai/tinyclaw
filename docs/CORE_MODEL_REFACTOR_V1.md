@@ -218,6 +218,8 @@ Invocation 创建后由 clawman 进程内 execution module 启动执行，不设
 
 runner 不直接推进 Core Model 状态。runner 成功返回 final output 后，由 execution module 完成 Invocation；runner 失败时，由 execution module 标记 failed 并生成失败 Delivery。
 
+当前实现提供 `CodexRunner`：设置 `AGENT_RUNNER=codex` 后，execution module 会调用本机 `codex exec`，并把 runner final output 写成 Delivery。
+
 当前代码保留 `POST /api/invocations/{id}/complete` 和 `POST /api/invocations/{id}/fail` 作为 Core Model 状态推进接口；主流程优先进程内调用同一层 storage 方法。
 
 Agent final output 处理：
@@ -233,6 +235,8 @@ failure          -> create failure delivery(status=pending)
 ## 7. Delivery Pull API
 
 Adapter 轮询 clawman deliveries，并自行负责真实外发和短期重试。
+
+MobileClaw 当前按该接口轮询 `deliveries`。2026-05-20 真机验证中，`wecom` channel 已完成 `delivery -> 企业微信发送 -> ack`；`wechat` channel 因目标设备微信无障碍节点树为空，暂未完成自动发送。
 
 ```http
 GET /api/deliveries?channel=wecom&id=123

@@ -13,11 +13,11 @@ A conversation identity as named by an external channel.
 _Avoid_: Room, internal room
 
 **Agent Session**:
-A **Room**'s default long-running agent context in the first execution model.
+A **Room**'s conceptual long-running agent context. The first Core Model implementation keeps this implicit and does not persist an `agent_sessions` table.
 _Avoid_: Table requirement, channel room
 
 **Sandbox**:
-A replaceable execution instance assigned to exactly one **Agent Session** during its lifecycle.
+A future replaceable tool-execution instance. It is not the current Invocation executor.
 _Avoid_: Worker, consumer, bot instance
 
 **Tool Runtime Backend**:
@@ -29,12 +29,16 @@ A backend-specific execution runtime reused by one **Room**'s implicit **Agent S
 _Avoid_: Core table, Invocation, Channel Room
 
 **Clawman**:
-The control plane and message gateway that owns external channels, persistence, scheduling, governance, and delivery.
+The control plane that owns Core Model persistence, trigger decisions, Invocation execution, and delivery outbox APIs.
 _Avoid_: WeCom bot, agent process
 
 **Agent**:
-The configured reasoning persona and capability set used by an **Agent Session**.
+The configured reasoning behavior used by an Invocation runner.
 _Avoid_: Channel adapter, message consumer
+
+**Agent Runner**:
+A local executor adapter that runs one **Invocation** and returns final output. The current concrete runner is `CodexRunner`.
+_Avoid_: Channel adapter, sandbox backend
 
 **Channel Adapter**:
 An external service that translates a third-party platform into TinyClaw's inbound and outbound API.
@@ -67,13 +71,12 @@ _Avoid_: Clawman state, Message id, processing seq
 ## Relationships
 
 - In the first execution model, a **Room** has exactly one implicit default **Agent Session**.
-- An **Agent Session** belongs to exactly one **Room**.
-- An **Agent Session** may be served by many **Sandboxes** over time.
-- A **Sandbox** serves exactly one **Agent Session** during its lifecycle.
+- An implicit **Agent Session** belongs to exactly one **Room**.
+- A future **Sandbox** may serve one **Agent Session** during its lifecycle, but current Invocation execution does not require a sandbox.
 - A **Tool Runtime Backend** owns backend-specific **Runtime Sessions**.
 - In the first execution model, a **Runtime Session** is scoped to one **Room** and reused across tool calls, but its identity is private to the **Tool Runtime Backend**.
-- **Clawman** assigns **Sandboxes** to **Agent Sessions** and routes standardized messages between external **Channel Adapters** and **Agents**.
-- An **Agent** runs inside a **Sandbox** and acts through one **Agent Session**.
+- **Clawman** accepts standardized messages from external **Channel Adapters**, creates **Invocations**, runs the configured **Agent Runner**, and exposes **Deliveries** for outbound adapters.
+- The current **Agent Runner** runs in-process by invoking local Codex CLI; future sandbox backends should be limited to tool execution unless a new design changes that boundary.
 - A **Channel Adapter** belongs outside `clawman` and owns third-party platform protocol state.
 - In the first version, each **Channel Room** maps to exactly one **Room**, and each **Room** belongs to exactly one **Channel Room**.
 - A **Message** belongs to exactly one **Room**.

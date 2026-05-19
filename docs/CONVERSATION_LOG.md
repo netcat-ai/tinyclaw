@@ -194,3 +194,17 @@ agent启动后就去从redis队列中拉取对应的消息，开始消费。
    - sandbox 返回 `error`、上下文取消或 `jobs` 写入失败时，再回退到 `pending`
    - 服务启动时会执行 `ResetSentMessages()`，把残留 `sent` 恢复为 `pending`
 5. `jobs` 当前按 `bot_id` 分队列，control API 通过 `wecom_app_clients(client_id, client_secret)` 做鉴权后，再把 `client_id` 映射到 `bot_id` 过滤任务；`jobs` 本身不再直绑 `client_id`。
+
+---
+
+## 12. Core Model 与 MobileClaw 真机联调（2026-05-20）
+
+### 变更结论
+
+1. 当前代码已切到 Core Model：`rooms/messages/invocations/deliveries` 是主事实模型。
+2. 旧 `jobs`、`wecom_app_clients`、`RoomChat` gRPC、sandbox runtime 路径已从当前代码移除。
+3. `AGENT_RUNNER=codex` 时，Invocation execution module 会调用本机 `codex exec`，并将 final output 写入 Delivery。
+4. MobileClaw 使用 `GET /api/deliveries?channel=<channel>&id=<last_id>` 拉取 delivery，入本地队列后调用 `POST /api/deliveries/{id}/ack`。
+5. 2026-05-20 真机联调通过企业微信链路：
+   `POST /api/inbound -> Codex runner -> delivery -> MobileClaw poll -> 企业微信发送 -> ack`。
+6. 同次测试中微信链路未通过，原因是目标设备上的微信无障碍节点树为空，MobileClaw 无法稳定定位首页、会话、输入框和发送按钮。

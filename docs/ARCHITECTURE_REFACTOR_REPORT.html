@@ -209,6 +209,12 @@
         本报告定义 TinyClaw 的目标架构。系统以 gRPC 写入消息、PostgreSQL 状态机、
         主服务模型运行、sandbox 工具执行、jobs outbox 为核心边界。
       </p>
+      <div class="danger">
+        Historical: this report is superseded by <code>docs/CORE_MODEL_REFACTOR_V1.md</code>.
+        Current code uses Core Model <code>rooms/messages/invocations/deliveries</code>,
+        the in-process Invocation execution module, and MobileClaw delivery polling.
+        It no longer uses <code>jobs</code>, <code>RoomChat</code>, or sandbox-driven message execution.
+      </div>
       <div class="meta">
         <span class="tag">日期：2026-05-13</span>
         <span class="tag">范围：目标架构</span>

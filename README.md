@@ -11,7 +11,7 @@ TinyClaw is a room-scoped agent runtime control plane. The current implementatio
 
 The current codebase has removed the old in-repo agent runtime, sandbox orchestrator, and `RoomChat` gRPC bridge. Channel-specific ingestion and sending should live in external Channel Adapters that call TinyClaw APIs.
 
-Triggered invocations are started by an in-process execution module. Until a real agent runner is configured, triggered invocations fail fast and produce a failure delivery.
+Triggered invocations are started by an in-process execution module. Until an agent runner is configured, triggered invocations fail fast and produce a failure delivery.
 
 Set `AGENT_RUNNER=codex` to run triggered invocations through `codex exec`. Optional Codex runner settings:
 
@@ -43,6 +43,22 @@ channel/wecom/     Legacy WeCom SDK helpers and clients
 
 The root `main` package wires configuration, storage, metrics, and the Core Model API.
 
+## Integration Status
+
+2026-05-20 local phone integration passed for the Enterprise WeChat path:
+
+```text
+POST /api/inbound -> Codex runner -> delivery -> MobileClaw poll -> Enterprise WeChat send -> ack
+```
+
+The verified MobileClaw delivery payload uses:
+
+- `app` / `channel`: `wecom`
+- `recipient_alias` / `channel_room_id`: Enterprise WeChat display alias
+- `text`: final Codex output
+
+The WeChat path is not verified on the current test phone because the installed WeChat exposes an empty accessibility node tree to MobileClaw.
+
 ## Build And Test
 
 ```bash
@@ -66,5 +82,6 @@ Channel adapters own provider-specific configuration. The core service does not 
 ## Design Docs
 
 - [Core Model Refactor V1](./docs/CORE_MODEL_REFACTOR_V1.md)
+- [Next Steps](./docs/NEXT_STEPS.md)
 - [Append-Only Room Messages ADR](./docs/adr/0001-append-only-room-messages.md)
-- [Agent Sandbox Integration V0](./docs/AGENT_SANDBOX_INTEGRATION_V0.md) is historical and no longer describes current code.
+- Historical docs such as [Architecture V0](./docs/ARCHITECTURE_V0.md), [Architecture Refactor 2026-04](./docs/ARCHITECTURE_REFACTOR_2026_04.md), [Agent Sandbox Integration V0](./docs/AGENT_SANDBOX_INTEGRATION_V0.md), and [Room Memory V0](./docs/ROOM_MEMORY_V0.md) no longer describe current code.

@@ -1,5 +1,7 @@
 # tinyclaw Architecture v0
 
+> Historical: superseded by `docs/CORE_MODEL_REFACTOR_V1.md`. This document describes the pre-Core-Model sandbox/jobs design and must not be used as the current implementation contract.
+
 ## 1. 目标与边界
 
 ### 1.1 项目目标

@@ -6,6 +6,7 @@
 - Channel Adapter 作为外部服务调用 TinyClaw HTTP API，不再由主服务直接拉取企业微信 archive。
 - 旧 sandbox runtime、gRPC bridge、`messages/jobs/wecom_app_clients` 链路已经从当前代码中移除。
 - 当前最小闭环是 `inbound message -> invocation -> delivery -> ack`。
+- `AGENT_RUNNER=codex` 已可用；2026-05-20 已用 MobileClaw 真机跑通企业微信发送链路。
 
 ## 当前优先级
 
@@ -14,16 +15,15 @@
    - 明确 `GET /api/deliveries?channel=<channel>&id=<last_id>` 的轮询和 ack 语义。
    - 为企业微信、微信群、斗鱼直播间分别补输入 payload 示例。
 2. 补 invocation 执行侧：
-   - 用进程内 execution module 在 invocation 创建后启动执行。
-   - runner 通过执行上下文读取初始消息和运行中新消息，不直接推进 invocation 状态。
-   - 接入真实 agent runner，当前未配置时会落到 failed 并生成失败 delivery。
-   - 补 queued/running invocation 的启动恢复与超时处理。
+   - 固化 Codex runner 的运行参数、超时、日志与错误分类。
+   - 补 queued/running invocation 在服务重启后的恢复与超时处理。
 3. 补 schema 管理：
    - 把当前 `InitSchema` 迁移到显式 migration。
    - 处理历史库里旧表的保留或清理策略。
 4. 补观测与联调：
    - 为 inbound、invocation、delivery、ack 增加基础指标。
    - 增加重复消息、active invocation append、delivery 重复 ack 的联调用例。
+   - MobileClaw 增加发送结果页，避免只依赖 logcat 判断发送结果。
 
 ## PostgreSQL 当前范围
 
