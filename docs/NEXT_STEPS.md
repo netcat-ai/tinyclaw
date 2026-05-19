@@ -14,7 +14,8 @@
    - 明确 `GET /api/deliveries?channel=<channel>&id=<last_id>` 的轮询和 ack 语义。
    - 为企业微信、微信群、斗鱼直播间分别补输入 payload 示例。
 2. 补 invocation 执行侧：
-   - 用进程内 scheduler 在 invocation 创建后启动执行。
+   - 用进程内 execution module 在 invocation 创建后启动执行。
+   - runner 通过执行上下文读取初始消息和运行中新消息，不直接推进 invocation 状态。
    - 接入真实 agent runner，当前未配置时会落到 failed 并生成失败 delivery。
    - 补 queued/running invocation 的启动恢复与超时处理。
 3. 补 schema 管理：

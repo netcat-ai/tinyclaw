@@ -214,7 +214,9 @@ running -> failed
 queued/running -> cancelled
 ```
 
-Invocation 创建后由 clawman 进程内 scheduler 启动执行，不设计外部 claim API。scheduler 将 `queued` 推进到 `running`，调用当前配置的 agent runner；runner 成功时完成 Invocation，失败时标记 failed 并生成失败 Delivery。
+Invocation 创建后由 clawman 进程内 execution module 启动执行，不设计外部 claim API。execution module 将 `queued` 推进到 `running`，读取 `start_message_id` 边界内的初始上下文，并向 agent runner 提供显式读取运行中新消息的能力。
+
+runner 不直接推进 Core Model 状态。runner 成功返回 final output 后，由 execution module 完成 Invocation；runner 失败时，由 execution module 标记 failed 并生成失败 Delivery。
 
 当前代码保留 `POST /api/invocations/{id}/complete` 和 `POST /api/invocations/{id}/fail` 作为 Core Model 状态推进接口；主流程优先进程内调用同一层 storage 方法。
 
