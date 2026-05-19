@@ -45,9 +45,9 @@ type coreE2EDeliveriesPageResponse struct {
 }
 
 func TestCoreModelE2E(t *testing.T) {
-	dsn := strings.TrimSpace(os.Getenv("CORE_E2E_DATABASE_URL"))
+	dsn := strings.TrimSpace(envOrDefault("CORE_E2E_DATABASE_URL", os.Getenv("DATABASE_URL")))
 	if dsn == "" {
-		t.Skip("CORE_E2E_DATABASE_URL is not set")
+		t.Skip("CORE_E2E_DATABASE_URL or DATABASE_URL is not set")
 	}
 
 	ctx := context.Background()
