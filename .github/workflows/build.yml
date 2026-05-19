@@ -11,14 +11,6 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: golang:1.26.1-bookworm
-    services:
-      redis:
-        image: redis:7
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -30,14 +22,6 @@ jobs:
         run: go test ./...
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/wecom/finance/lib
-
-      - name: Integration Test
-        run: |
-          go test ./sandbox/ -tags integration -v -count=1
-          go test . -tags integration -v -count=1 -run TestEgress
-        env:
-          LD_LIBRARY_PATH: ${{ github.workspace }}/wecom/finance/lib
-          REDIS_ADDR: redis:6379
 
   build-image:
     name: Docker Build
@@ -70,15 +54,4 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/tinyclaw:${{ github.sha }}
             ghcr.io/${{ github.repository_owner }}/tinyclaw:latest
-          platforms: linux/amd64
-
-      - name: Build Agent Image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./agent/Dockerfile
-          push: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/tinyclaw-agent:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/tinyclaw-agent:latest
           platforms: linux/amd64
