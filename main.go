@@ -22,9 +22,6 @@ func main() {
 		slog.Error("load config failed", "err", err)
 		os.Exit(1)
 	}
-	if cfg.WeComBotID == "" {
-		slog.Warn("WECOM_BOT_ID is empty; bot-sent direct messages will be ingested as room_id=<bot_id>")
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), dbStartupTimeout)
 	store, err := OpenStore(ctx, cfg.DatabaseURL)
@@ -46,18 +43,6 @@ func main() {
 	}
 	cancel()
 
-	clawman, err := NewClawman(cfg, store)
-	if err != nil {
-		slog.Error("init clawman failed", "err", err)
-		os.Exit(1)
-	}
-	defer clawman.Close()
-
-	mediaSvc := &clawmanMediaService{
-		tenantID: cfg.WeComCorpID,
-		store:    store,
-		sdk:      clawman.sdk,
-	}
 	coreStore := storage.NewCoreStore(store.DB())
 	coreAPI := httpapi.NewServer(coreStore, cfg.ClawmanAPIToken)
 
@@ -66,12 +51,9 @@ func main() {
 
 	// Start metrics server
 	go serveMetrics(runCtx, cfg.MetricsAddr)
-	go serveControlAPI(runCtx, cfg, store, coreAPI, mediaSvc)
+	go serveControlAPI(runCtx, cfg, store, coreAPI, nil)
 
-	if err := clawman.Run(runCtx); err != nil {
-		slog.Error("clawman stopped with error", "err", err)
-		os.Exit(1)
-	}
+	<-runCtx.Done()
 
 	slog.Info("clawman stopped")
 }

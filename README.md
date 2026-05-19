@@ -51,15 +51,7 @@ Main service:
 - `CLAWMAN_INTERNAL_TOKEN`
 - `METRICS_ADDR` default `:9090`
 
-Legacy WeCom archive ingestion:
-
-- `WECOM_CORP_ID`
-- `WECOM_CORP_SECRET`
-- `WECOM_RSA_PRIVATE_KEY`
-- `WECOM_CONTACT_SECRET`
-- `WECOM_BOT_ID`
-- `WECOM_GROUP_TRIGGER_MENTIONS`
-- `WECOM_GROUP_TRIGGER_KEYWORDS`
+Channel adapters own provider-specific configuration. The core service does not read `WECOM_*` environment variables.
 
 ## Design Docs
 

@@ -282,9 +282,7 @@ func TestResolveRoutingTargetUsesSenderNameForDirectMessage(t *testing.T) {
 
 func TestShouldSkipArchivedMessageSkipsBotSelfMessageInDirectChat(t *testing.T) {
 	clawman := &Clawman{
-		cfg: Config{
-			WeComBotID: "moss",
-		},
+		cfg: WeComArchiveConfig{BotID: "moss"},
 	}
 
 	if !clawman.shouldSkipArchivedMessage(&WeComMessage{From: "moss"}) {
@@ -294,9 +292,7 @@ func TestShouldSkipArchivedMessageSkipsBotSelfMessageInDirectChat(t *testing.T) 
 
 func TestShouldSkipArchivedMessageSkipsBotSelfMessageInGroupChat(t *testing.T) {
 	clawman := &Clawman{
-		cfg: Config{
-			WeComBotID: "moss",
-		},
+		cfg: WeComArchiveConfig{BotID: "moss"},
 	}
 
 	if !clawman.shouldSkipArchivedMessage(&WeComMessage{
@@ -309,9 +305,7 @@ func TestShouldSkipArchivedMessageSkipsBotSelfMessageInGroupChat(t *testing.T) {
 
 func TestShouldSkipArchivedMessageDoesNotSkipHumanGroupMessage(t *testing.T) {
 	clawman := &Clawman{
-		cfg: Config{
-			WeComBotID: "moss",
-		},
+		cfg: WeComArchiveConfig{BotID: "moss"},
 	}
 
 	if clawman.shouldSkipArchivedMessage(&WeComMessage{
@@ -396,9 +390,7 @@ func TestStatusForMessageGroupRequiresMentionOrKeyword(t *testing.T) {
 
 func TestBuildMessageRecordReturnsFatalErrorOnDecryptFailure(t *testing.T) {
 	clawman := &Clawman{
-		cfg: Config{
-			WeComCorpID: "corp-id",
-		},
+		cfg: WeComArchiveConfig{CorpID: "corp-id"},
 	}
 
 	_, _, err := clawman.buildMessageRecord(context.Background(), finance.ChatData{

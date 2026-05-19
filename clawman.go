@@ -45,7 +45,7 @@ type GroupDetail struct {
 }
 
 type Clawman struct {
-	cfg        Config
+	cfg        WeComArchiveConfig
 	store      *Store
 	sdk        *finance.SDK
 	contactAPI *wecom.Client
@@ -56,6 +56,16 @@ type Clawman struct {
 	groupMentionPattern  *regexp.Regexp
 	coldStartCutoff      *time.Time
 	lastSeq              int64
+}
+
+type WeComArchiveConfig struct {
+	CorpID               string
+	CorpSecret           string
+	PrivateKey           string
+	ContactSecret        string
+	BotID                string
+	GroupTriggerMentions []string
+	GroupTriggerKeywords []string
 }
 
 type WeComMessage struct {
@@ -70,17 +80,17 @@ type WeComMessage struct {
 }
 
 func NewClawman(
-	cfg Config,
+	cfg WeComArchiveConfig,
 	store *Store,
 ) (*Clawman, error) {
-	if cfg.WeComCorpID == "" || cfg.WeComCorpSecret == "" || cfg.WeComPrivateKey == "" {
-		return nil, fmt.Errorf("WECOM_CORP_ID/WECOM_CORP_SECRET/WECOM_RSA_PRIVATE_KEY are required")
+	if cfg.CorpID == "" || cfg.CorpSecret == "" || cfg.PrivateKey == "" {
+		return nil, fmt.Errorf("wecom corp id, corp secret, and private key are required")
 	}
 
 	sdk, err := finance.NewSDK(
-		cfg.WeComCorpID,
-		cfg.WeComCorpSecret,
-		cfg.WeComPrivateKey,
+		cfg.CorpID,
+		cfg.CorpSecret,
+		cfg.PrivateKey,
 		"",
 		"",
 		10,
@@ -90,10 +100,10 @@ func NewClawman(
 	}
 
 	var contactAPI *wecom.Client
-	if cfg.WeComContactSecret != "" {
-		contactAPI = wecom.NewClient(cfg.WeComCorpID, cfg.WeComContactSecret)
+	if cfg.ContactSecret != "" {
+		contactAPI = wecom.NewClient(cfg.CorpID, cfg.ContactSecret)
 	}
-	archiveAPI := wecom.NewClient(cfg.WeComCorpID, cfg.WeComCorpSecret)
+	archiveAPI := wecom.NewClient(cfg.CorpID, cfg.CorpSecret)
 
 	return &Clawman{
 		cfg:                  cfg,
@@ -102,8 +112,8 @@ func NewClawman(
 		contactAPI:           contactAPI,
 		archiveAPI:           archiveAPI,
 		cache:                newTTLCache(),
-		groupTriggerKeywords: normalizeTriggerTerms(cfg.WeComGroupTriggerKeywords),
-		groupMentionPattern:  buildGroupMentionPattern(cfg.WeComGroupTriggerMentions),
+		groupTriggerKeywords: normalizeTriggerTerms(cfg.GroupTriggerKeywords),
+		groupMentionPattern:  buildGroupMentionPattern(cfg.GroupTriggerMentions),
 	}, nil
 }
 
@@ -114,7 +124,7 @@ func (r *Clawman) Close() {
 }
 
 func (r *Clawman) Run(ctx context.Context) error {
-	lastSeq, hasMessages, err := r.store.GetMaxSeq(ctx, r.cfg.WeComCorpID)
+	lastSeq, hasMessages, err := r.store.GetMaxSeq(ctx, r.cfg.CorpID)
 	if err != nil {
 		return fmt.Errorf("get startup seq: %w", err)
 	}
@@ -265,7 +275,7 @@ func (r *Clawman) buildMessageRecord(ctx context.Context, chatData finance.ChatD
 
 	record := MessageRecord{
 		Seq:       chatData.Seq,
-		TenantID:  r.cfg.WeComCorpID,
+		TenantID:  r.cfg.CorpID,
 		MsgID:     msg.MsgID,
 		RoomID:    roomID,
 		FromID:    msg.From,
@@ -355,7 +365,7 @@ func (r *Clawman) shouldSkipArchivedMessage(msg *WeComMessage) bool {
 	if msg == nil {
 		return false
 	}
-	if r.cfg.WeComBotID != "" && msg.From == r.cfg.WeComBotID {
+	if r.cfg.BotID != "" && msg.From == r.cfg.BotID {
 		return true
 	}
 	return false

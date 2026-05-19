@@ -4,8 +4,4 @@ metadata:
   name: tinyclaw-config
   namespace: claw
 data:
-  WECOM_CORP_ID: "replace-me"
-  WECOM_BOT_ID: "moss"
-  WECOM_GROUP_TRIGGER_MENTIONS: "moss,私云助理,私云虾虾"
-  WECOM_GROUP_TRIGGER_KEYWORDS: "虾虾,小助理"
   CONTROL_API_ADDR: ":8081"
