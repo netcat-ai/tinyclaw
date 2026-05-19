@@ -11,7 +11,7 @@
 
 1. 补 Channel Adapter 契约：
    - 明确 `POST /api/inbound` 的 channel 字段、source message id、room type、payload 约定。
-   - 明确 `GET /api/deliveries?channel=<channel>&seq=<last_seq>` 的轮询和 ack 语义。
+   - 明确 `GET /api/deliveries?channel=<channel>&id=<last_id>` 的轮询和 ack 语义。
    - 为企业微信、微信群、斗鱼直播间分别补输入 payload 示例。
 2. 补 invocation 执行侧：
    - 定义 agent executor 如何 claim queued invocation。

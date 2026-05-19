@@ -54,7 +54,6 @@ type Invocation struct {
 
 type Delivery struct {
 	ID           int64
-	Seq          int64
 	RoomID       int64
 	InvocationID int64
 	Payload      string
@@ -71,7 +70,6 @@ type State struct {
 	NextMessageID    int64
 	NextInvocationID int64
 	NextDeliveryID   int64
-	NextDeliverySeq  int64
 	LastEvent        string
 }
 
@@ -82,7 +80,6 @@ func NewState() State {
 		NextMessageID:    1,
 		NextInvocationID: FirstInvocationID,
 		NextDeliveryID:   1,
-		NextDeliverySeq:  1,
 		LastEvent:        "prototype initialized",
 	}
 }
@@ -124,14 +121,12 @@ func CompleteWithOutput(s State) State {
 	invocation.OutputSnapshot = snapshotOutput("completed", invocation.Output)
 	s.Deliveries = append(s.Deliveries, Delivery{
 		ID:           s.NextDeliveryID,
-		Seq:          s.NextDeliverySeq,
 		RoomID:       invocation.RoomID,
 		InvocationID: invocation.ID,
 		Payload:      invocation.Output,
 		Status:       DeliveryStatusPending,
 	})
 	s.NextDeliveryID++
-	s.NextDeliverySeq++
 	s.LastEvent = fmt.Sprintf("completed invocation %d and created delivery", invocation.ID)
 	return s
 }
@@ -162,14 +157,12 @@ func FailActive(s State) State {
 	invocation.OutputSnapshot = snapshotOutput("failed", invocation.Output)
 	s.Deliveries = append(s.Deliveries, Delivery{
 		ID:           s.NextDeliveryID,
-		Seq:          s.NextDeliverySeq,
 		RoomID:       invocation.RoomID,
 		InvocationID: invocation.ID,
 		Payload:      invocation.Output,
 		Status:       DeliveryStatusPending,
 	})
 	s.NextDeliveryID++
-	s.NextDeliverySeq++
 	s.LastEvent = fmt.Sprintf("failed invocation %d and created failure delivery", invocation.ID)
 	return s
 }

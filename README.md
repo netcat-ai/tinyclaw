@@ -14,7 +14,7 @@ The current codebase has removed the old in-repo agent runtime, sandbox orchestr
 `clawman` now exposes the Core Model HTTP interface:
 
 - `POST /api/inbound`
-- `GET /api/deliveries?channel=<channel>&seq=<last_seq>`
+- `GET /api/deliveries?channel=<channel>&id=<last_id>`
 - `POST /api/deliveries/{id}/ack`
 - `POST /api/invocations/{id}/complete`
 - `POST /api/invocations/{id}/fail`

@@ -184,20 +184,20 @@ func (s *CoreStore) FailCoreInvocation(ctx context.Context, invocationID int64, 
 	return core.InvocationResult{Invocation: invocation, Delivery: &delivery}, nil
 }
 
-func (s *CoreStore) ListCoreDeliveries(ctx context.Context, channel string, afterSeq int64) ([]core.Delivery, error) {
+func (s *CoreStore) ListCoreDeliveries(ctx context.Context, channel string, afterID int64) ([]core.Delivery, error) {
 	channel = strings.TrimSpace(channel)
 	if channel == "" {
 		return nil, fmt.Errorf("channel is required")
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT d.id, d.seq, d.room_id, d.invocation_id, d.payload, d.status, d.created_at, d.acked_at
+		SELECT d.id, d.room_id, d.invocation_id, d.payload, d.status, d.created_at, d.acked_at
 		FROM deliveries d
 		JOIN rooms r ON r.id = d.room_id
 		WHERE r.channel = $1
-		  AND d.seq > $2
+		  AND d.id > $2
 		  AND d.status = $3
-		ORDER BY d.seq ASC
-	`, channel, afterSeq, core.DeliveryStatusPending)
+		ORDER BY d.id ASC
+	`, channel, afterID, core.DeliveryStatusPending)
 	if err != nil {
 		return nil, fmt.Errorf("list core deliveries: %w", err)
 	}

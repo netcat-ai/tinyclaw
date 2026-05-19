@@ -38,7 +38,6 @@ CREATE TABLE IF NOT EXISTS invocations (
 
 CREATE TABLE IF NOT EXISTS deliveries (
 	id BIGSERIAL PRIMARY KEY,
-	seq BIGSERIAL UNIQUE,
 	room_id BIGINT NOT NULL REFERENCES rooms(id),
 	invocation_id BIGINT NOT NULL REFERENCES invocations(id),
 	payload JSONB NOT NULL,
@@ -46,6 +45,3 @@ CREATE TABLE IF NOT EXISTS deliveries (
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	acked_at TIMESTAMPTZ
 );
-
-CREATE INDEX IF NOT EXISTS idx_deliveries_status_seq
-ON deliveries (status, seq);

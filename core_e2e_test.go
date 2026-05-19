@@ -35,14 +35,13 @@ type coreE2EInvocationResponse struct {
 
 type coreE2EDeliveryResponse struct {
 	ID           int64 `json:"id"`
-	Seq          int64 `json:"seq"`
 	InvocationID int64 `json:"invocation_id"`
 	Status       int16 `json:"status"`
 }
 
 type coreE2EDeliveriesPageResponse struct {
 	Deliveries []coreE2EDeliveryResponse `json:"deliveries"`
-	NextSeq    int64                     `json:"next_seq"`
+	NextID     int64                     `json:"next_id"`
 }
 
 func TestCoreModelE2E(t *testing.T) {
@@ -161,9 +160,9 @@ func postInvocationActionE2E(t *testing.T, api http.Handler, invocationID int64,
 	return payload
 }
 
-func listDeliveriesE2E(t *testing.T, api http.Handler, channel string, seq int64) coreE2EDeliveriesPageResponse {
+func listDeliveriesE2E(t *testing.T, api http.Handler, channel string, id int64) coreE2EDeliveriesPageResponse {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/deliveries?channel=%s&seq=%d", channel, seq), nil)
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/deliveries?channel=%s&id=%d", channel, id), nil)
 	req.Header.Set("Authorization", "Bearer e2e-token")
 	rec := httptest.NewRecorder()
 	api.ServeHTTP(rec, req)

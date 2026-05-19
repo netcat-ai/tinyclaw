@@ -15,7 +15,7 @@ type CoreStore interface {
 	IngestCoreMessage(ctx context.Context, input core.InboundMessageInput) (core.InboundMessageResult, error)
 	CompleteCoreInvocation(ctx context.Context, invocationID int64, input core.CompleteInvocationInput) (core.InvocationResult, error)
 	FailCoreInvocation(ctx context.Context, invocationID int64, detail string) (core.InvocationResult, error)
-	ListCoreDeliveries(ctx context.Context, channel string, afterSeq int64) ([]core.Delivery, error)
+	ListCoreDeliveries(ctx context.Context, channel string, afterID int64) ([]core.Delivery, error)
 	AckCoreDelivery(ctx context.Context, id int64) (core.Delivery, error)
 }
 
@@ -92,7 +92,6 @@ type coreInvocationResponse struct {
 
 type coreDeliveryResponse struct {
 	ID           int64           `json:"id"`
-	Seq          int64           `json:"seq"`
 	RoomID       int64           `json:"room_id"`
 	InvocationID int64           `json:"invocation_id"`
 	Payload      json.RawMessage `json:"payload"`
@@ -101,7 +100,7 @@ type coreDeliveryResponse struct {
 
 type deliveriesPageResponse struct {
 	Deliveries []coreDeliveryResponse `json:"deliveries"`
-	NextSeq    int64                  `json:"next_seq"`
+	NextID     int64                  `json:"next_id"`
 }
 
 type invocationActionRequest struct {
@@ -155,29 +154,29 @@ func (s *Server) handleListDeliveries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	channel := strings.TrimSpace(r.URL.Query().Get("channel"))
-	rawSeq := strings.TrimSpace(r.URL.Query().Get("seq"))
-	if rawSeq == "" {
-		rawSeq = "0"
+	rawID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if rawID == "" {
+		rawID = "0"
 	}
-	afterSeq, err := strconv.ParseInt(rawSeq, 10, 64)
-	if err != nil || afterSeq < 0 {
-		writeAPIError(w, http.StatusBadRequest, "invalid_request", "seq must be a non-negative integer")
+	afterID, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil || afterID < 0 {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "id must be a non-negative integer")
 		return
 	}
-	deliveries, err := s.core.ListCoreDeliveries(r.Context(), channel, afterSeq)
+	deliveries, err := s.core.ListCoreDeliveries(r.Context(), channel, afterID)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "list_failed", err.Error())
 		return
 	}
 	response := make([]coreDeliveryResponse, 0, len(deliveries))
-	nextSeq := afterSeq
+	nextID := afterID
 	for _, delivery := range deliveries {
 		response = append(response, deliveryToResponse(delivery))
-		if delivery.Seq > nextSeq {
-			nextSeq = delivery.Seq
+		if delivery.ID > nextID {
+			nextID = delivery.ID
 		}
 	}
-	writeAPIJSON(w, http.StatusOK, deliveriesPageResponse{Deliveries: response, NextSeq: nextSeq})
+	writeAPIJSON(w, http.StatusOK, deliveriesPageResponse{Deliveries: response, NextID: nextID})
 }
 
 func (s *Server) handleDeliveryAction(w http.ResponseWriter, r *http.Request) {
@@ -349,7 +348,6 @@ func deliveryPtrToResponse(delivery *core.Delivery) *coreDeliveryResponse {
 func deliveryToResponse(delivery core.Delivery) coreDeliveryResponse {
 	return coreDeliveryResponse{
 		ID:           delivery.ID,
-		Seq:          delivery.Seq,
 		RoomID:       delivery.RoomID,
 		InvocationID: delivery.InvocationID,
 		Payload:      delivery.Payload,

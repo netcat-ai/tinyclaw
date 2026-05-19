@@ -95,8 +95,8 @@ func render(state model.State) {
 		fmt.Printf("  %snone%s\n", dim, reset)
 	}
 	for _, delivery := range state.Deliveries {
-		fmt.Printf("  #%d seq=%d room=%d invocation=%d status=%s payload=%q\n",
-			delivery.ID, delivery.Seq, delivery.RoomID, delivery.InvocationID, deliveryStatusLabel(delivery.Status), delivery.Payload)
+		fmt.Printf("  #%d room=%d invocation=%d status=%s payload=%q\n",
+			delivery.ID, delivery.RoomID, delivery.InvocationID, deliveryStatusLabel(delivery.Status), delivery.Payload)
 	}
 
 	fmt.Printf("\n%sKeys%s\n", bold, reset)

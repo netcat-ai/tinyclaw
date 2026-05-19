@@ -236,7 +236,7 @@ func createCoreDeliveryTx(ctx context.Context, tx *sql.Tx, roomID int64, invocat
 			status
 		)
 		VALUES ($1, $2, $3, $4)
-		RETURNING id, seq, room_id, invocation_id, payload, status, created_at, acked_at
+		RETURNING id, room_id, invocation_id, payload, status, created_at, acked_at
 	`, roomID, invocationID, payload, core.DeliveryStatusPending)
 	delivery, err := scanCoreDelivery(row)
 	if err != nil {
@@ -254,10 +254,9 @@ func ackCoreDelivery(ctx context.Context, db *sql.DB, id int64) (core.Delivery, 
 		    acked_at = NOW()
 		WHERE id = $1
 		  AND status = $3
-		RETURNING id, seq, room_id, invocation_id, payload, status, created_at, acked_at
+		RETURNING id, room_id, invocation_id, payload, status, created_at, acked_at
 	`, id, core.DeliveryStatusAcked, core.DeliveryStatusPending).Scan(
 		&delivery.ID,
-		&delivery.Seq,
 		&delivery.RoomID,
 		&delivery.InvocationID,
 		&delivery.Payload,
@@ -342,7 +341,6 @@ func scanCoreDelivery(row scanner) (core.Delivery, error) {
 	var ackedAt sql.NullTime
 	if err := row.Scan(
 		&delivery.ID,
-		&delivery.Seq,
 		&delivery.RoomID,
 		&delivery.InvocationID,
 		&delivery.Payload,

@@ -32,8 +32,8 @@ func (f fakeCoreStore) FailCoreInvocation(ctx context.Context, invocationID int6
 	return f.failFn(ctx, invocationID, detail)
 }
 
-func (f fakeCoreStore) ListCoreDeliveries(ctx context.Context, channel string, afterSeq int64) ([]core.Delivery, error) {
-	return f.listFn(ctx, channel, afterSeq)
+func (f fakeCoreStore) ListCoreDeliveries(ctx context.Context, channel string, afterID int64) ([]core.Delivery, error) {
+	return f.listFn(ctx, channel, afterID)
 }
 
 func (f fakeCoreStore) AckCoreDelivery(ctx context.Context, id int64) (core.Delivery, error) {
@@ -137,21 +137,20 @@ func TestHandleInboundReturnsIdempotentMessageResult(t *testing.T) {
 	}
 }
 
-func TestHandleListDeliveriesFiltersByChannelAndSeq(t *testing.T) {
+func TestHandleListDeliveriesFiltersByChannelAndID(t *testing.T) {
 	api := &Server{
 		apiToken: "api-secret",
 		core: fakeCoreStore{
-			listFn: func(_ context.Context, channel string, afterSeq int64) ([]core.Delivery, error) {
+			listFn: func(_ context.Context, channel string, afterID int64) ([]core.Delivery, error) {
 				if channel != "wecom" {
 					t.Fatalf("channel = %q, want wecom", channel)
 				}
-				if afterSeq != 12 {
-					t.Fatalf("afterSeq = %d, want 12", afterSeq)
+				if afterID != 12 {
+					t.Fatalf("afterID = %d, want 12", afterID)
 				}
 				return []core.Delivery{
 					{
-						ID:           7,
-						Seq:          15,
+						ID:           15,
 						RoomID:       10,
 						InvocationID: 1000,
 						Payload:      json.RawMessage(`{"type":"text","text":"hi"}`),
@@ -162,7 +161,7 @@ func TestHandleListDeliveriesFiltersByChannelAndSeq(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/deliveries?channel=wecom&seq=12", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/deliveries?channel=wecom&id=12", nil)
 	req.Header.Set("Authorization", "Bearer api-secret")
 	rec := httptest.NewRecorder()
 
@@ -175,10 +174,10 @@ func TestHandleListDeliveriesFiltersByChannelAndSeq(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if payload.NextSeq != 15 {
-		t.Fatalf("next_seq = %d, want 15", payload.NextSeq)
+	if payload.NextID != 15 {
+		t.Fatalf("next_id = %d, want 15", payload.NextID)
 	}
-	if len(payload.Deliveries) != 1 || payload.Deliveries[0].Seq != 15 {
+	if len(payload.Deliveries) != 1 || payload.Deliveries[0].ID != 15 {
 		t.Fatalf("unexpected deliveries: %+v", payload.Deliveries)
 	}
 }
@@ -193,7 +192,6 @@ func TestHandleDeliveryAckRetainsDeliveryRecord(t *testing.T) {
 				}
 				return core.Delivery{
 					ID:           7,
-					Seq:          15,
 					RoomID:       10,
 					InvocationID: 1000,
 					Payload:      json.RawMessage(`{"type":"text","text":"hi"}`),
@@ -236,7 +234,6 @@ func TestHandleInvocationCompleteCreatesDeliveryResponse(t *testing.T) {
 					Invocation: core.Invocation{ID: 1000, RoomID: 10, Status: core.InvocationStatusCompleted},
 					Delivery: &core.Delivery{
 						ID:           1,
-						Seq:          1,
 						RoomID:       10,
 						InvocationID: 1000,
 						Payload:      json.RawMessage(`{"type":"text","text":"done"}`),

@@ -63,7 +63,6 @@ type Invocation struct {
 
 type Delivery struct {
 	ID           int64
-	Seq          int64
 	RoomID       int64
 	InvocationID int64
 	Payload      json.RawMessage
