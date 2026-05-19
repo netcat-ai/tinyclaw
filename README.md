@@ -11,6 +11,8 @@ TinyClaw is a room-scoped agent runtime control plane. The current implementatio
 
 The current codebase has removed the old in-repo agent runtime, sandbox orchestrator, and `RoomChat` gRPC bridge. Channel-specific ingestion and sending should live in external Channel Adapters that call TinyClaw APIs.
 
+Triggered invocations are started by an in-process scheduler. Until a real agent runner is configured, triggered invocations fail fast and produce a failure delivery.
+
 `clawman` now exposes the Core Model HTTP interface:
 
 - `POST /api/inbound`
@@ -27,6 +29,7 @@ API requests use `Authorization: Bearer $CLAWMAN_API_TOKEN`.
 internal/core      Core Model types and Trigger Policy
 internal/storage   PostgreSQL implementation for Core Model persistence
 internal/api       HTTP adapter for Core Model routes
+internal/executor  In-process invocation scheduler and runner interface
 channel/wecom/     Legacy WeCom SDK helpers and clients
 ```
 

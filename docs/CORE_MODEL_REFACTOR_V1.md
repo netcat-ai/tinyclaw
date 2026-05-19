@@ -101,16 +101,13 @@ check(dispatch_state in (0, 1) or dispatch_state >= 1000)
 ```text
 id bigint primary key
 room_id bigint not null references rooms(id)
-status text not null
+status smallint not null
 trigger_message_id bigint null references messages(id)
 input_snapshot jsonb not null
 output_snapshot jsonb null
 created_at timestamptz not null
 started_at timestamptz null
 completed_at timestamptz null
-
-check(id >= 1000)
-check(status in ('queued', 'running', 'completed', 'failed', 'cancelled'))
 ```
 
 Invocation id 从 `1000` 开始，避免与 `messages.dispatch_state` sentinel 冲突。
@@ -240,6 +237,10 @@ running -> failed
 queued/running -> cancelled
 ```
 
+Invocation 创建后由 clawman 进程内 scheduler 启动执行，不设计外部 claim API。scheduler 将 `queued` 推进到 `running`，调用当前配置的 agent runner；runner 成功时完成 Invocation，失败时标记 failed 并生成失败 Delivery。
+
+当前代码保留 `POST /api/invocations/{id}/complete` 和 `POST /api/invocations/{id}/fail` 作为 Core Model 状态推进接口；主流程优先进程内调用同一层 storage 方法。
+
 Agent final output 处理：
 
 ```text
@@ -277,7 +278,7 @@ ack 后 Delivery 保留，只更新状态。
 以下内容单独设计，不写入本文：
 
 - clawman 内部 sandbox 模块
-- sandbox lifecycle / claim / runtime connection
+- sandbox lifecycle / runtime connection
 - Tool Runtime Backend：后续优先按“clawman 持有 agent loop，sandbox 只执行工具调用”设计
 - durable workflow engine：第一版先用 `invocations.status`、`input_snapshot`、`output_snapshot` 和 `dispatch_state` 承载恢复语义
 - memory capability

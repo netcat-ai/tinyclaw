@@ -207,6 +207,25 @@ func listWaitingMessageIDsTx(ctx context.Context, tx *sql.Tx, roomID int64) ([]i
 	return ids, nil
 }
 
+func updateInvocationRunningTx(ctx context.Context, tx *sql.Tx, invocationID int64) (core.Invocation, error) {
+	row := tx.QueryRowContext(ctx, `
+		UPDATE invocations
+		SET status = $2,
+		    started_at = NOW()
+		WHERE id = $1
+		  AND status = $3
+		RETURNING id, room_id, status, trigger_message_id, input_snapshot, output_snapshot, created_at, started_at, completed_at
+	`, invocationID, core.InvocationStatusRunning, core.InvocationStatusQueued)
+	invocation, err := scanCoreInvocation(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return core.Invocation{}, fmt.Errorf("queued invocation %d not found", invocationID)
+		}
+		return core.Invocation{}, fmt.Errorf("start invocation: %w", err)
+	}
+	return invocation, nil
+}
+
 func updateInvocationTerminalTx(ctx context.Context, tx *sql.Tx, invocationID int64, status int16, output json.RawMessage) (core.Invocation, error) {
 	row := tx.QueryRowContext(ctx, `
 		UPDATE invocations

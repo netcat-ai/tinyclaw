@@ -152,6 +152,23 @@ func (s *CoreStore) CompleteCoreInvocation(ctx context.Context, invocationID int
 	return core.InvocationResult{Invocation: invocation, Delivery: delivery}, nil
 }
 
+func (s *CoreStore) StartCoreInvocation(ctx context.Context, invocationID int64) (core.Invocation, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return core.Invocation{}, fmt.Errorf("begin start invocation tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	invocation, err := updateInvocationRunningTx(ctx, tx, invocationID)
+	if err != nil {
+		return core.Invocation{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return core.Invocation{}, fmt.Errorf("commit start invocation: %w", err)
+	}
+	return invocation, nil
+}
+
 func (s *CoreStore) FailCoreInvocation(ctx context.Context, invocationID int64, detail string) (core.InvocationResult, error) {
 	detail = strings.TrimSpace(detail)
 	if detail == "" {

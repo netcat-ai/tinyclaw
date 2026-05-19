@@ -11,6 +11,7 @@ import (
 	"time"
 
 	httpapi "tinyclaw/internal/api"
+	"tinyclaw/internal/executor"
 	"tinyclaw/internal/storage"
 )
 
@@ -40,11 +41,12 @@ func main() {
 	}
 	cancel()
 
-	coreStore := storage.NewCoreStore(store.DB())
-	coreAPI := httpapi.NewServer(coreStore, cfg.ClawmanAPIToken)
-
 	runCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	coreStore := storage.NewCoreStore(store.DB())
+	invocationScheduler := executor.NewScheduler(runCtx, coreStore, executor.UnconfiguredRunner{})
+	coreAPI := httpapi.NewServer(coreStore, cfg.ClawmanAPIToken, invocationScheduler)
 
 	// Start metrics server
 	go serveMetrics(runCtx, cfg.MetricsAddr)

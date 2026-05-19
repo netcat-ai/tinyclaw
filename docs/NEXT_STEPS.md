@@ -14,9 +14,9 @@
    - 明确 `GET /api/deliveries?channel=<channel>&id=<last_id>` 的轮询和 ack 语义。
    - 为企业微信、微信群、斗鱼直播间分别补输入 payload 示例。
 2. 补 invocation 执行侧：
-   - 定义 agent executor 如何 claim queued invocation。
-   - 持久化最终 prompt / input snapshot。
-   - 失败时调用 `POST /api/invocations/{id}/fail` 并生成失败 delivery。
+   - 用进程内 scheduler 在 invocation 创建后启动执行。
+   - 接入真实 agent runner，当前未配置时会落到 failed 并生成失败 delivery。
+   - 补 queued/running invocation 的启动恢复与超时处理。
 3. 补 schema 管理：
    - 把当前 `InitSchema` 迁移到显式 migration。
    - 处理历史库里旧表的保留或清理策略。

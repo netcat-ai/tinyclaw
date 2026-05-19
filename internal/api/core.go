@@ -19,17 +19,27 @@ type CoreStore interface {
 	AckCoreDelivery(ctx context.Context, id int64) (core.Delivery, error)
 }
 
-type Server struct {
-	core     CoreStore
-	apiToken string
-	mux      *http.ServeMux
+type InvocationScheduler interface {
+	ScheduleInvocation(invocationID int64)
 }
 
-func NewServer(core CoreStore, apiToken string) *Server {
+type Server struct {
+	core      CoreStore
+	scheduler InvocationScheduler
+	apiToken  string
+	mux       *http.ServeMux
+}
+
+func NewServer(core CoreStore, apiToken string, schedulers ...InvocationScheduler) *Server {
+	var scheduler InvocationScheduler
+	if len(schedulers) > 0 {
+		scheduler = schedulers[0]
+	}
 	server := &Server{
-		core:     core,
-		apiToken: strings.TrimSpace(apiToken),
-		mux:      http.NewServeMux(),
+		core:      core,
+		scheduler: scheduler,
+		apiToken:  strings.TrimSpace(apiToken),
+		mux:       http.NewServeMux(),
 	}
 	server.RegisterRoutes(server.mux)
 	return server
@@ -132,6 +142,9 @@ func (s *Server) handleInbound(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
+	}
+	if result.Triggered && result.Invocation != nil && s.scheduler != nil {
+		s.scheduler.ScheduleInvocation(result.Invocation.ID)
 	}
 
 	writeAPIJSON(w, http.StatusOK, inboundResponse{

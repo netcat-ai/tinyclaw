@@ -40,6 +40,14 @@ func (f fakeCoreStore) AckCoreDelivery(ctx context.Context, id int64) (core.Deli
 	return f.ackFn(ctx, id)
 }
 
+type fakeInvocationScheduler struct {
+	ids []int64
+}
+
+func (s *fakeInvocationScheduler) ScheduleInvocation(invocationID int64) {
+	s.ids = append(s.ids, invocationID)
+}
+
 func TestHealthz(t *testing.T) {
 	api := NewServer(nil, "api-secret")
 
@@ -134,6 +142,64 @@ func TestHandleInboundReturnsIdempotentMessageResult(t *testing.T) {
 	}
 	if payload.Message.DispatchState != core.DispatchWaiting {
 		t.Fatalf("dispatch_state = %d, want %d", payload.Message.DispatchState, core.DispatchWaiting)
+	}
+}
+
+func TestHandleInboundSchedulesTriggeredInvocation(t *testing.T) {
+	scheduler := &fakeInvocationScheduler{}
+	api := &Server{
+		apiToken:  "api-secret",
+		scheduler: scheduler,
+		core: fakeCoreStore{
+			ingestFn: func(_ context.Context, input core.InboundMessageInput) (core.InboundMessageResult, error) {
+				return core.InboundMessageResult{
+					Room: core.Room{
+						ID:              10,
+						TenantID:        core.DefaultTenantID,
+						Channel:         input.Channel,
+						ChannelRoomID:   input.ChannelRoomID,
+						ChannelRoomType: input.ChannelRoomType,
+					},
+					Message: core.Message{
+						ID:              20,
+						RoomID:          10,
+						SourceMessageID: input.SourceMessageID,
+						SenderID:        input.SenderID,
+						Payload:         input.Payload,
+						DispatchState:   1000,
+					},
+					Invocation: &core.Invocation{
+						ID:               1000,
+						RoomID:           10,
+						Status:           core.InvocationStatusQueued,
+						TriggerMessageID: 20,
+					},
+					Triggered: true,
+				}, nil
+			},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/inbound", strings.NewReader(`{
+		"channel":"wecom",
+		"channel_room_id":"room-1",
+		"channel_room_type":"group",
+		"source_message_id":"msg-1",
+		"sender_id":"alice",
+		"message_time":"2026-05-19T10:00:00Z",
+		"payload":{"type":"text","text":"@bot hello"},
+		"trigger":true
+	}`))
+	req.Header.Set("Authorization", "Bearer api-secret")
+	rec := httptest.NewRecorder()
+
+	api.handleInbound(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(scheduler.ids) != 1 || scheduler.ids[0] != 1000 {
+		t.Fatalf("scheduled ids = %#v, want [1000]", scheduler.ids)
 	}
 }
 

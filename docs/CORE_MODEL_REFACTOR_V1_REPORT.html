@@ -424,7 +424,7 @@ check(dispatch_state in (0, 1) or dispatch_state &gt;= 1000)</code></pre>
         <tbody>
           <tr><td><code>id</code></td><td><code>bigint primary key</code></td><td>从 <code>1000</code> 开始。</td></tr>
           <tr><td><code>room_id</code></td><td><code>bigint not null</code></td><td>第一版直接挂 Room。</td></tr>
-          <tr><td><code>status</code></td><td><code>text not null</code></td><td><code>queued</code>、<code>running</code>、<code>completed</code>、<code>failed</code>、<code>cancelled</code>。</td></tr>
+          <tr><td><code>status</code></td><td><code>smallint not null</code></td><td><code>0</code> queued、<code>1</code> running、<code>2</code> completed、<code>3</code> failed、<code>4</code> cancelled。</td></tr>
           <tr><td><code>trigger_message_id</code></td><td><code>bigint null</code></td><td>触发本次执行的 Message。</td></tr>
           <tr><td><code>input_snapshot</code></td><td><code>jsonb not null</code></td><td>Invocation 创建时的初始结构化输入快照。</td></tr>
           <tr><td><code>output_snapshot</code></td><td><code>jsonb null</code></td><td>agent 执行结果，第一版可保存 final output 或失败提示。</td></tr>
@@ -432,13 +432,6 @@ check(dispatch_state in (0, 1) or dispatch_state &gt;= 1000)</code></pre>
           <tr><td><code>completed_at</code></td><td><code>timestamptz null</code></td><td>完成时间。</td></tr>
         </tbody>
       </table>
-      <pre><code>check(id &gt;= 1000)
-check(status in ('queued', 'running', 'completed', 'failed', 'cancelled'))
-
-CREATE UNIQUE INDEX uniq_active_invocation_per_room
-ON invocations (room_id)
-WHERE status IN ('queued', 'running');</code></pre>
-
       <div class="note">
         <code>input_snapshot</code> 是 Invocation 创建时的可复盘初始输入事实，不是从当前
         <code>messages</code> 规则重新推导的缓存。它应包含初始 prompt、被选入的 messages、
@@ -457,11 +450,10 @@ WHERE status IN ('queued', 'running');</code></pre>
         </thead>
         <tbody>
           <tr><td><code>id</code></td><td><code>bigint primary key</code></td><td>内部 Delivery ID。</td></tr>
-          <tr><td><code>seq</code></td><td><code>bigint identity</code></td><td>全局递增 outbox offset。</td></tr>
           <tr><td><code>room_id</code></td><td><code>bigint not null</code></td><td>通过 Room 找到 channel 目标。</td></tr>
           <tr><td><code>invocation_id</code></td><td><code>bigint not null</code></td><td>来源 Invocation。</td></tr>
           <tr><td><code>payload</code></td><td><code>jsonb not null</code></td><td>待发送内容。</td></tr>
-          <tr><td><code>status</code></td><td><code>text not null</code></td><td><code>pending</code>、<code>acked</code>、<code>failed</code>。</td></tr>
+          <tr><td><code>status</code></td><td><code>smallint not null</code></td><td><code>0</code> pending、<code>1</code> acked、<code>2</code> failed。</td></tr>
           <tr><td><code>acked_at</code></td><td><code>timestamptz null</code></td><td>adapter ack 时间。</td></tr>
         </tbody>
       </table>
@@ -546,6 +538,12 @@ queued -> failed
 running -> failed
 queued/running -> cancelled</code></pre>
 
+      <p>
+        Invocation 创建后由 clawman 进程内 scheduler 启动执行，不设计外部 claim API。
+        scheduler 将 <code>queued</code> 推进到 <code>running</code>，调用当前配置的 agent runner；
+        runner 成功时完成 Invocation，失败时标记 failed 并生成失败 Delivery。
+      </p>
+
       <p><code>failed</code> 是终态；第一版不自动重试 failed Invocation。Invocation 失败时，clawman 创建一条失败提示 Delivery，后续用户重新触发会创建新的 Invocation。</p>
     </section>
 
@@ -553,10 +551,10 @@ queued/running -> cancelled</code></pre>
       <h2>6. Delivery Pull API</h2>
       <p>
         Adapter 轮询 clawman deliveries，并自行负责真实外发和短期重试。
-        <code>deliveries.seq</code> 是全局递增 outbox offset，按 channel 过滤时允许有空洞。
+        Adapter 使用 <code>deliveries.id</code> 作为轮询游标。
       </p>
 
-      <pre><code>GET /api/deliveries?channel=wecom&amp;seq=123
+      <pre><code>GET /api/deliveries?channel=wecom&amp;id=123
 Authorization: Bearer &lt;CLAWMAN_API_TOKEN&gt;</code></pre>
 
       <p>成功发送后 ack：</p>
@@ -616,7 +614,7 @@ Authorization: Bearer &lt;CLAWMAN_API_TOKEN&gt;</code></pre>
       <h2>8. 暂不覆盖</h2>
       <ul>
         <li>clawman 内部 sandbox 模块。</li>
-        <li>sandbox lifecycle / claim / runtime connection。</li>
+        <li>sandbox lifecycle / runtime connection。</li>
         <li>Tool Runtime Backend：后续优先按“clawman 持有 agent loop，sandbox 只执行工具调用”设计。</li>
         <li>durable workflow engine：第一版先用 <code>invocations.status</code>、<code>input_snapshot</code>、<code>output_snapshot</code> 和 <code>dispatch_state</code> 承载恢复语义。</li>
         <li>memory capability。</li>
