@@ -1,16 +1,8 @@
 package main
 
 import (
-	"fmt"
 	"os"
-	"strconv"
 	"strings"
-)
-
-const (
-	defaultSandboxNamespace       = "claw"
-	defaultSandboxTemplate        = "tinyclaw-agent-template"
-	defaultSandboxWakePlaceholder = "虾虾正在起床，请稍等一下下～"
 )
 
 type Config struct {
@@ -24,22 +16,14 @@ type Config struct {
 	WeComGroupTriggerMentions []string
 	WeComGroupTriggerKeywords []string
 
-	SandboxNamespace       string
-	SandboxTemplateName    string
-	SandboxReadyTimeoutSec int
-	SandboxWakePlaceholder string
-
-	ControlAPIAddr        string
-	ClawmanAPIToken       string
-	ClawmanGRPCListenAddr string
-	ClawmanGRPCAddr       string
-	ClawmanInternalToken  string
+	ControlAPIAddr       string
+	ClawmanAPIToken      string
+	ClawmanInternalToken string
 
 	MetricsAddr string
 }
 
 func LoadConfig() (Config, error) {
-	sandboxNamespace := envOrDefault("SANDBOX_NAMESPACE", defaultSandboxNamespace)
 	cfg := Config{
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 
@@ -54,18 +38,8 @@ func LoadConfig() (Config, error) {
 		),
 		WeComGroupTriggerKeywords: parseListEnv("WECOM_GROUP_TRIGGER_KEYWORDS"),
 
-		SandboxNamespace:       sandboxNamespace,
-		SandboxTemplateName:    envOrDefault("SANDBOX_TEMPLATE_NAME", defaultSandboxTemplate),
-		SandboxReadyTimeoutSec: parseIntEnv("SANDBOX_READY_TIMEOUT_SEC", 180),
-		SandboxWakePlaceholder: parseSandboxWakePlaceholder(),
-
-		ControlAPIAddr:        envOrDefault("CONTROL_API_ADDR", ":8081"),
-		ClawmanAPIToken:       os.Getenv("CLAWMAN_API_TOKEN"),
-		ClawmanGRPCListenAddr: envOrDefault("CLAWMAN_GRPC_LISTEN_ADDR", ":8092"),
-		ClawmanGRPCAddr: envOrDefault(
-			"CLAWMAN_GRPC_ADDR",
-			fmt.Sprintf("clawman-svc.%s.svc.cluster.local:8092", sandboxNamespace),
-		),
+		ControlAPIAddr:       envOrDefault("CONTROL_API_ADDR", ":8081"),
+		ClawmanAPIToken:      os.Getenv("CLAWMAN_API_TOKEN"),
 		ClawmanInternalToken: os.Getenv("CLAWMAN_INTERNAL_TOKEN"),
 
 		MetricsAddr: envOrDefault("METRICS_ADDR", ":9090"),
@@ -74,32 +48,11 @@ func LoadConfig() (Config, error) {
 	return cfg, nil
 }
 
-func parseIntEnv(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return fallback
-}
-
 func envOrDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return def
-}
-
-func parseSandboxWakePlaceholder() string {
-	value := os.Getenv("SANDBOX_WAKE_PLACEHOLDER")
-	if value == "" {
-		return defaultSandboxWakePlaceholder
-	}
-	switch strings.ToLower(value) {
-	case "0", "false", "no", "off":
-		return ""
-	}
-	return value
 }
 
 func parseListEnv(key string) []string {

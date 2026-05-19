@@ -2,75 +2,39 @@
 
 This file provides guidance to Claude Code when working with this repository.
 
-## What is tinyclaw
+## Current Architecture
 
-Cloud-based AI Agent Runtime for WeChat Work (企业微信).
+TinyClaw is now organized around the Core Model:
 
-Current architecture:
-- `clawman` pulls encrypted messages from the WeChat Work Finance SDK.
-- `clawman` splits ingest and dispatch into separate loops; `messages.seq` is the archive checkpoint.
-- `clawman` manages deterministic `SandboxClaim` resources directly.
-- room sandboxes connect back to `clawman` over gRPC and receive `messages[]` batches.
-- The sandboxed `agent` exposes `/healthz` for probes and processes messages through the gRPC bridge.
-- All pulled archive items are persisted to PostgreSQL `messages`; dispatch advances message state through `pending -> sent -> done`, resets leftover `sent` rows back to `pending` on startup, and writes reply tasks into PostgreSQL `jobs`.
+- `internal/core`: Room, Message, Invocation, Delivery, and Trigger Policy.
+- `internal/storage`: PostgreSQL persistence for the Core Model.
+- `internal/api`: HTTP adapter for inbound messages, invocation completion/failure, and delivery polling/ack.
+- `wecom/`: legacy WeCom SDK helpers and clients.
 
-## Build & Run
+The old in-repo TypeScript agent runtime, sandbox orchestrator, and `RoomChat` gRPC bridge have been removed. Do not reintroduce sandbox or agent execution code unless a new sandbox design is explicitly accepted.
+
+## Build And Test
 
 ```bash
-go build -o tinyclaw .              # CGO required (Finance SDK is native C)
-go test ./...                       # run all Go tests
-cd agent && npm test                # run agent tests
-docker build -t tinyclaw:latest .   # main service image
+go test ./...
+go build -o tinyclaw .
 ```
 
-The Finance SDK native library only compiles on Linux (`wecom/finance/sdk_linux.go`). Other platforms get a stub (`sdk_unsupport.go`).
+The WeCom Finance SDK native implementation only builds on Linux. Other platforms use the unsupported stub.
 
-Required env vars for the main service:
-- `WECOM_CORP_ID`
-- `WECOM_CORP_SECRET`
-- `WECOM_RSA_PRIVATE_KEY`
+## Key Files
 
-See `config.go` for the current main-service env contract.
-
-## Architecture
-
-```text
-WeChat Work Finance SDK
-  -> Clawman ingest (poll / decrypt / normalize / persist)
-  -> PostgreSQL messages(seq/status/payload)
-  -> Clawman dispatch (scan pending rooms)
-  -> SandboxClaim ensure
-  -> sandbox gRPC client connects to clawman
-  -> clawman sends messages[] batches
-  -> PostgreSQL jobs(seq/bot_id/recipient_alias/message/max_seq)
-  -> Android WeCom sender app
-```
-
-Key files:
-- `main.go` — main service entry point
-- `clawman.go` — ingress pull loop, WeCom metadata resolution, sandbox invocation
-- `grpc_gateway.go` — clawman gRPC server and room stream registry
-- `sandbox/orchestrator.go` — direct `SandboxClaim` lifecycle manager
-- `agent/src/main.ts` — sandbox runtime entry
-- `agent/src/server.ts` — `/healthz`
-- `agent/src/grpc.ts` — sandbox gRPC client bridge
-- `agent/src/runtime.ts` — echo / `claude_agent_sdk`
-
-## Minimal PostgreSQL tables
-
-| Table | Purpose |
-|---------|---------|
-| `messages` | Inbound archive facts, status machine, and `seq` checkpoint source |
-| `rooms` | Minimal room metadata created on first dispatch |
-| `jobs` | Outbound reply tasks polled by the Android sender app |
-| `wecom_app_clients` | Client credentials for the control API |
-
-Short-lived WeCom detail caching and sandbox session reuse are process-local in the current single-replica version.
+- `main.go`: service wiring
+- `config.go`: environment configuration
+- `control_api.go`: legacy jobs/media HTTP routes plus Core API route mounting
+- `internal/core/model.go`: Core Model types
+- `internal/core/trigger_policy.go`: Trigger Policy logic
+- `internal/storage/core.go`: Core Model storage operations
+- `internal/api/core.go`: Core Model HTTP routes
 
 ## Conventions
 
-- Commit format: `<type>: <summary>` (for example `docs: clarify sandbox claim flow`)
-- One logical change per commit
+- Commit format: `<type>: <summary>`
+- Keep one logical change per commit
 - Prefer updating existing docs over creating overlapping docs
-- Reuse terminology from `docs/ARCHITECTURE_V0.md`
-- For sandbox integration, use `SandboxTemplate` and `SandboxClaim` terms consistently
+- Use the vocabulary in `CONTEXT.md`

@@ -22,37 +22,3 @@ func TestLoadConfigUsesWeComBotIDForGroupTriggerMentionFallback(t *testing.T) {
 		t.Fatalf("WeComGroupTriggerMentions = %#v, want [moss]", cfg.WeComGroupTriggerMentions)
 	}
 }
-
-func TestLoadConfigUsesDefaultSandboxWakePlaceholder(t *testing.T) {
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig error: %v", err)
-	}
-	if cfg.SandboxWakePlaceholder != defaultSandboxWakePlaceholder {
-		t.Fatalf("SandboxWakePlaceholder = %q, want %q", cfg.SandboxWakePlaceholder, defaultSandboxWakePlaceholder)
-	}
-}
-
-func TestLoadConfigCanDisableSandboxWakePlaceholder(t *testing.T) {
-	t.Setenv("SANDBOX_WAKE_PLACEHOLDER", "off")
-
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig error: %v", err)
-	}
-	if cfg.SandboxWakePlaceholder != "" {
-		t.Fatalf("SandboxWakePlaceholder = %q, want empty", cfg.SandboxWakePlaceholder)
-	}
-}
-
-func TestLoadConfigEmptySandboxWakePlaceholderUsesDefault(t *testing.T) {
-	t.Setenv("SANDBOX_WAKE_PLACEHOLDER", "")
-
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig error: %v", err)
-	}
-	if cfg.SandboxWakePlaceholder != defaultSandboxWakePlaceholder {
-		t.Fatalf("SandboxWakePlaceholder = %q, want %q", cfg.SandboxWakePlaceholder, defaultSandboxWakePlaceholder)
-	}
-}

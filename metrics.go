@@ -15,23 +15,10 @@ var (
 		Name: "tinyclaw_messages_pulled_total",
 		Help: "Total messages pulled from WeChat Work archive.",
 	})
-	msgDispatched = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "tinyclaw_messages_dispatched_total",
-		Help: "Total messages dispatched to sandbox agent.",
-	})
 	msgSkipped = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "tinyclaw_messages_skipped_total",
 		Help: "Total messages skipped by reason.",
 	}, []string{"reason"})
-	sandboxInvocations = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "tinyclaw_sandbox_invocations_total",
-		Help: "Total sandbox invocations by result.",
-	}, []string{"result"})
-	sandboxDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
-		Name:    "tinyclaw_sandbox_duration_seconds",
-		Help:    "Sandbox invocation latency.",
-		Buckets: []float64{0.5, 1, 2, 5, 10, 30, 60, 120},
-	})
 	dbOperations = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "tinyclaw_db_duration_seconds",
 		Help:    "Database operation latency.",
@@ -41,22 +28,14 @@ var (
 		Name: "tinyclaw_pull_cycle_errors_total",
 		Help: "Total pull cycle errors.",
 	})
-	activeSandboxes = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "tinyclaw_active_sandboxes",
-		Help: "Number of active sandbox clients.",
-	})
 )
 
 func init() {
 	prometheus.MustRegister(
 		msgPulled,
-		msgDispatched,
 		msgSkipped,
-		sandboxInvocations,
-		sandboxDuration,
 		dbOperations,
 		pullCycleErrors,
-		activeSandboxes,
 	)
 }
 

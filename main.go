@@ -8,10 +8,8 @@ import (
 	"syscall"
 	"time"
 
-	"k8s.io/client-go/rest"
 	httpapi "tinyclaw/internal/api"
 	"tinyclaw/internal/storage"
-	"tinyclaw/sandbox"
 )
 
 const dbStartupTimeout = 10 * time.Second
@@ -25,7 +23,7 @@ func main() {
 		os.Exit(1)
 	}
 	if cfg.WeComBotID == "" {
-		slog.Warn("WECOM_BOT_ID is empty; bot-sent direct messages will be ingested as room_id=<bot_id> and may create self-loop sandboxes")
+		slog.Warn("WECOM_BOT_ID is empty; bot-sent direct messages will be ingested as room_id=<bot_id>")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), dbStartupTimeout)
@@ -48,26 +46,7 @@ func main() {
 	}
 	cancel()
 
-	k8sCfg, err := rest.InClusterConfig()
-	if err != nil {
-		slog.Error("k8s in-cluster config failed", "err", err)
-		os.Exit(1)
-	}
-	orch := sandbox.NewOrchestrator(sandbox.Config{
-		Namespace:    cfg.SandboxNamespace,
-		TemplateName: cfg.SandboxTemplateName,
-		ReadyTimeout: time.Duration(cfg.SandboxReadyTimeoutSec) * time.Second,
-		RestConfig:   k8sCfg,
-	})
-	slog.Info(
-		"sandbox claim integration enabled",
-		"namespace", cfg.SandboxNamespace,
-		"template", cfg.SandboxTemplateName,
-	)
-
-	gateway := NewMessageGateway(cfg, orch.ResolveRoomID)
-
-	clawman, err := NewClawman(cfg, store, orch, gateway)
+	clawman, err := NewClawman(cfg, store)
 	if err != nil {
 		slog.Error("init clawman failed", "err", err)
 		os.Exit(1)
@@ -88,12 +67,6 @@ func main() {
 	// Start metrics server
 	go serveMetrics(runCtx, cfg.MetricsAddr)
 	go serveControlAPI(runCtx, cfg, store, coreAPI, mediaSvc)
-	go func() {
-		if err := gateway.Serve(runCtx); err != nil {
-			slog.Error("clawman grpc gateway stopped with error", "err", err)
-			stop()
-		}
-	}()
 
 	if err := clawman.Run(runCtx); err != nil {
 		slog.Error("clawman stopped with error", "err", err)
