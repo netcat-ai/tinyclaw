@@ -38,6 +38,20 @@ Prefer updating an existing document over creating overlapping files.
 - Keep comments minimal and meaningful.
 - Do not add dependencies or configuration unless necessary.
 
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are tracked in GitHub Issues for `netcat-ai/tinyclaw`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Triage uses the default five-label vocabulary. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Domain documentation uses a single-context layout. See `docs/agents/domain.md`.
+
 ## Commits And PRs
 - Commit format: `<type>: <summary>` such as `docs: clarify sandbox claim flow`.
 - Keep one logical change per commit.
