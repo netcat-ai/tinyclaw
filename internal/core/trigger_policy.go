@@ -1,15 +1,15 @@
-package main
+package core
 
 import (
 	"encoding/json"
 	"strings"
 )
 
-func shouldTriggerCoreMessage(room CoreRoom, input InboundMessageInput) bool {
-	if decision, ok := evaluateTriggerPolicy(room.TriggerPolicy, input); ok {
+func ShouldTriggerMessage(room Room, input InboundMessageInput) bool {
+	if decision, ok := EvaluateTriggerPolicy(room.TriggerPolicy, input); ok {
 		return decision
 	}
-	if input.ChannelRoomType == roomChatTypeDirect {
+	if input.ChannelRoomType == RoomChatTypeDirect {
 		return true
 	}
 	var payload struct {
@@ -21,7 +21,7 @@ func shouldTriggerCoreMessage(room CoreRoom, input InboundMessageInput) bool {
 	return strings.Contains(text, "@agent") || strings.Contains(text, "/ask")
 }
 
-func evaluateTriggerPolicy(policy json.RawMessage, input InboundMessageInput) (bool, bool) {
+func EvaluateTriggerPolicy(policy json.RawMessage, input InboundMessageInput) (bool, bool) {
 	if len(policy) == 0 {
 		return false, false
 	}
@@ -34,7 +34,7 @@ func evaluateTriggerPolicy(policy json.RawMessage, input InboundMessageInput) (b
 	if err := json.Unmarshal(policy, &parsed); err != nil {
 		return false, false
 	}
-	if input.ChannelRoomType == roomChatTypeDirect && parsed.DirectDefault != nil {
+	if input.ChannelRoomType == RoomChatTypeDirect && parsed.DirectDefault != nil {
 		return *parsed.DirectDefault, true
 	}
 	switch strings.ToLower(strings.TrimSpace(parsed.Mode)) {

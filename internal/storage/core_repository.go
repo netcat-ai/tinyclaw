@@ -1,4 +1,4 @@
-package main
+package storage
 
 import (
 	"context"
@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
+
+	"tinyclaw/internal/core"
 )
 
-func validateInboundMessage(input InboundMessageInput) error {
+func validateInboundMessage(input core.InboundMessageInput) error {
 	switch {
 	case input.Channel == "":
 		return fmt.Errorf("channel is required")
@@ -27,8 +30,8 @@ func validateInboundMessage(input InboundMessageInput) error {
 	return nil
 }
 
-func upsertCoreRoomTx(ctx context.Context, tx *sql.Tx, input InboundMessageInput) (CoreRoom, error) {
-	var room CoreRoom
+func upsertCoreRoomTx(ctx context.Context, tx *sql.Tx, input core.InboundMessageInput) (core.Room, error) {
+	var room core.Room
 	var displayName sql.NullString
 	var triggerPolicy []byte
 	err := tx.QueryRowContext(ctx, `
@@ -43,7 +46,7 @@ func upsertCoreRoomTx(ctx context.Context, tx *sql.Tx, input InboundMessageInput
 		ON CONFLICT (tenant_id, channel, channel_room_id) DO UPDATE
 		SET updated_at = NOW()
 		RETURNING id, tenant_id, channel, channel_room_id, channel_room_type, display_name, trigger_policy, created_at, updated_at
-	`, defaultTenantID, input.Channel, input.ChannelRoomID, input.ChannelRoomType, nullIfEmpty(input.ChannelRoomID)).Scan(
+	`, core.DefaultTenantID, input.Channel, input.ChannelRoomID, input.ChannelRoomType, nullIfEmpty(input.ChannelRoomID)).Scan(
 		&room.ID,
 		&room.TenantID,
 		&room.Channel,
@@ -55,7 +58,7 @@ func upsertCoreRoomTx(ctx context.Context, tx *sql.Tx, input InboundMessageInput
 		&room.UpdatedAt,
 	)
 	if err != nil {
-		return CoreRoom{}, fmt.Errorf("upsert core room: %w", err)
+		return core.Room{}, fmt.Errorf("upsert core room: %w", err)
 	}
 	if displayName.Valid {
 		room.DisplayName = displayName.String
@@ -66,7 +69,7 @@ func upsertCoreRoomTx(ctx context.Context, tx *sql.Tx, input InboundMessageInput
 	return room, nil
 }
 
-func insertCoreMessageTx(ctx context.Context, tx *sql.Tx, roomID int64, input InboundMessageInput) (bool, CoreMessage, error) {
+func insertCoreMessageTx(ctx context.Context, tx *sql.Tx, roomID int64, input core.InboundMessageInput) (bool, core.Message, error) {
 	var id int64
 	err := tx.QueryRowContext(ctx, `
 		INSERT INTO core_messages (
@@ -89,11 +92,11 @@ func insertCoreMessageTx(ctx context.Context, tx *sql.Tx, roomID int64, input In
 		message, getErr := getCoreMessageBySourceTx(ctx, tx, roomID, input.SourceMessageID)
 		return false, message, getErr
 	default:
-		return false, CoreMessage{}, fmt.Errorf("insert core message: %w", err)
+		return false, core.Message{}, fmt.Errorf("insert core message: %w", err)
 	}
 }
 
-func getCoreMessageByIDTx(ctx context.Context, tx *sql.Tx, id int64) (CoreMessage, error) {
+func getCoreMessageByIDTx(ctx context.Context, tx *sql.Tx, id int64) (core.Message, error) {
 	row := tx.QueryRowContext(ctx, `
 		SELECT id, room_id, source_message_id, sender_id, sender_name, payload, message_time, dispatch_state, created_at
 		FROM core_messages
@@ -102,7 +105,7 @@ func getCoreMessageByIDTx(ctx context.Context, tx *sql.Tx, id int64) (CoreMessag
 	return scanCoreMessage(row)
 }
 
-func getCoreMessageBySourceTx(ctx context.Context, tx *sql.Tx, roomID int64, sourceMessageID string) (CoreMessage, error) {
+func getCoreMessageBySourceTx(ctx context.Context, tx *sql.Tx, roomID int64, sourceMessageID string) (core.Message, error) {
 	row := tx.QueryRowContext(ctx, `
 		SELECT id, room_id, source_message_id, sender_id, sender_name, payload, message_time, dispatch_state, created_at
 		FROM core_messages
@@ -112,7 +115,7 @@ func getCoreMessageBySourceTx(ctx context.Context, tx *sql.Tx, roomID int64, sou
 	return scanCoreMessage(row)
 }
 
-func updateCoreMessageDispatchStateTx(ctx context.Context, tx *sql.Tx, messageID int64, dispatchState int64) (CoreMessage, error) {
+func updateCoreMessageDispatchStateTx(ctx context.Context, tx *sql.Tx, messageID int64, dispatchState int64) (core.Message, error) {
 	row := tx.QueryRowContext(ctx, `
 		UPDATE core_messages
 		SET dispatch_state = $2
@@ -122,7 +125,7 @@ func updateCoreMessageDispatchStateTx(ctx context.Context, tx *sql.Tx, messageID
 	return scanCoreMessage(row)
 }
 
-func getActiveInvocationForRoomTx(ctx context.Context, tx *sql.Tx, roomID int64) (CoreInvocation, bool, error) {
+func getActiveInvocationForRoomTx(ctx context.Context, tx *sql.Tx, roomID int64) (core.Invocation, bool, error) {
 	row := tx.QueryRowContext(ctx, `
 		SELECT id, room_id, status, trigger_message_id, input_snapshot, output_snapshot, created_at, started_at, completed_at
 		FROM core_invocations
@@ -130,28 +133,28 @@ func getActiveInvocationForRoomTx(ctx context.Context, tx *sql.Tx, roomID int64)
 		  AND status IN ($2, $3)
 		ORDER BY id DESC
 		LIMIT 1
-	`, roomID, invocationStatusQueued, invocationStatusRunning)
+	`, roomID, core.InvocationStatusQueued, core.InvocationStatusRunning)
 	invocation, err := scanCoreInvocation(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return CoreInvocation{}, false, nil
+			return core.Invocation{}, false, nil
 		}
-		return CoreInvocation{}, false, err
+		return core.Invocation{}, false, err
 	}
 	return invocation, true, nil
 }
 
-func createInvocationFromWaitingMessagesTx(ctx context.Context, tx *sql.Tx, roomID int64, triggerMessageID int64) (CoreInvocation, error) {
+func createInvocationFromWaitingMessagesTx(ctx context.Context, tx *sql.Tx, roomID int64, triggerMessageID int64) (core.Invocation, error) {
 	messageIDs, err := listWaitingMessageIDsTx(ctx, tx, roomID)
 	if err != nil {
-		return CoreInvocation{}, err
+		return core.Invocation{}, err
 	}
 	inputSnapshot := mustJSON(map[string]any{
 		"kind":        "initial",
 		"message_ids": messageIDs,
 	})
 
-	var invocation CoreInvocation
+	var invocation core.Invocation
 	row := tx.QueryRowContext(ctx, `
 		INSERT INTO core_invocations (
 			room_id,
@@ -161,18 +164,18 @@ func createInvocationFromWaitingMessagesTx(ctx context.Context, tx *sql.Tx, room
 		)
 		VALUES ($1, $2, $3, $4)
 		RETURNING id, room_id, status, trigger_message_id, input_snapshot, output_snapshot, created_at, started_at, completed_at
-	`, roomID, invocationStatusQueued, triggerMessageID, inputSnapshot)
+	`, roomID, core.InvocationStatusQueued, triggerMessageID, inputSnapshot)
 	invocation, err = scanCoreInvocation(row)
 	if err != nil {
-		return CoreInvocation{}, fmt.Errorf("create core invocation: %w", err)
+		return core.Invocation{}, fmt.Errorf("create core invocation: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE core_messages
 		SET dispatch_state = $2
 		WHERE room_id = $1
 		  AND dispatch_state = $3
-	`, roomID, invocation.ID, dispatchWaiting); err != nil {
-		return CoreInvocation{}, fmt.Errorf("bind waiting messages to invocation: %w", err)
+	`, roomID, invocation.ID, core.DispatchWaiting); err != nil {
+		return core.Invocation{}, fmt.Errorf("bind waiting messages to invocation: %w", err)
 	}
 	return invocation, nil
 }
@@ -184,7 +187,7 @@ func listWaitingMessageIDsTx(ctx context.Context, tx *sql.Tx, roomID int64) ([]i
 		WHERE room_id = $1
 		  AND dispatch_state = $2
 		ORDER BY message_time ASC, id ASC
-	`, roomID, dispatchWaiting)
+	`, roomID, core.DispatchWaiting)
 	if err != nil {
 		return nil, fmt.Errorf("list waiting core messages: %w", err)
 	}
@@ -204,7 +207,7 @@ func listWaitingMessageIDsTx(ctx context.Context, tx *sql.Tx, roomID int64) ([]i
 	return ids, nil
 }
 
-func updateInvocationTerminalTx(ctx context.Context, tx *sql.Tx, invocationID int64, status string, output json.RawMessage) (CoreInvocation, error) {
+func updateInvocationTerminalTx(ctx context.Context, tx *sql.Tx, invocationID int64, status string, output json.RawMessage) (core.Invocation, error) {
 	row := tx.QueryRowContext(ctx, `
 		UPDATE core_invocations
 		SET status = $2,
@@ -213,18 +216,18 @@ func updateInvocationTerminalTx(ctx context.Context, tx *sql.Tx, invocationID in
 		WHERE id = $1
 		  AND status IN ($4, $5)
 		RETURNING id, room_id, status, trigger_message_id, input_snapshot, output_snapshot, created_at, started_at, completed_at
-	`, invocationID, status, output, invocationStatusQueued, invocationStatusRunning)
+	`, invocationID, status, output, core.InvocationStatusQueued, core.InvocationStatusRunning)
 	invocation, err := scanCoreInvocation(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return CoreInvocation{}, fmt.Errorf("active invocation %d not found", invocationID)
+			return core.Invocation{}, fmt.Errorf("active invocation %d not found", invocationID)
 		}
-		return CoreInvocation{}, fmt.Errorf("update invocation terminal: %w", err)
+		return core.Invocation{}, fmt.Errorf("update invocation terminal: %w", err)
 	}
 	return invocation, nil
 }
 
-func createCoreDeliveryTx(ctx context.Context, tx *sql.Tx, roomID int64, invocationID int64, payload json.RawMessage) (CoreDelivery, error) {
+func createCoreDeliveryTx(ctx context.Context, tx *sql.Tx, roomID int64, invocationID int64, payload json.RawMessage) (core.Delivery, error) {
 	row := tx.QueryRowContext(ctx, `
 		INSERT INTO core_deliveries (
 			room_id,
@@ -234,16 +237,16 @@ func createCoreDeliveryTx(ctx context.Context, tx *sql.Tx, roomID int64, invocat
 		)
 		VALUES ($1, $2, $3, $4)
 		RETURNING id, seq, room_id, invocation_id, payload, status, created_at, acked_at
-	`, roomID, invocationID, payload, deliveryStatusPending)
+	`, roomID, invocationID, payload, core.DeliveryStatusPending)
 	delivery, err := scanCoreDelivery(row)
 	if err != nil {
-		return CoreDelivery{}, fmt.Errorf("create core delivery: %w", err)
+		return core.Delivery{}, fmt.Errorf("create core delivery: %w", err)
 	}
 	return delivery, nil
 }
 
-func ackCoreDelivery(ctx context.Context, db *sql.DB, id int64) (CoreDelivery, error) {
-	var delivery CoreDelivery
+func ackCoreDelivery(ctx context.Context, db *sql.DB, id int64) (core.Delivery, error) {
+	var delivery core.Delivery
 	var ackedAt sql.NullTime
 	err := db.QueryRowContext(ctx, `
 		UPDATE core_deliveries
@@ -252,7 +255,7 @@ func ackCoreDelivery(ctx context.Context, db *sql.DB, id int64) (CoreDelivery, e
 		WHERE id = $1
 		  AND status = $3
 		RETURNING id, seq, room_id, invocation_id, payload, status, created_at, acked_at
-	`, id, deliveryStatusAcked, deliveryStatusPending).Scan(
+	`, id, core.DeliveryStatusAcked, core.DeliveryStatusPending).Scan(
 		&delivery.ID,
 		&delivery.Seq,
 		&delivery.RoomID,
@@ -264,9 +267,9 @@ func ackCoreDelivery(ctx context.Context, db *sql.DB, id int64) (CoreDelivery, e
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return CoreDelivery{}, fmt.Errorf("pending delivery %d not found", id)
+			return core.Delivery{}, fmt.Errorf("pending delivery %d not found", id)
 		}
-		return CoreDelivery{}, fmt.Errorf("ack core delivery: %w", err)
+		return core.Delivery{}, fmt.Errorf("ack core delivery: %w", err)
 	}
 	if ackedAt.Valid {
 		delivery.AckedAt = ackedAt.Time
@@ -278,8 +281,8 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-func scanCoreMessage(row scanner) (CoreMessage, error) {
-	var message CoreMessage
+func scanCoreMessage(row scanner) (core.Message, error) {
+	var message core.Message
 	var senderName sql.NullString
 	if err := row.Scan(
 		&message.ID,
@@ -292,7 +295,7 @@ func scanCoreMessage(row scanner) (CoreMessage, error) {
 		&message.DispatchState,
 		&message.CreatedAt,
 	); err != nil {
-		return CoreMessage{}, err
+		return core.Message{}, err
 	}
 	if senderName.Valid {
 		message.SenderName = senderName.String
@@ -300,8 +303,8 @@ func scanCoreMessage(row scanner) (CoreMessage, error) {
 	return message, nil
 }
 
-func scanCoreInvocation(row scanner) (CoreInvocation, error) {
-	var invocation CoreInvocation
+func scanCoreInvocation(row scanner) (core.Invocation, error) {
+	var invocation core.Invocation
 	var triggerMessageID sql.NullInt64
 	var outputSnapshot []byte
 	var startedAt sql.NullTime
@@ -317,7 +320,7 @@ func scanCoreInvocation(row scanner) (CoreInvocation, error) {
 		&startedAt,
 		&completedAt,
 	); err != nil {
-		return CoreInvocation{}, err
+		return core.Invocation{}, err
 	}
 	if triggerMessageID.Valid {
 		invocation.TriggerMessageID = triggerMessageID.Int64
@@ -334,8 +337,8 @@ func scanCoreInvocation(row scanner) (CoreInvocation, error) {
 	return invocation, nil
 }
 
-func scanCoreDelivery(row scanner) (CoreDelivery, error) {
-	var delivery CoreDelivery
+func scanCoreDelivery(row scanner) (core.Delivery, error) {
+	var delivery core.Delivery
 	var ackedAt sql.NullTime
 	if err := row.Scan(
 		&delivery.ID,
@@ -347,10 +350,24 @@ func scanCoreDelivery(row scanner) (CoreDelivery, error) {
 		&delivery.CreatedAt,
 		&ackedAt,
 	); err != nil {
-		return CoreDelivery{}, fmt.Errorf("scan core delivery: %w", err)
+		return core.Delivery{}, fmt.Errorf("scan core delivery: %w", err)
 	}
 	if ackedAt.Valid {
 		delivery.AckedAt = ackedAt.Time
 	}
 	return delivery, nil
+}
+
+func nullIfEmpty(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+func nullTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
 }

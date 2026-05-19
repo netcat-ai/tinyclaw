@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"k8s.io/client-go/rest"
+	httpapi "tinyclaw/internal/api"
+	"tinyclaw/internal/storage"
 	"tinyclaw/sandbox"
 )
 
@@ -77,13 +79,15 @@ func main() {
 		store:    store,
 		sdk:      clawman.sdk,
 	}
+	coreStore := storage.NewCoreStore(store.DB())
+	coreAPI := httpapi.NewServer(coreStore, cfg.ClawmanAPIToken)
 
 	runCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	// Start metrics server
 	go serveMetrics(runCtx, cfg.MetricsAddr)
-	go serveControlAPI(runCtx, cfg, store, mediaSvc)
+	go serveControlAPI(runCtx, cfg, store, coreAPI, mediaSvc)
 	go func() {
 		if err := gateway.Serve(runCtx); err != nil {
 			slog.Error("clawman grpc gateway stopped with error", "err", err)

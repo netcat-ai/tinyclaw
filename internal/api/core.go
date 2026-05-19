@@ -1,12 +1,50 @@
-package main
+package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"tinyclaw/internal/core"
 )
+
+type CoreStore interface {
+	IngestCoreMessage(ctx context.Context, input core.InboundMessageInput) (core.InboundMessageResult, error)
+	CompleteCoreInvocation(ctx context.Context, invocationID int64, input core.CompleteInvocationInput) (core.InvocationResult, error)
+	FailCoreInvocation(ctx context.Context, invocationID int64, detail string) (core.InvocationResult, error)
+	ListCoreDeliveries(ctx context.Context, channel string, afterSeq int64) ([]core.Delivery, error)
+	AckCoreDelivery(ctx context.Context, id int64) (core.Delivery, error)
+}
+
+type Server struct {
+	core     CoreStore
+	apiToken string
+	mux      *http.ServeMux
+}
+
+func NewServer(core CoreStore, apiToken string) *Server {
+	server := &Server{
+		core:     core,
+		apiToken: strings.TrimSpace(apiToken),
+		mux:      http.NewServeMux(),
+	}
+	server.RegisterCoreRoutes(server.mux)
+	return server
+}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mux.ServeHTTP(w, r)
+}
+
+func (s *Server) RegisterCoreRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/api/inbound", s.handleInbound)
+	mux.HandleFunc("/api/deliveries", s.handleListDeliveries)
+	mux.HandleFunc("/api/deliveries/", s.handleDeliveryAction)
+	mux.HandleFunc("/api/invocations/", s.handleInvocationAction)
+}
 
 type inboundResponse struct {
 	Room       coreRoomResponse        `json:"room"`
@@ -65,26 +103,26 @@ type invocationActionRequest struct {
 	Detail         string          `json:"detail"`
 }
 
-func (api *controlAPI) handleInbound(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleInbound(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
 		return
 	}
-	if !api.authenticateAPIBearer(r) {
+	if !s.authenticateAPIBearer(r) {
 		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API bearer token")
 		return
 	}
-	if api.core == nil {
+	if s.core == nil {
 		writeAPIError(w, http.StatusServiceUnavailable, "disabled", "core API is unavailable")
 		return
 	}
 
-	var input InboundMessageInput
+	var input core.InboundMessageInput
 	if err := readJSONBody(r, &input); err != nil {
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	result, err := api.core.IngestCoreMessage(r.Context(), input)
+	result, err := s.core.IngestCoreMessage(r.Context(), input)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
@@ -100,12 +138,12 @@ func (api *controlAPI) handleInbound(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (api *controlAPI) handleListDeliveries(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleListDeliveries(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET")
 		return
 	}
-	if !api.authenticateAPIBearer(r) {
+	if !s.authenticateAPIBearer(r) {
 		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API bearer token")
 		return
 	}
@@ -119,7 +157,7 @@ func (api *controlAPI) handleListDeliveries(w http.ResponseWriter, r *http.Reque
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", "seq must be a non-negative integer")
 		return
 	}
-	deliveries, err := api.core.ListCoreDeliveries(r.Context(), channel, afterSeq)
+	deliveries, err := s.core.ListCoreDeliveries(r.Context(), channel, afterSeq)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "list_failed", err.Error())
 		return
@@ -135,12 +173,12 @@ func (api *controlAPI) handleListDeliveries(w http.ResponseWriter, r *http.Reque
 	writeAPIJSON(w, http.StatusOK, deliveriesPageResponse{Deliveries: response, NextSeq: nextSeq})
 }
 
-func (api *controlAPI) handleDeliveryAction(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleDeliveryAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
 		return
 	}
-	if !api.authenticateAPIBearer(r) {
+	if !s.authenticateAPIBearer(r) {
 		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API bearer token")
 		return
 	}
@@ -149,7 +187,7 @@ func (api *controlAPI) handleDeliveryAction(w http.ResponseWriter, r *http.Reque
 		writeAPIError(w, http.StatusNotFound, "not_found", "unknown delivery action")
 		return
 	}
-	delivery, err := api.core.AckCoreDelivery(r.Context(), id)
+	delivery, err := s.core.AckCoreDelivery(r.Context(), id)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "ack_failed", err.Error())
 		return
@@ -157,12 +195,12 @@ func (api *controlAPI) handleDeliveryAction(w http.ResponseWriter, r *http.Reque
 	writeAPIJSON(w, http.StatusOK, deliveryToResponse(delivery))
 }
 
-func (api *controlAPI) handleInvocationAction(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleInvocationAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
 		return
 	}
-	if !api.authenticateAPIBearer(r) {
+	if !s.authenticateAPIBearer(r) {
 		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API bearer token")
 		return
 	}
@@ -176,16 +214,16 @@ func (api *controlAPI) handleInvocationAction(w http.ResponseWriter, r *http.Req
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	var result InvocationResult
+	var result core.InvocationResult
 	var err error
 	switch action {
 	case "complete":
-		result, err = api.core.CompleteCoreInvocation(r.Context(), id, CompleteInvocationInput{
+		result, err = s.core.CompleteCoreInvocation(r.Context(), id, core.CompleteInvocationInput{
 			Output: req.OutputSnapshot,
 			Text:   req.Text,
 		})
 	case "fail":
-		result, err = api.core.FailCoreInvocation(r.Context(), id, req.Detail)
+		result, err = s.core.FailCoreInvocation(r.Context(), id, req.Detail)
 	default:
 		writeAPIError(w, http.StatusNotFound, "not_found", "unknown invocation action")
 		return
@@ -200,8 +238,8 @@ func (api *controlAPI) handleInvocationAction(w http.ResponseWriter, r *http.Req
 	})
 }
 
-func (api *controlAPI) authenticateAPIBearer(r *http.Request) bool {
-	if strings.TrimSpace(api.apiToken) == "" {
+func (s *Server) authenticateAPIBearer(r *http.Request) bool {
+	if strings.TrimSpace(s.apiToken) == "" {
 		return false
 	}
 	value := strings.TrimSpace(r.Header.Get("Authorization"))
@@ -209,7 +247,7 @@ func (api *controlAPI) authenticateAPIBearer(r *http.Request) bool {
 		return false
 	}
 	token := strings.TrimSpace(strings.TrimPrefix(value, "Bearer "))
-	return token != "" && token == api.apiToken
+	return token != "" && token == s.apiToken
 }
 
 func readJSONBody(r *http.Request, target any) error {
@@ -236,7 +274,22 @@ func parseIDActionPath(path string) (int64, string, bool) {
 	return id, parts[1], true
 }
 
-func roomToResponse(room CoreRoom) coreRoomResponse {
+func writeAPIJSON(w http.ResponseWriter, statusCode int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writeAPIError(w http.ResponseWriter, statusCode int, code, detail string) {
+	writeAPIJSON(w, statusCode, map[string]any{
+		"error": map[string]string{
+			"code":   code,
+			"detail": detail,
+		},
+	})
+}
+
+func roomToResponse(room core.Room) coreRoomResponse {
 	return coreRoomResponse{
 		ID:              room.ID,
 		TenantID:        room.TenantID,
@@ -247,7 +300,7 @@ func roomToResponse(room CoreRoom) coreRoomResponse {
 	}
 }
 
-func messageToResponse(message CoreMessage) coreMessageResponse {
+func messageToResponse(message core.Message) coreMessageResponse {
 	return coreMessageResponse{
 		ID:              message.ID,
 		RoomID:          message.RoomID,
@@ -259,7 +312,7 @@ func messageToResponse(message CoreMessage) coreMessageResponse {
 	}
 }
 
-func invocationPtrToResponse(invocation *CoreInvocation) *coreInvocationResponse {
+func invocationPtrToResponse(invocation *core.Invocation) *coreInvocationResponse {
 	if invocation == nil {
 		return nil
 	}
@@ -267,7 +320,7 @@ func invocationPtrToResponse(invocation *CoreInvocation) *coreInvocationResponse
 	return &response
 }
 
-func invocationToResponse(invocation CoreInvocation) coreInvocationResponse {
+func invocationToResponse(invocation core.Invocation) coreInvocationResponse {
 	return coreInvocationResponse{
 		ID:               invocation.ID,
 		RoomID:           invocation.RoomID,
@@ -278,7 +331,7 @@ func invocationToResponse(invocation CoreInvocation) coreInvocationResponse {
 	}
 }
 
-func deliveryPtrToResponse(delivery *CoreDelivery) *coreDeliveryResponse {
+func deliveryPtrToResponse(delivery *core.Delivery) *coreDeliveryResponse {
 	if delivery == nil {
 		return nil
 	}
@@ -286,7 +339,7 @@ func deliveryPtrToResponse(delivery *CoreDelivery) *coreDeliveryResponse {
 	return &response
 }
 
-func deliveryToResponse(delivery CoreDelivery) coreDeliveryResponse {
+func deliveryToResponse(delivery core.Delivery) coreDeliveryResponse {
 	return coreDeliveryResponse{
 		ID:           delivery.ID,
 		Seq:          delivery.Seq,

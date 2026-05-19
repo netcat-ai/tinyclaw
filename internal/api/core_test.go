@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"context"
@@ -8,43 +8,45 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"tinyclaw/internal/core"
 )
 
 type fakeCoreStore struct {
-	ingestFn   func(context.Context, InboundMessageInput) (InboundMessageResult, error)
-	completeFn func(context.Context, int64, CompleteInvocationInput) (InvocationResult, error)
-	failFn     func(context.Context, int64, string) (InvocationResult, error)
-	listFn     func(context.Context, string, int64) ([]CoreDelivery, error)
-	ackFn      func(context.Context, int64) (CoreDelivery, error)
+	ingestFn   func(context.Context, core.InboundMessageInput) (core.InboundMessageResult, error)
+	completeFn func(context.Context, int64, core.CompleteInvocationInput) (core.InvocationResult, error)
+	failFn     func(context.Context, int64, string) (core.InvocationResult, error)
+	listFn     func(context.Context, string, int64) ([]core.Delivery, error)
+	ackFn      func(context.Context, int64) (core.Delivery, error)
 }
 
-func (f fakeCoreStore) IngestCoreMessage(ctx context.Context, input InboundMessageInput) (InboundMessageResult, error) {
+func (f fakeCoreStore) IngestCoreMessage(ctx context.Context, input core.InboundMessageInput) (core.InboundMessageResult, error) {
 	return f.ingestFn(ctx, input)
 }
 
-func (f fakeCoreStore) CompleteCoreInvocation(ctx context.Context, invocationID int64, input CompleteInvocationInput) (InvocationResult, error) {
+func (f fakeCoreStore) CompleteCoreInvocation(ctx context.Context, invocationID int64, input core.CompleteInvocationInput) (core.InvocationResult, error) {
 	return f.completeFn(ctx, invocationID, input)
 }
 
-func (f fakeCoreStore) FailCoreInvocation(ctx context.Context, invocationID int64, detail string) (InvocationResult, error) {
+func (f fakeCoreStore) FailCoreInvocation(ctx context.Context, invocationID int64, detail string) (core.InvocationResult, error) {
 	return f.failFn(ctx, invocationID, detail)
 }
 
-func (f fakeCoreStore) ListCoreDeliveries(ctx context.Context, channel string, afterSeq int64) ([]CoreDelivery, error) {
+func (f fakeCoreStore) ListCoreDeliveries(ctx context.Context, channel string, afterSeq int64) ([]core.Delivery, error) {
 	return f.listFn(ctx, channel, afterSeq)
 }
 
-func (f fakeCoreStore) AckCoreDelivery(ctx context.Context, id int64) (CoreDelivery, error) {
+func (f fakeCoreStore) AckCoreDelivery(ctx context.Context, id int64) (core.Delivery, error) {
 	return f.ackFn(ctx, id)
 }
 
 func TestHandleInboundRequiresAPIToken(t *testing.T) {
-	api := &controlAPI{
+	api := &Server{
 		apiToken: "api-secret",
 		core: fakeCoreStore{
-			ingestFn: func(context.Context, InboundMessageInput) (InboundMessageResult, error) {
+			ingestFn: func(context.Context, core.InboundMessageInput) (core.InboundMessageResult, error) {
 				t.Fatal("IngestCoreMessage should not be called without auth")
-				return InboundMessageResult{}, nil
+				return core.InboundMessageResult{}, nil
 			},
 		},
 	}
@@ -61,28 +63,28 @@ func TestHandleInboundRequiresAPIToken(t *testing.T) {
 
 func TestHandleInboundReturnsIdempotentMessageResult(t *testing.T) {
 	now := time.Now().UTC()
-	api := &controlAPI{
+	api := &Server{
 		apiToken: "api-secret",
 		core: fakeCoreStore{
-			ingestFn: func(_ context.Context, input InboundMessageInput) (InboundMessageResult, error) {
+			ingestFn: func(_ context.Context, input core.InboundMessageInput) (core.InboundMessageResult, error) {
 				if input.Channel != "wecom" || input.ChannelRoomID != "room-1" || input.SourceMessageID != "msg-1" {
 					t.Fatalf("unexpected input: %+v", input)
 				}
-				return InboundMessageResult{
-					Room: CoreRoom{
+				return core.InboundMessageResult{
+					Room: core.Room{
 						ID:              10,
-						TenantID:        defaultTenantID,
+						TenantID:        core.DefaultTenantID,
 						Channel:         input.Channel,
 						ChannelRoomID:   input.ChannelRoomID,
 						ChannelRoomType: input.ChannelRoomType,
 					},
-					Message: CoreMessage{
+					Message: core.Message{
 						ID:              20,
 						RoomID:          10,
 						SourceMessageID: input.SourceMessageID,
 						SenderID:        input.SenderID,
 						Payload:         input.Payload,
-						DispatchState:   dispatchWaiting,
+						DispatchState:   core.DispatchWaiting,
 						MessageTime:     now,
 					},
 					Duplicate: true,
@@ -115,30 +117,30 @@ func TestHandleInboundReturnsIdempotentMessageResult(t *testing.T) {
 	if !payload.Duplicate {
 		t.Fatal("duplicate = false, want true")
 	}
-	if payload.Message.DispatchState != dispatchWaiting {
-		t.Fatalf("dispatch_state = %d, want %d", payload.Message.DispatchState, dispatchWaiting)
+	if payload.Message.DispatchState != core.DispatchWaiting {
+		t.Fatalf("dispatch_state = %d, want %d", payload.Message.DispatchState, core.DispatchWaiting)
 	}
 }
 
 func TestHandleListDeliveriesFiltersByChannelAndSeq(t *testing.T) {
-	api := &controlAPI{
+	api := &Server{
 		apiToken: "api-secret",
 		core: fakeCoreStore{
-			listFn: func(_ context.Context, channel string, afterSeq int64) ([]CoreDelivery, error) {
+			listFn: func(_ context.Context, channel string, afterSeq int64) ([]core.Delivery, error) {
 				if channel != "wecom" {
 					t.Fatalf("channel = %q, want wecom", channel)
 				}
 				if afterSeq != 12 {
 					t.Fatalf("afterSeq = %d, want 12", afterSeq)
 				}
-				return []CoreDelivery{
+				return []core.Delivery{
 					{
 						ID:           7,
 						Seq:          15,
 						RoomID:       10,
 						InvocationID: 1000,
 						Payload:      json.RawMessage(`{"type":"text","text":"hi"}`),
-						Status:       deliveryStatusPending,
+						Status:       core.DeliveryStatusPending,
 					},
 				}, nil
 			},
@@ -167,20 +169,20 @@ func TestHandleListDeliveriesFiltersByChannelAndSeq(t *testing.T) {
 }
 
 func TestHandleDeliveryAckRetainsDeliveryRecord(t *testing.T) {
-	api := &controlAPI{
+	api := &Server{
 		apiToken: "api-secret",
 		core: fakeCoreStore{
-			ackFn: func(_ context.Context, id int64) (CoreDelivery, error) {
+			ackFn: func(_ context.Context, id int64) (core.Delivery, error) {
 				if id != 7 {
 					t.Fatalf("id = %d, want 7", id)
 				}
-				return CoreDelivery{
+				return core.Delivery{
 					ID:           7,
 					Seq:          15,
 					RoomID:       10,
 					InvocationID: 1000,
 					Payload:      json.RawMessage(`{"type":"text","text":"hi"}`),
-					Status:       deliveryStatusAcked,
+					Status:       core.DeliveryStatusAcked,
 				}, nil
 			},
 		},
@@ -199,31 +201,31 @@ func TestHandleDeliveryAckRetainsDeliveryRecord(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if payload.Status != deliveryStatusAcked {
-		t.Fatalf("status = %q, want %q", payload.Status, deliveryStatusAcked)
+	if payload.Status != core.DeliveryStatusAcked {
+		t.Fatalf("status = %q, want %q", payload.Status, core.DeliveryStatusAcked)
 	}
 }
 
 func TestHandleInvocationCompleteCreatesDeliveryResponse(t *testing.T) {
-	api := &controlAPI{
+	api := &Server{
 		apiToken: "api-secret",
 		core: fakeCoreStore{
-			completeFn: func(_ context.Context, id int64, input CompleteInvocationInput) (InvocationResult, error) {
+			completeFn: func(_ context.Context, id int64, input core.CompleteInvocationInput) (core.InvocationResult, error) {
 				if id != 1000 {
 					t.Fatalf("id = %d, want 1000", id)
 				}
 				if input.Text != "done" {
 					t.Fatalf("text = %q, want done", input.Text)
 				}
-				return InvocationResult{
-					Invocation: CoreInvocation{ID: 1000, RoomID: 10, Status: invocationStatusCompleted},
-					Delivery: &CoreDelivery{
+				return core.InvocationResult{
+					Invocation: core.Invocation{ID: 1000, RoomID: 10, Status: core.InvocationStatusCompleted},
+					Delivery: &core.Delivery{
 						ID:           1,
 						Seq:          1,
 						RoomID:       10,
 						InvocationID: 1000,
 						Payload:      json.RawMessage(`{"type":"text","text":"done"}`),
-						Status:       deliveryStatusPending,
+						Status:       core.DeliveryStatusPending,
 					},
 				}, nil
 			},

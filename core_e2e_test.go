@@ -10,7 +10,40 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	httpapi "tinyclaw/internal/api"
+	"tinyclaw/internal/core"
+	"tinyclaw/internal/storage"
 )
+
+type coreE2EInboundResponse struct {
+	Message    coreE2EMessageResponse     `json:"message"`
+	Invocation *coreE2EInvocationResponse `json:"invocation,omitempty"`
+	Duplicate  bool                       `json:"duplicate"`
+	Triggered  bool                       `json:"triggered"`
+	Appended   bool                       `json:"appended"`
+}
+
+type coreE2EMessageResponse struct {
+	ID            int64 `json:"id"`
+	DispatchState int64 `json:"dispatch_state"`
+}
+
+type coreE2EInvocationResponse struct {
+	ID int64 `json:"id"`
+}
+
+type coreE2EDeliveryResponse struct {
+	ID           int64  `json:"id"`
+	Seq          int64  `json:"seq"`
+	InvocationID int64  `json:"invocation_id"`
+	Status       string `json:"status"`
+}
+
+type coreE2EDeliveriesPageResponse struct {
+	Deliveries []coreE2EDeliveryResponse `json:"deliveries"`
+	NextSeq    int64                     `json:"next_seq"`
+}
 
 func TestCoreModelE2E(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("CORE_E2E_DATABASE_URL"))
@@ -28,15 +61,12 @@ func TestCoreModelE2E(t *testing.T) {
 		t.Fatalf("init schema: %v", err)
 	}
 
-	api := &controlAPI{
-		core:     store,
-		apiToken: "e2e-token",
-	}
+	api := httpapi.NewServer(storage.NewCoreStore(store.DB()), "e2e-token")
 	roomID := fmt.Sprintf("e2e-room-%d", time.Now().UnixNano())
 
 	contextResp := postInboundE2E(t, api, roomID, "msg-1", "context message")
-	if contextResp.Message.DispatchState != dispatchWaiting {
-		t.Fatalf("context dispatch_state = %d, want %d", contextResp.Message.DispatchState, dispatchWaiting)
+	if contextResp.Message.DispatchState != core.DispatchWaiting {
+		t.Fatalf("context dispatch_state = %d, want %d", contextResp.Message.DispatchState, core.DispatchWaiting)
 	}
 
 	duplicateResp := postInboundE2E(t, api, roomID, "msg-1", "context message")
@@ -72,8 +102,8 @@ func TestCoreModelE2E(t *testing.T) {
 	if !ok {
 		t.Fatalf("completion response has no delivery: %+v", completeResp)
 	}
-	if delivery["status"] != deliveryStatusPending {
-		t.Fatalf("delivery status = %v, want %s", delivery["status"], deliveryStatusPending)
+	if delivery["status"] != core.DeliveryStatusPending {
+		t.Fatalf("delivery status = %v, want %s", delivery["status"], core.DeliveryStatusPending)
 	}
 
 	deliveries := listDeliveriesE2E(t, api, "wecom", 0)
@@ -85,12 +115,12 @@ func TestCoreModelE2E(t *testing.T) {
 	}
 
 	acked := ackDeliveryE2E(t, api, deliveries.Deliveries[0].ID)
-	if acked.Status != deliveryStatusAcked {
-		t.Fatalf("acked status = %s, want %s", acked.Status, deliveryStatusAcked)
+	if acked.Status != core.DeliveryStatusAcked {
+		t.Fatalf("acked status = %s, want %s", acked.Status, core.DeliveryStatusAcked)
 	}
 }
 
-func postInboundE2E(t *testing.T, api *controlAPI, roomID, sourceID, text string) inboundResponse {
+func postInboundE2E(t *testing.T, api http.Handler, roomID, sourceID, text string) coreE2EInboundResponse {
 	t.Helper()
 	body := fmt.Sprintf(`{
 		"channel":"wecom",
@@ -104,23 +134,23 @@ func postInboundE2E(t *testing.T, api *controlAPI, roomID, sourceID, text string
 	req := httptest.NewRequest(http.MethodPost, "/api/inbound", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer e2e-token")
 	rec := httptest.NewRecorder()
-	api.handleInbound(rec, req)
+	api.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("inbound status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	var payload inboundResponse
+	var payload coreE2EInboundResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode inbound response: %v", err)
 	}
 	return payload
 }
 
-func postInvocationActionE2E(t *testing.T, api *controlAPI, invocationID int64, action string, body string) map[string]any {
+func postInvocationActionE2E(t *testing.T, api http.Handler, invocationID int64, action string, body string) map[string]any {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/invocations/%d/%s", invocationID, action), strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer e2e-token")
 	rec := httptest.NewRecorder()
-	api.handleInvocationAction(rec, req)
+	api.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("invocation action status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
@@ -131,32 +161,32 @@ func postInvocationActionE2E(t *testing.T, api *controlAPI, invocationID int64, 
 	return payload
 }
 
-func listDeliveriesE2E(t *testing.T, api *controlAPI, channel string, seq int64) deliveriesPageResponse {
+func listDeliveriesE2E(t *testing.T, api http.Handler, channel string, seq int64) coreE2EDeliveriesPageResponse {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/deliveries?channel=%s&seq=%d", channel, seq), nil)
 	req.Header.Set("Authorization", "Bearer e2e-token")
 	rec := httptest.NewRecorder()
-	api.handleListDeliveries(rec, req)
+	api.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list deliveries status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	var payload deliveriesPageResponse
+	var payload coreE2EDeliveriesPageResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode deliveries response: %v", err)
 	}
 	return payload
 }
 
-func ackDeliveryE2E(t *testing.T, api *controlAPI, deliveryID int64) coreDeliveryResponse {
+func ackDeliveryE2E(t *testing.T, api http.Handler, deliveryID int64) coreE2EDeliveryResponse {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/deliveries/%d/ack", deliveryID), nil)
 	req.Header.Set("Authorization", "Bearer e2e-token")
 	rec := httptest.NewRecorder()
-	api.handleDeliveryAction(rec, req)
+	api.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("ack delivery status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	var payload coreDeliveryResponse
+	var payload coreE2EDeliveryResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode ack response: %v", err)
 	}

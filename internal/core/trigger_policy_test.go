@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"encoding/json"
@@ -24,8 +24,8 @@ func TestEvaluateTriggerPolicyUsesMentionsAndKeywords(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := evaluateTriggerPolicy(policy, InboundMessageInput{
-				ChannelRoomType: roomChatTypeGroup,
+			got, ok := EvaluateTriggerPolicy(policy, InboundMessageInput{
+				ChannelRoomType: RoomChatTypeGroup,
 				Payload:         json.RawMessage(`{"type":"text","text":` + mustJSONString(tc.text) + `}`),
 			})
 			if !ok {
@@ -39,8 +39,8 @@ func TestEvaluateTriggerPolicyUsesMentionsAndKeywords(t *testing.T) {
 }
 
 func TestEvaluateTriggerPolicyUsesDirectDefault(t *testing.T) {
-	got, ok := evaluateTriggerPolicy(json.RawMessage(`{"direct_default":false}`), InboundMessageInput{
-		ChannelRoomType: roomChatTypeDirect,
+	got, ok := EvaluateTriggerPolicy(json.RawMessage(`{"direct_default":false}`), InboundMessageInput{
+		ChannelRoomType: RoomChatTypeDirect,
 		Payload:         json.RawMessage(`{"type":"text","text":"hello"}`),
 	})
 	if !ok {

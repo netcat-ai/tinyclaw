@@ -91,6 +91,13 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+func (s *Store) DB() *sql.DB {
+	if s == nil {
+		return nil
+	}
+	return s.db
+}
+
 func (s *Store) InitSchema(ctx context.Context) error {
 	statements := []string{
 		`

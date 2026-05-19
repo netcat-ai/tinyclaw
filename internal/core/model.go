@@ -1,0 +1,103 @@
+package core
+
+import (
+	"encoding/json"
+	"time"
+)
+
+const (
+	DefaultTenantID = "default"
+
+	DispatchWaiting int64 = 0
+	DispatchSkipped int64 = 1
+
+	InvocationStatusQueued    = "queued"
+	InvocationStatusRunning   = "running"
+	InvocationStatusCompleted = "completed"
+	InvocationStatusFailed    = "failed"
+
+	DeliveryStatusPending = "pending"
+	DeliveryStatusAcked   = "acked"
+
+	RoomChatTypeDirect = "direct"
+	RoomChatTypeGroup  = "group"
+)
+
+type Room struct {
+	ID              int64
+	TenantID        string
+	Channel         string
+	ChannelRoomID   string
+	ChannelRoomType string
+	DisplayName     string
+	TriggerPolicy   json.RawMessage
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type Message struct {
+	ID              int64
+	RoomID          int64
+	SourceMessageID string
+	SenderID        string
+	SenderName      string
+	Payload         json.RawMessage
+	MessageTime     time.Time
+	DispatchState   int64
+	CreatedAt       time.Time
+}
+
+type Invocation struct {
+	ID               int64
+	RoomID           int64
+	Status           string
+	TriggerMessageID int64
+	InputSnapshot    json.RawMessage
+	OutputSnapshot   json.RawMessage
+	CreatedAt        time.Time
+	StartedAt        time.Time
+	CompletedAt      time.Time
+}
+
+type Delivery struct {
+	ID           int64
+	Seq          int64
+	RoomID       int64
+	InvocationID int64
+	Payload      json.RawMessage
+	Status       string
+	CreatedAt    time.Time
+	AckedAt      time.Time
+}
+
+type InboundMessageInput struct {
+	Channel         string          `json:"channel"`
+	ChannelRoomID   string          `json:"channel_room_id"`
+	ChannelRoomType string          `json:"channel_room_type"`
+	SourceMessageID string          `json:"source_message_id"`
+	SenderID        string          `json:"sender_id"`
+	SenderName      string          `json:"sender_name"`
+	MessageTime     time.Time       `json:"message_time"`
+	Payload         json.RawMessage `json:"payload"`
+	Skipped         bool            `json:"skipped"`
+}
+
+type InboundMessageResult struct {
+	Room        Room        `json:"room"`
+	Message     Message     `json:"message"`
+	Invocation  *Invocation `json:"invocation,omitempty"`
+	Duplicate   bool        `json:"duplicate"`
+	Triggered   bool        `json:"triggered"`
+	Appended    bool        `json:"appended"`
+	DispatchSet int64       `json:"dispatch_state"`
+}
+
+type CompleteInvocationInput struct {
+	Output json.RawMessage `json:"output_snapshot"`
+	Text   string          `json:"text"`
+}
+
+type InvocationResult struct {
+	Invocation Invocation `json:"invocation"`
+	Delivery   *Delivery  `json:"delivery,omitempty"`
+}
