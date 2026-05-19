@@ -217,7 +217,7 @@ func TestHandleDeliveryAckRetainsDeliveryRecord(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 	if payload.Status != core.DeliveryStatusAcked {
-		t.Fatalf("status = %q, want %q", payload.Status, core.DeliveryStatusAcked)
+		t.Fatalf("status = %d, want %d", payload.Status, core.DeliveryStatusAcked)
 	}
 }
 

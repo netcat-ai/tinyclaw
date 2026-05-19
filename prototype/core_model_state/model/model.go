@@ -10,6 +10,16 @@ const (
 	DispatchWaiting int64 = 0
 	DispatchSkipped int64 = 1
 
+	InvocationStatusQueued    int16 = 0
+	InvocationStatusRunning   int16 = 1
+	InvocationStatusCompleted int16 = 2
+	InvocationStatusFailed    int16 = 3
+	InvocationStatusCancelled int16 = 4
+
+	DeliveryStatusPending int16 = 0
+	DeliveryStatusAcked   int16 = 1
+	DeliveryStatusFailed  int16 = 2
+
 	FirstInvocationID int64 = 1000
 )
 
@@ -35,7 +45,7 @@ type Message struct {
 type Invocation struct {
 	ID               int64
 	RoomID           int64
-	Status           string
+	Status           int16
 	TriggerMessageID int64
 	InputSnapshot    string
 	OutputSnapshot   string
@@ -48,7 +58,7 @@ type Delivery struct {
 	RoomID       int64
 	InvocationID int64
 	Payload      string
-	Status       string
+	Status       int16
 }
 
 type State struct {
@@ -109,7 +119,7 @@ func CompleteWithOutput(s State) State {
 		return s
 	}
 	invocation := &s.Invocations[idx]
-	invocation.Status = "completed"
+	invocation.Status = InvocationStatusCompleted
 	invocation.Output = "agent final reply"
 	invocation.OutputSnapshot = snapshotOutput("completed", invocation.Output)
 	s.Deliveries = append(s.Deliveries, Delivery{
@@ -118,7 +128,7 @@ func CompleteWithOutput(s State) State {
 		RoomID:       invocation.RoomID,
 		InvocationID: invocation.ID,
 		Payload:      invocation.Output,
-		Status:       "pending",
+		Status:       DeliveryStatusPending,
 	})
 	s.NextDeliveryID++
 	s.NextDeliverySeq++
@@ -133,7 +143,7 @@ func CompleteEmpty(s State) State {
 		return s
 	}
 	invocation := &s.Invocations[idx]
-	invocation.Status = "completed"
+	invocation.Status = InvocationStatusCompleted
 	invocation.Output = ""
 	invocation.OutputSnapshot = snapshotOutput("completed", invocation.Output)
 	s.LastEvent = fmt.Sprintf("completed invocation %d with zero delivery", invocation.ID)
@@ -147,7 +157,7 @@ func FailActive(s State) State {
 		return s
 	}
 	invocation := &s.Invocations[idx]
-	invocation.Status = "failed"
+	invocation.Status = InvocationStatusFailed
 	invocation.Output = "执行失败，请稍后重试"
 	invocation.OutputSnapshot = snapshotOutput("failed", invocation.Output)
 	s.Deliveries = append(s.Deliveries, Delivery{
@@ -156,7 +166,7 @@ func FailActive(s State) State {
 		RoomID:       invocation.RoomID,
 		InvocationID: invocation.ID,
 		Payload:      invocation.Output,
-		Status:       "pending",
+		Status:       DeliveryStatusPending,
 	})
 	s.NextDeliveryID++
 	s.NextDeliverySeq++
@@ -170,15 +180,15 @@ func MarkRunning(s State) State {
 		s.LastEvent = "no active invocation to mark running"
 		return s
 	}
-	s.Invocations[idx].Status = "running"
+	s.Invocations[idx].Status = InvocationStatusRunning
 	s.LastEvent = fmt.Sprintf("invocation %d is running", s.Invocations[idx].ID)
 	return s
 }
 
 func AckDelivery(s State) State {
 	for i := range s.Deliveries {
-		if s.Deliveries[i].Status == "pending" {
-			s.Deliveries[i].Status = "acked"
+		if s.Deliveries[i].Status == DeliveryStatusPending {
+			s.Deliveries[i].Status = DeliveryStatusAcked
 			s.LastEvent = fmt.Sprintf("acked delivery %d", s.Deliveries[i].ID)
 			return s
 		}
@@ -241,7 +251,7 @@ func inbound(s State, channel, channelRoomID, roomType, senderID, text string, t
 	s.Invocations = append(s.Invocations, Invocation{
 		ID:               invocationID,
 		RoomID:           room.ID,
-		Status:           "queued",
+		Status:           InvocationStatusQueued,
 		TriggerMessageID: message.ID,
 		InputSnapshot:    buildInputSnapshot(s, room.ID, invocationID),
 	})
@@ -311,6 +321,6 @@ func latestActiveInvocationIndexForRoom(s State, roomID int64) int {
 	return -1
 }
 
-func isActive(status string) bool {
-	return status == "queued" || status == "running"
+func isActive(status int16) bool {
+	return status == InvocationStatusQueued || status == InvocationStatusRunning
 }

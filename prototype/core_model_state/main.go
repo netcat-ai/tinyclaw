@@ -83,7 +83,7 @@ func render(state model.State) {
 	}
 	for _, invocation := range state.Invocations {
 		fmt.Printf("  #%d room=%d status=%s trigger_message=%d\n",
-			invocation.ID, invocation.RoomID, invocation.Status, invocation.TriggerMessageID)
+			invocation.ID, invocation.RoomID, invocationStatusLabel(invocation.Status), invocation.TriggerMessageID)
 		fmt.Printf("     input=%s\n", invocation.InputSnapshot)
 		if invocation.OutputSnapshot != "" {
 			fmt.Printf("     output=%s\n", invocation.OutputSnapshot)
@@ -96,7 +96,7 @@ func render(state model.State) {
 	}
 	for _, delivery := range state.Deliveries {
 		fmt.Printf("  #%d seq=%d room=%d invocation=%d status=%s payload=%q\n",
-			delivery.ID, delivery.Seq, delivery.RoomID, delivery.InvocationID, delivery.Status, delivery.Payload)
+			delivery.ID, delivery.Seq, delivery.RoomID, delivery.InvocationID, deliveryStatusLabel(delivery.Status), delivery.Payload)
 	}
 
 	fmt.Printf("\n%sKeys%s\n", bold, reset)
@@ -104,6 +104,36 @@ func render(state model.State) {
 	fmt.Printf("  %sr%s running       %so%s complete+out  %se%s complete empty %sf%s fail\n", bold, reset, bold, reset, bold, reset, bold, reset)
 	fmt.Printf("  %sa%s ack delivery  %sk%s tick           %sq%s quit\n", bold, reset, bold, reset, bold, reset)
 	fmt.Print("\n> ")
+}
+
+func invocationStatusLabel(value int16) string {
+	switch value {
+	case model.InvocationStatusQueued:
+		return "0(queued)"
+	case model.InvocationStatusRunning:
+		return "1(running)"
+	case model.InvocationStatusCompleted:
+		return "2(completed)"
+	case model.InvocationStatusFailed:
+		return "3(failed)"
+	case model.InvocationStatusCancelled:
+		return "4(cancelled)"
+	default:
+		return fmt.Sprintf("%d(unknown)", value)
+	}
+}
+
+func deliveryStatusLabel(value int16) string {
+	switch value {
+	case model.DeliveryStatusPending:
+		return "0(pending)"
+	case model.DeliveryStatusAcked:
+		return "1(acked)"
+	case model.DeliveryStatusFailed:
+		return "2(failed)"
+	default:
+		return fmt.Sprintf("%d(unknown)", value)
+	}
 }
 
 func dispatchLabel(value int64) string {

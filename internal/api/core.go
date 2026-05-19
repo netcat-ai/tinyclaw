@@ -84,7 +84,7 @@ type coreMessageResponse struct {
 type coreInvocationResponse struct {
 	ID               int64           `json:"id"`
 	RoomID           int64           `json:"room_id"`
-	Status           string          `json:"status"`
+	Status           int16           `json:"status"`
 	TriggerMessageID int64           `json:"trigger_message_id,omitempty"`
 	InputSnapshot    json.RawMessage `json:"input_snapshot,omitempty"`
 	OutputSnapshot   json.RawMessage `json:"output_snapshot,omitempty"`
@@ -96,7 +96,7 @@ type coreDeliveryResponse struct {
 	RoomID       int64           `json:"room_id"`
 	InvocationID int64           `json:"invocation_id"`
 	Payload      json.RawMessage `json:"payload"`
-	Status       string          `json:"status"`
+	Status       int16           `json:"status"`
 }
 
 type deliveriesPageResponse struct {

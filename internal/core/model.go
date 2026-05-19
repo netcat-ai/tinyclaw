@@ -11,13 +11,15 @@ const (
 	DispatchWaiting int64 = 0
 	DispatchSkipped int64 = 1
 
-	InvocationStatusQueued    = "queued"
-	InvocationStatusRunning   = "running"
-	InvocationStatusCompleted = "completed"
-	InvocationStatusFailed    = "failed"
+	InvocationStatusQueued    int16 = 0
+	InvocationStatusRunning   int16 = 1
+	InvocationStatusCompleted int16 = 2
+	InvocationStatusFailed    int16 = 3
+	InvocationStatusCancelled int16 = 4
 
-	DeliveryStatusPending = "pending"
-	DeliveryStatusAcked   = "acked"
+	DeliveryStatusPending int16 = 0
+	DeliveryStatusAcked   int16 = 1
+	DeliveryStatusFailed  int16 = 2
 
 	RoomChatTypeDirect = "direct"
 	RoomChatTypeGroup  = "group"
@@ -50,7 +52,7 @@ type Message struct {
 type Invocation struct {
 	ID               int64
 	RoomID           int64
-	Status           string
+	Status           int16
 	TriggerMessageID int64
 	InputSnapshot    json.RawMessage
 	OutputSnapshot   json.RawMessage
@@ -65,7 +67,7 @@ type Delivery struct {
 	RoomID       int64
 	InvocationID int64
 	Payload      json.RawMessage
-	Status       string
+	Status       int16
 	CreatedAt    time.Time
 	AckedAt      time.Time
 }

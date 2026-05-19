@@ -207,7 +207,7 @@ func listWaitingMessageIDsTx(ctx context.Context, tx *sql.Tx, roomID int64) ([]i
 	return ids, nil
 }
 
-func updateInvocationTerminalTx(ctx context.Context, tx *sql.Tx, invocationID int64, status string, output json.RawMessage) (core.Invocation, error) {
+func updateInvocationTerminalTx(ctx context.Context, tx *sql.Tx, invocationID int64, status int16, output json.RawMessage) (core.Invocation, error) {
 	row := tx.QueryRowContext(ctx, `
 		UPDATE invocations
 		SET status = $2,

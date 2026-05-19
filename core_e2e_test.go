@@ -34,10 +34,10 @@ type coreE2EInvocationResponse struct {
 }
 
 type coreE2EDeliveryResponse struct {
-	ID           int64  `json:"id"`
-	Seq          int64  `json:"seq"`
-	InvocationID int64  `json:"invocation_id"`
-	Status       string `json:"status"`
+	ID           int64 `json:"id"`
+	Seq          int64 `json:"seq"`
+	InvocationID int64 `json:"invocation_id"`
+	Status       int16 `json:"status"`
 }
 
 type coreE2EDeliveriesPageResponse struct {
@@ -102,8 +102,8 @@ func TestCoreModelE2E(t *testing.T) {
 	if !ok {
 		t.Fatalf("completion response has no delivery: %+v", completeResp)
 	}
-	if delivery["status"] != core.DeliveryStatusPending {
-		t.Fatalf("delivery status = %v, want %s", delivery["status"], core.DeliveryStatusPending)
+	if delivery["status"] != float64(core.DeliveryStatusPending) {
+		t.Fatalf("delivery status = %v, want %d", delivery["status"], core.DeliveryStatusPending)
 	}
 
 	deliveries := listDeliveriesE2E(t, api, "wecom", 0)
@@ -116,7 +116,7 @@ func TestCoreModelE2E(t *testing.T) {
 
 	acked := ackDeliveryE2E(t, api, deliveries.Deliveries[0].ID)
 	if acked.Status != core.DeliveryStatusAcked {
-		t.Fatalf("acked status = %s, want %s", acked.Status, core.DeliveryStatusAcked)
+		t.Fatalf("acked status = %d, want %d", acked.Status, core.DeliveryStatusAcked)
 	}
 }
 
