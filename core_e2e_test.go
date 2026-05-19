@@ -25,8 +25,8 @@ type coreE2EInboundResponse struct {
 }
 
 type coreE2EMessageResponse struct {
-	ID            int64 `json:"id"`
-	DispatchState int64 `json:"dispatch_state"`
+	ID      int64 `json:"id"`
+	Skipped bool  `json:"skipped"`
 }
 
 type coreE2EInvocationResponse struct {
@@ -60,12 +60,13 @@ func TestCoreModelE2E(t *testing.T) {
 		t.Fatalf("init schema: %v", err)
 	}
 
-	api := httpapi.NewServer(storage.NewCoreStore(store.DB()), "e2e-token")
+	coreStore := storage.NewCoreStore(store.DB())
+	api := httpapi.NewServer(coreStore, "e2e-token")
 	roomID := fmt.Sprintf("e2e-room-%d", time.Now().UnixNano())
 
 	contextResp := postInboundE2E(t, api, roomID, "msg-1", "context message")
-	if contextResp.Message.DispatchState != core.DispatchWaiting {
-		t.Fatalf("context dispatch_state = %d, want %d", contextResp.Message.DispatchState, core.DispatchWaiting)
+	if contextResp.Message.Skipped {
+		t.Fatal("context skipped = true, want false")
 	}
 
 	duplicateResp := postInboundE2E(t, api, roomID, "msg-1", "context message")
@@ -84,16 +85,44 @@ func TestCoreModelE2E(t *testing.T) {
 	if invocationID < 1000 {
 		t.Fatalf("invocation id = %d, want >= 1000", invocationID)
 	}
-	if triggerResp.Message.DispatchState != invocationID {
-		t.Fatalf("trigger dispatch_state = %d, want %d", triggerResp.Message.DispatchState, invocationID)
-	}
 
 	appendResp := postInboundE2E(t, api, roomID, "msg-3", "more context")
 	if !appendResp.Appended {
 		t.Fatal("appended = false, want true")
 	}
-	if appendResp.Message.DispatchState != invocationID {
-		t.Fatalf("append dispatch_state = %d, want %d", appendResp.Message.DispatchState, invocationID)
+
+	started, err := coreStore.StartCoreInvocation(ctx, invocationID)
+	if err != nil {
+		t.Fatalf("start invocation: %v", err)
+	}
+	if started.StartMessageID != appendResp.Message.ID || started.LastSeenMessageID != appendResp.Message.ID {
+		t.Fatalf("started cursor = (%d,%d), want %d", started.StartMessageID, started.LastSeenMessageID, appendResp.Message.ID)
+	}
+	contextMessages, err := coreStore.ListCoreInvocationContextMessages(ctx, invocationID)
+	if err != nil {
+		t.Fatalf("list invocation context messages: %v", err)
+	}
+	if len(contextMessages) != 3 {
+		t.Fatalf("context messages len = %d, want 3", len(contextMessages))
+	}
+
+	liveResp := postInboundE2E(t, api, roomID, "msg-4", "live follow-up")
+	if !liveResp.Appended {
+		t.Fatal("live appended = false, want true")
+	}
+	newMessages, err := coreStore.ReadCoreInvocationNewMessages(ctx, invocationID)
+	if err != nil {
+		t.Fatalf("read new invocation messages: %v", err)
+	}
+	if len(newMessages) != 1 || newMessages[0].ID != liveResp.Message.ID {
+		t.Fatalf("new messages = %+v, want message id %d", newMessages, liveResp.Message.ID)
+	}
+	newMessages, err = coreStore.ReadCoreInvocationNewMessages(ctx, invocationID)
+	if err != nil {
+		t.Fatalf("read new invocation messages again: %v", err)
+	}
+	if len(newMessages) != 0 {
+		t.Fatalf("new messages after cursor advance = %d, want 0", len(newMessages))
 	}
 
 	completeResp := postInvocationActionE2E(t, api, invocationID, "complete", `{"text":"done"}`)

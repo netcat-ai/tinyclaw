@@ -79,22 +79,13 @@ sender_id text not null
 sender_name text null
 payload jsonb not null
 message_time timestamptz not null
-dispatch_state bigint not null default 0
+skipped boolean not null default false
 created_at timestamptz not null
 
 unique(room_id, source_message_id)
-check(dispatch_state in (0, 1) or dispatch_state >= 1000)
 ```
 
-`dispatch_state` 约定：
-
-```text
-0       waiting/context candidate
-1       skipped
->=1000  real invocation id by convention
-```
-
-`dispatch_state` 不设外键。这是有意的应用层约定，见 [ADR-0001](./adr/0001-message-invocation-state-sentinel.md)。
+Message 是 append-only 入站事实，不记录属于哪个 Invocation。`skipped = true` 表示该消息永远不应进入 agent 上下文。
 
 ### invocations
 
@@ -103,18 +94,21 @@ id bigint primary key
 room_id bigint not null references rooms(id)
 status smallint not null
 trigger_message_id bigint null references messages(id)
-input_snapshot jsonb not null
-output_snapshot jsonb null
+start_message_id bigint null references messages(id)
+last_seen_message_id bigint null references messages(id)
+error_detail text null
 created_at timestamptz not null
 started_at timestamptz null
 completed_at timestamptz null
 ```
 
-Invocation id 从 `1000` 开始，避免与 `messages.dispatch_state` sentinel 冲突。
+Invocation id 从 `1000` 开始，作为内部执行记录的可读约定。
 
-`input_snapshot` 记录 Invocation 创建时的初始结构化输入快照，包括初始 prompt、被选入的 messages、memory、附件和其他上下文。它不是从 `messages` 重新推导的缓存，而是本次 Invocation 的可复盘初始输入事实。Invocation active 期间追加的 Message 通过 `messages.dispatch_state = invocation.id` 关联，不回写这个初始快照。
+`start_message_id` 是 executor 开始执行时看到的 room 消息高水位。初始 prompt 读取 `id <= start_message_id` 且 `skipped = false` 的 messages。
 
-`output_snapshot` 记录 agent 执行结果；第一版可只保存 final output 或失败提示。
+`last_seen_message_id` 是 running agent 读取新消息的游标。agent 可以显式读取 `id > last_seen_message_id` 的 messages，读取成功后推进该游标。
+
+第一版不存 `input_snapshot` / `output_snapshot`。失败原因记录在 `error_detail`；真实外发内容记录在 `deliveries.payload`。
 
 Active Invocation：
 
@@ -186,45 +180,28 @@ clawman 行为：
 3. 按 `(room_id, source_message_id)` 幂等插入 Message。
 4. 如果 Message 已存在，返回已有结果，不重复触发。
 5. 应用 Room Trigger Policy；为空时使用 channel default rule。
-6. 根据 dispatch 规则创建或追加 Invocation。
+6. 根据 trigger 规则创建 Invocation，或让 active Invocation 后续通过消息游标读取新消息。
 
-## 5. Dispatch 规则
+## 5. Message 与 Invocation 规则
 
-Message 初始写入时：
+Message 入库后不再改所属关系。未触发消息仍保留在 room message log 中，可在后续触发时作为上下文。
 
-```text
-dispatch_state = 0
-```
-
-如果平台层判断该消息永远不应进入 agent invocation：
-
-```text
-dispatch_state = 1
-```
-
-未触发不等于 skipped。未触发但可作为上下文的消息保持 `dispatch_state = 0`。
+如果平台层判断该消息永远不应进入 agent invocation，写入 `skipped = true`。
 
 当 Room 没有 active Invocation，且当前 Message 触发执行：
 
 1. 创建 Invocation，状态为 `queued`。
-2. 将同一 Room 中 `dispatch_state = 0` 的 Messages 绑定到该 Invocation：
-
-```sql
-UPDATE messages
-SET dispatch_state = $invocation_id
-WHERE room_id = $room_id
-  AND dispatch_state = 0;
-```
+2. 不更新历史 Message。
+3. scheduler start 时设置 `start_message_id = last_seen_message_id = 当前 room 最新非 skipped message id`。
+4. 初始 prompt 读取 `id <= start_message_id` 的非 skipped messages。
 
 当 Room 已有 active Invocation：
 
-1. 新 Message 如果不是 skipped，直接设置：
+1. 新 Message 只追加到 room message log。
+2. 不创建新的 Invocation。
+3. running agent 如需查看用户补充消息，显式读取 `id > last_seen_message_id` 的非 skipped messages，并推进 `last_seen_message_id`。
 
-```text
-dispatch_state = active_invocation.id
-```
-
-2. 第一版只做追加，不做中断。
+这让“运行中看到新消息”成为 agent 行为，而不是 storage 层隐式改写执行输入。
 
 ## 6. Invocation 与 Delivery
 
@@ -280,7 +257,7 @@ ack 后 Delivery 保留，只更新状态。
 - clawman 内部 sandbox 模块
 - sandbox lifecycle / runtime connection
 - Tool Runtime Backend：后续优先按“clawman 持有 agent loop，sandbox 只执行工具调用”设计
-- durable workflow engine：第一版先用 `invocations.status`、`input_snapshot`、`output_snapshot` 和 `dispatch_state` 承载恢复语义
+- durable workflow engine：第一版先用 `invocations.status`、`start_message_id`、`last_seen_message_id` 和 deliveries 承载恢复语义
 - memory capability
 - explicit send capability
 - 同一 Room 多个独立 Agent Session

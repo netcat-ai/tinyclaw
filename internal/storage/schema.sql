@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS messages (
 	sender_name TEXT,
 	payload JSONB NOT NULL,
 	message_time TIMESTAMPTZ NOT NULL,
-	dispatch_state BIGINT NOT NULL DEFAULT 0,
+	skipped BOOLEAN NOT NULL DEFAULT FALSE,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	UNIQUE (room_id, source_message_id)
 );
@@ -29,8 +29,9 @@ CREATE TABLE IF NOT EXISTS invocations (
 	room_id BIGINT NOT NULL REFERENCES rooms(id),
 	status SMALLINT NOT NULL,
 	trigger_message_id BIGINT REFERENCES messages(id),
-	input_snapshot JSONB NOT NULL,
-	output_snapshot JSONB,
+	start_message_id BIGINT REFERENCES messages(id),
+	last_seen_message_id BIGINT REFERENCES messages(id),
+	error_detail TEXT,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	started_at TIMESTAMPTZ,
 	completed_at TIMESTAMPTZ
@@ -45,3 +46,18 @@ CREATE TABLE IF NOT EXISTS deliveries (
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	acked_at TIMESTAMPTZ
 );
+
+ALTER TABLE messages
+	ADD COLUMN IF NOT EXISTS skipped BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE messages
+	DROP COLUMN IF EXISTS dispatch_state;
+
+ALTER TABLE invocations
+	ADD COLUMN IF NOT EXISTS start_message_id BIGINT REFERENCES messages(id),
+	ADD COLUMN IF NOT EXISTS last_seen_message_id BIGINT REFERENCES messages(id),
+	ADD COLUMN IF NOT EXISTS error_detail TEXT;
+
+ALTER TABLE invocations
+	DROP COLUMN IF EXISTS input_snapshot,
+	DROP COLUMN IF EXISTS output_snapshot;

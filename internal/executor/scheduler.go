@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -83,7 +82,6 @@ type StaticRunner struct {
 
 func (r StaticRunner) RunInvocation(context.Context, core.Invocation) (core.CompleteInvocationInput, error) {
 	return core.CompleteInvocationInput{
-		Output: json.RawMessage(`{"status":"completed","source":"static_runner"}`),
-		Text:   r.Text,
+		Text: r.Text,
 	}, nil
 }

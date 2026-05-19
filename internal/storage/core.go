@@ -52,10 +52,9 @@ func (s *CoreStore) IngestCoreMessage(ctx context.Context, input core.InboundMes
 		return core.InboundMessageResult{}, err
 	}
 	result := core.InboundMessageResult{
-		Room:        room,
-		Message:     message,
-		Duplicate:   !inserted,
-		DispatchSet: message.DispatchState,
+		Room:      room,
+		Message:   message,
+		Duplicate: !inserted,
 	}
 	if !inserted {
 		if err := tx.Commit(); err != nil {
@@ -65,12 +64,6 @@ func (s *CoreStore) IngestCoreMessage(ctx context.Context, input core.InboundMes
 	}
 
 	if input.Skipped {
-		message, err = updateCoreMessageDispatchStateTx(ctx, tx, message.ID, core.DispatchSkipped)
-		if err != nil {
-			return core.InboundMessageResult{}, err
-		}
-		result.Message = message
-		result.DispatchSet = message.DispatchState
 		if err := tx.Commit(); err != nil {
 			return core.InboundMessageResult{}, fmt.Errorf("commit skipped core inbound: %w", err)
 		}
@@ -82,14 +75,8 @@ func (s *CoreStore) IngestCoreMessage(ctx context.Context, input core.InboundMes
 		return core.InboundMessageResult{}, err
 	}
 	if hasActive {
-		message, err = updateCoreMessageDispatchStateTx(ctx, tx, message.ID, active.ID)
-		if err != nil {
-			return core.InboundMessageResult{}, err
-		}
-		result.Message = message
 		result.Invocation = &active
 		result.Appended = true
-		result.DispatchSet = message.DispatchState
 		if err := tx.Commit(); err != nil {
 			return core.InboundMessageResult{}, fmt.Errorf("commit appended core inbound: %w", err)
 		}
@@ -97,18 +84,12 @@ func (s *CoreStore) IngestCoreMessage(ctx context.Context, input core.InboundMes
 	}
 
 	if core.ShouldTriggerMessage(room, input) {
-		invocation, err := createInvocationFromWaitingMessagesTx(ctx, tx, room.ID, message.ID)
+		invocation, err := createCoreInvocationTx(ctx, tx, room.ID, message.ID)
 		if err != nil {
 			return core.InboundMessageResult{}, err
 		}
-		message, err = getCoreMessageByIDTx(ctx, tx, message.ID)
-		if err != nil {
-			return core.InboundMessageResult{}, err
-		}
-		result.Message = message
 		result.Invocation = &invocation
 		result.Triggered = true
-		result.DispatchSet = message.DispatchState
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -118,20 +99,13 @@ func (s *CoreStore) IngestCoreMessage(ctx context.Context, input core.InboundMes
 }
 
 func (s *CoreStore) CompleteCoreInvocation(ctx context.Context, invocationID int64, input core.CompleteInvocationInput) (core.InvocationResult, error) {
-	output := input.Output
-	if len(output) == 0 {
-		output = mustJSON(map[string]any{
-			"status":       "completed",
-			"final_output": input.Text,
-		})
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return core.InvocationResult{}, fmt.Errorf("begin complete invocation tx: %w", err)
 	}
 	defer tx.Rollback()
 
-	invocation, err := updateInvocationTerminalTx(ctx, tx, invocationID, core.InvocationStatusCompleted, output)
+	invocation, err := updateInvocationCompletedTx(ctx, tx, invocationID)
 	if err != nil {
 		return core.InvocationResult{}, err
 	}
@@ -169,22 +143,39 @@ func (s *CoreStore) StartCoreInvocation(ctx context.Context, invocationID int64)
 	return invocation, nil
 }
 
+func (s *CoreStore) ListCoreInvocationContextMessages(ctx context.Context, invocationID int64) ([]core.Message, error) {
+	return listInvocationContextMessages(ctx, s.db, invocationID)
+}
+
+func (s *CoreStore) ReadCoreInvocationNewMessages(ctx context.Context, invocationID int64) ([]core.Message, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin read new invocation messages tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	messages, err := readInvocationNewMessagesTx(ctx, tx, invocationID)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit read new invocation messages: %w", err)
+	}
+	return messages, nil
+}
+
 func (s *CoreStore) FailCoreInvocation(ctx context.Context, invocationID int64, detail string) (core.InvocationResult, error) {
 	detail = strings.TrimSpace(detail)
 	if detail == "" {
 		detail = "执行失败，请稍后重试"
 	}
-	output := mustJSON(map[string]any{
-		"status":       "failed",
-		"final_output": detail,
-	})
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return core.InvocationResult{}, fmt.Errorf("begin fail invocation tx: %w", err)
 	}
 	defer tx.Rollback()
 
-	invocation, err := updateInvocationTerminalTx(ctx, tx, invocationID, core.InvocationStatusFailed, output)
+	invocation, err := updateInvocationFailedTx(ctx, tx, invocationID, detail)
 	if err != nil {
 		return core.InvocationResult{}, err
 	}

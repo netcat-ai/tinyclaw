@@ -107,7 +107,6 @@ func TestHandleInboundReturnsIdempotentMessageResult(t *testing.T) {
 						SourceMessageID: input.SourceMessageID,
 						SenderID:        input.SenderID,
 						Payload:         input.Payload,
-						DispatchState:   core.DispatchWaiting,
 						MessageTime:     now,
 					},
 					Duplicate: true,
@@ -140,8 +139,8 @@ func TestHandleInboundReturnsIdempotentMessageResult(t *testing.T) {
 	if !payload.Duplicate {
 		t.Fatal("duplicate = false, want true")
 	}
-	if payload.Message.DispatchState != core.DispatchWaiting {
-		t.Fatalf("dispatch_state = %d, want %d", payload.Message.DispatchState, core.DispatchWaiting)
+	if payload.Message.Skipped {
+		t.Fatal("skipped = true, want false")
 	}
 }
 
@@ -166,7 +165,6 @@ func TestHandleInboundSchedulesTriggeredInvocation(t *testing.T) {
 						SourceMessageID: input.SourceMessageID,
 						SenderID:        input.SenderID,
 						Payload:         input.Payload,
-						DispatchState:   1000,
 					},
 					Invocation: &core.Invocation{
 						ID:               1000,

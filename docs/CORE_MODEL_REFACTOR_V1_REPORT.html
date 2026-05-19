@@ -259,7 +259,7 @@
       <a href="#concepts">2. 核心概念</a>
       <a href="#tables">3. 表模型</a>
       <a href="#inbound">4. Inbound API</a>
-      <a href="#dispatch">5. Dispatch 规则</a>
+      <a href="#dispatch">5. Message 与 Invocation 规则</a>
       <a href="#delivery">6. Delivery Pull API</a>
       <a href="#decisions">7. 关键决策</a>
       <a href="#out-of-scope">8. 暂不覆盖</a>
@@ -398,18 +398,14 @@ Sandbox module
           <tr><td><code>sender_name</code></td><td><code>text null</code></td><td>外部发送者展示名。</td></tr>
           <tr><td><code>payload</code></td><td><code>jsonb not null</code></td><td>标准化消息内容。</td></tr>
           <tr><td><code>message_time</code></td><td><code>timestamptz not null</code></td><td>外部消息时间。</td></tr>
-          <tr><td><code>dispatch_state</code></td><td><code>bigint not null default 0</code></td><td>调度状态 sentinel。</td></tr>
+          <tr><td><code>skipped</code></td><td><code>boolean not null default false</code></td><td>是否排除出 agent 上下文。</td></tr>
         </tbody>
       </table>
-      <pre><code>unique(room_id, source_message_id)
-check(dispatch_state in (0, 1) or dispatch_state &gt;= 1000)</code></pre>
+      <pre><code>unique(room_id, source_message_id)</code></pre>
 
       <div class="note">
-        <strong>dispatch_state 约定：</strong>
-        <code>0</code> 表示 waiting/context candidate，
-        <code>1</code> 表示 skipped，
-        <code>&gt;=1000</code> 按约定指向真实 Invocation ID。
-        该字段不设外键，详见 ADR-0001。
+        Message 是 append-only 入站事实，不记录属于哪个 Invocation。
+        <code>skipped = true</code> 表示该消息永远不应进入 agent 上下文。
       </div>
 
       <h3>invocations</h3>
@@ -426,17 +422,17 @@ check(dispatch_state in (0, 1) or dispatch_state &gt;= 1000)</code></pre>
           <tr><td><code>room_id</code></td><td><code>bigint not null</code></td><td>第一版直接挂 Room。</td></tr>
           <tr><td><code>status</code></td><td><code>smallint not null</code></td><td><code>0</code> queued、<code>1</code> running、<code>2</code> completed、<code>3</code> failed、<code>4</code> cancelled。</td></tr>
           <tr><td><code>trigger_message_id</code></td><td><code>bigint null</code></td><td>触发本次执行的 Message。</td></tr>
-          <tr><td><code>input_snapshot</code></td><td><code>jsonb not null</code></td><td>Invocation 创建时的初始结构化输入快照。</td></tr>
-          <tr><td><code>output_snapshot</code></td><td><code>jsonb null</code></td><td>agent 执行结果，第一版可保存 final output 或失败提示。</td></tr>
+          <tr><td><code>start_message_id</code></td><td><code>bigint null</code></td><td>执行开始时的 room 消息高水位。</td></tr>
+          <tr><td><code>last_seen_message_id</code></td><td><code>bigint null</code></td><td>running agent 读取新消息的游标。</td></tr>
+          <tr><td><code>error_detail</code></td><td><code>text null</code></td><td>失败原因。</td></tr>
           <tr><td><code>started_at</code></td><td><code>timestamptz null</code></td><td>开始执行时间。</td></tr>
           <tr><td><code>completed_at</code></td><td><code>timestamptz null</code></td><td>完成时间。</td></tr>
         </tbody>
       </table>
       <div class="note">
-        <code>input_snapshot</code> 是 Invocation 创建时的可复盘初始输入事实，不是从当前
-        <code>messages</code> 规则重新推导的缓存。它应包含初始 prompt、被选入的 messages、
-        memory、附件和其他上下文。Invocation active 期间追加的 Message 通过
-        <code>messages.dispatch_state = invocation.id</code> 关联，不回写这个初始快照。
+        第一版不存 <code>input_snapshot</code> / <code>output_snapshot</code>。
+        初始上下文由 <code>start_message_id</code> 重建，运行中新消息由
+        <code>last_seen_message_id</code> 显式读取。
       </div>
 
       <h3>deliveries</h3>
@@ -485,52 +481,34 @@ Authorization: Bearer &lt;CLAWMAN_API_TOKEN&gt;</code></pre>
         <li>按 <code>(room_id, source_message_id)</code> 幂等插入 Message。</li>
         <li>如果 Message 已存在，返回已有结果，不重复触发。</li>
         <li>应用 Room Trigger Policy；为空时使用 channel default rule。</li>
-        <li>根据 dispatch 规则创建或追加 Invocation。</li>
+        <li>根据 trigger 规则创建 Invocation，或让 active Invocation 后续通过消息游标读取新消息。</li>
       </ol>
     </section>
 
     <section id="dispatch">
-      <h2>5. Dispatch 规则</h2>
+      <h2>5. Message 与 Invocation 规则</h2>
 
       <h3>基础状态</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>dispatch_state</th>
-            <th>语义</th>
-            <th>说明</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr><td><code>0</code></td><td>waiting/context candidate</td><td>未触发但可作为上下文。</td></tr>
-          <tr><td><code>1</code></td><td>skipped</td><td>永远不应进入 agent invocation。</td></tr>
-          <tr><td><code>&gt;=1000</code></td><td>attached</td><td>绑定到真实 Invocation。</td></tr>
-        </tbody>
-      </table>
+      <p>Message 入库后不再改所属关系。未触发消息仍保留在 room message log 中，可在后续触发时作为上下文。</p>
 
       <div class="warn">
-        未触发不等于 skipped。群聊里未触发的普通消息保持 <code>dispatch_state = 0</code>，
-        后续触发时可作为上下文进入 Invocation。
+        <code>skipped = true</code> 只用于平台层判断该消息永远不应进入 agent 上下文的场景。
       </div>
 
       <h3>无 active Invocation</h3>
       <ol>
-        <li>新 Message 初始写入 <code>dispatch_state = 0</code>。</li>
+        <li>新 Message append-only 写入。</li>
         <li>如果消息触发执行，创建 <code>status = queued</code> 的 Invocation。</li>
-        <li>把同一 Room 中 <code>dispatch_state = 0</code> 的 Messages 绑定到该 Invocation。</li>
+        <li>scheduler start 时设置 <code>start_message_id = last_seen_message_id = 当前 room 最新非 skipped message id</code>。</li>
+        <li>初始 prompt 读取 <code>id &lt;= start_message_id</code> 的非 skipped messages。</li>
       </ol>
-      <pre><code>UPDATE messages
-SET dispatch_state = $invocation_id
-WHERE room_id = $room_id
-  AND dispatch_state = 0;</code></pre>
 
       <h3>已有 active Invocation</h3>
       <p>
         Active Invocation 只包括 <code>queued</code> 和 <code>running</code>。
-        当 Room 已有 active Invocation，新 Message 如果不是 skipped，直接绑定到该 Invocation。
+        当 Room 已有 active Invocation，新 Message 只追加到 room message log，不创建新的 Invocation。
       </p>
-      <pre><code>messages.dispatch_state = active_invocation.id</code></pre>
-      <p>第一版只做追加，不做中断。</p>
+      <p>running agent 如需查看用户补充消息，显式读取 <code>id &gt; last_seen_message_id</code> 的非 skipped messages，并推进游标。</p>
 
       <h3>Invocation 状态</h3>
       <pre><code>queued -> running -> completed
@@ -616,7 +594,7 @@ Authorization: Bearer &lt;CLAWMAN_API_TOKEN&gt;</code></pre>
         <li>clawman 内部 sandbox 模块。</li>
         <li>sandbox lifecycle / runtime connection。</li>
         <li>Tool Runtime Backend：后续优先按“clawman 持有 agent loop，sandbox 只执行工具调用”设计。</li>
-        <li>durable workflow engine：第一版先用 <code>invocations.status</code>、<code>input_snapshot</code>、<code>output_snapshot</code> 和 <code>dispatch_state</code> 承载恢复语义。</li>
+        <li>durable workflow engine：第一版先用 <code>invocations.status</code>、<code>start_message_id</code>、<code>last_seen_message_id</code> 和 deliveries 承载恢复语义。</li>
         <li>memory capability。</li>
         <li>explicit send capability。</li>
         <li>同一 Room 多个独立 Agent Session。</li>

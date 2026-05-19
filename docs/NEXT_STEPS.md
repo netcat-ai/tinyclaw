@@ -27,8 +27,8 @@
 ## PostgreSQL 当前范围
 
 - `rooms`：TinyClaw room，与外部 channel room 映射。
-- `messages`：room 内入站消息事实，`dispatch_state` 记录等待、忽略或绑定的 invocation。
-- `invocations`：room 级 agent 执行。
+- `messages`：room 内 append-only 入站消息事实，`skipped` 标记是否排除出 agent 上下文。
+- `invocations`：room 级 agent 执行，使用 `start_message_id` / `last_seen_message_id` 管理上下文边界和运行中新消息游标。
 - `deliveries`：invocation 产生的外发消息。
 
 ## 验收标准

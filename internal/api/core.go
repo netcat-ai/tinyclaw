@@ -88,16 +88,17 @@ type coreMessageResponse struct {
 	SenderID        string          `json:"sender_id"`
 	SenderName      string          `json:"sender_name,omitempty"`
 	Payload         json.RawMessage `json:"payload"`
-	DispatchState   int64           `json:"dispatch_state"`
+	Skipped         bool            `json:"skipped"`
 }
 
 type coreInvocationResponse struct {
-	ID               int64           `json:"id"`
-	RoomID           int64           `json:"room_id"`
-	Status           int16           `json:"status"`
-	TriggerMessageID int64           `json:"trigger_message_id,omitempty"`
-	InputSnapshot    json.RawMessage `json:"input_snapshot,omitempty"`
-	OutputSnapshot   json.RawMessage `json:"output_snapshot,omitempty"`
+	ID                int64  `json:"id"`
+	RoomID            int64  `json:"room_id"`
+	Status            int16  `json:"status"`
+	TriggerMessageID  int64  `json:"trigger_message_id,omitempty"`
+	StartMessageID    int64  `json:"start_message_id,omitempty"`
+	LastSeenMessageID int64  `json:"last_seen_message_id,omitempty"`
+	ErrorDetail       string `json:"error_detail,omitempty"`
 }
 
 type coreDeliveryResponse struct {
@@ -114,9 +115,8 @@ type deliveriesPageResponse struct {
 }
 
 type invocationActionRequest struct {
-	Text           string          `json:"text"`
-	OutputSnapshot json.RawMessage `json:"output_snapshot"`
-	Detail         string          `json:"detail"`
+	Text   string `json:"text"`
+	Detail string `json:"detail"`
 }
 
 func (s *Server) handleInbound(w http.ResponseWriter, r *http.Request) {
@@ -238,8 +238,7 @@ func (s *Server) handleInvocationAction(w http.ResponseWriter, r *http.Request) 
 	switch action {
 	case "complete":
 		result, err = s.core.CompleteCoreInvocation(r.Context(), id, core.CompleteInvocationInput{
-			Output: req.OutputSnapshot,
-			Text:   req.Text,
+			Text: req.Text,
 		})
 	case "fail":
 		result, err = s.core.FailCoreInvocation(r.Context(), id, req.Detail)
@@ -327,7 +326,7 @@ func messageToResponse(message core.Message) coreMessageResponse {
 		SenderID:        message.SenderID,
 		SenderName:      message.SenderName,
 		Payload:         message.Payload,
-		DispatchState:   message.DispatchState,
+		Skipped:         message.Skipped,
 	}
 }
 
@@ -341,12 +340,13 @@ func invocationPtrToResponse(invocation *core.Invocation) *coreInvocationRespons
 
 func invocationToResponse(invocation core.Invocation) coreInvocationResponse {
 	return coreInvocationResponse{
-		ID:               invocation.ID,
-		RoomID:           invocation.RoomID,
-		Status:           invocation.Status,
-		TriggerMessageID: invocation.TriggerMessageID,
-		InputSnapshot:    invocation.InputSnapshot,
-		OutputSnapshot:   invocation.OutputSnapshot,
+		ID:                invocation.ID,
+		RoomID:            invocation.RoomID,
+		Status:            invocation.Status,
+		TriggerMessageID:  invocation.TriggerMessageID,
+		StartMessageID:    invocation.StartMessageID,
+		LastSeenMessageID: invocation.LastSeenMessageID,
+		ErrorDetail:       invocation.ErrorDetail,
 	}
 }
 

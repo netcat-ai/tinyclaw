@@ -58,5 +58,5 @@ Channel adapters own provider-specific configuration. The core service does not 
 ## Design Docs
 
 - [Core Model Refactor V1](./docs/CORE_MODEL_REFACTOR_V1.md)
-- [Message Invocation State ADR](./docs/adr/0001-message-invocation-state-sentinel.md)
+- [Append-Only Room Messages ADR](./docs/adr/0001-append-only-room-messages.md)
 - [Agent Sandbox Integration V0](./docs/AGENT_SANDBOX_INTEGRATION_V0.md) is historical and no longer describes current code.

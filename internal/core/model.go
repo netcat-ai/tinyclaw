@@ -8,9 +8,6 @@ import (
 const (
 	DefaultTenantID = "default"
 
-	DispatchWaiting int64 = 0
-	DispatchSkipped int64 = 1
-
 	InvocationStatusQueued    int16 = 0
 	InvocationStatusRunning   int16 = 1
 	InvocationStatusCompleted int16 = 2
@@ -45,20 +42,21 @@ type Message struct {
 	SenderName      string
 	Payload         json.RawMessage
 	MessageTime     time.Time
-	DispatchState   int64
+	Skipped         bool
 	CreatedAt       time.Time
 }
 
 type Invocation struct {
-	ID               int64
-	RoomID           int64
-	Status           int16
-	TriggerMessageID int64
-	InputSnapshot    json.RawMessage
-	OutputSnapshot   json.RawMessage
-	CreatedAt        time.Time
-	StartedAt        time.Time
-	CompletedAt      time.Time
+	ID                int64
+	RoomID            int64
+	Status            int16
+	TriggerMessageID  int64
+	StartMessageID    int64
+	LastSeenMessageID int64
+	ErrorDetail       string
+	CreatedAt         time.Time
+	StartedAt         time.Time
+	CompletedAt       time.Time
 }
 
 type Delivery struct {
@@ -84,18 +82,16 @@ type InboundMessageInput struct {
 }
 
 type InboundMessageResult struct {
-	Room        Room        `json:"room"`
-	Message     Message     `json:"message"`
-	Invocation  *Invocation `json:"invocation,omitempty"`
-	Duplicate   bool        `json:"duplicate"`
-	Triggered   bool        `json:"triggered"`
-	Appended    bool        `json:"appended"`
-	DispatchSet int64       `json:"dispatch_state"`
+	Room       Room        `json:"room"`
+	Message    Message     `json:"message"`
+	Invocation *Invocation `json:"invocation,omitempty"`
+	Duplicate  bool        `json:"duplicate"`
+	Triggered  bool        `json:"triggered"`
+	Appended   bool        `json:"appended"`
 }
 
 type CompleteInvocationInput struct {
-	Output json.RawMessage `json:"output_snapshot"`
-	Text   string          `json:"text"`
+	Text string `json:"text"`
 }
 
 type InvocationResult struct {
