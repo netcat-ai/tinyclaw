@@ -30,6 +30,7 @@ type Config struct {
 	SandboxWakePlaceholder string
 
 	ControlAPIAddr        string
+	ClawmanAPIToken       string
 	ClawmanGRPCListenAddr string
 	ClawmanGRPCAddr       string
 	ClawmanInternalToken  string
@@ -59,6 +60,7 @@ func LoadConfig() (Config, error) {
 		SandboxWakePlaceholder: parseSandboxWakePlaceholder(),
 
 		ControlAPIAddr:        envOrDefault("CONTROL_API_ADDR", ":8081"),
+		ClawmanAPIToken:       os.Getenv("CLAWMAN_API_TOKEN"),
 		ClawmanGRPCListenAddr: envOrDefault("CLAWMAN_GRPC_LISTEN_ADDR", ":8092"),
 		ClawmanGRPCAddr: envOrDefault(
 			"CLAWMAN_GRPC_ADDR",

@@ -1,0 +1,630 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TinyClaw Core Model Refactor v1</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --text: #1f2937;
+      --muted: #64748b;
+      --ink: #0f172a;
+      --line: #cbd5e1;
+      --soft: #f1f5f9;
+      --panel: #f8fafc;
+      --accent: #0f766e;
+      --accent-soft: #ccfbf1;
+      --warn: #92400e;
+      --warn-soft: #fef3c7;
+      --code: #111827;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--text);
+      background: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      line-height: 1.65;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 42px 24px 80px;
+    }
+
+    header {
+      margin-bottom: 28px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h1,
+    h2,
+    h3 {
+      margin: 0;
+      color: var(--ink);
+      line-height: 1.25;
+    }
+
+    h1 {
+      margin-bottom: 12px;
+      font-size: 34px;
+    }
+
+    h2 {
+      margin-top: 38px;
+      margin-bottom: 14px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--line);
+      font-size: 23px;
+    }
+
+    h3 {
+      margin-top: 20px;
+      margin-bottom: 8px;
+      font-size: 17px;
+    }
+
+    p {
+      margin: 8px 0 12px;
+    }
+
+    ul,
+    ol {
+      margin-top: 8px;
+      padding-left: 24px;
+    }
+
+    li {
+      margin: 4px 0;
+    }
+
+    a {
+      color: var(--accent);
+    }
+
+    code {
+      border-radius: 4px;
+      padding: 1px 5px;
+      background: var(--soft);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      overflow: auto;
+      margin: 12px 0 18px;
+      padding: 16px;
+      border: 1px solid #0f172a;
+      border-radius: 8px;
+      background: var(--code);
+      color: #f8fafc;
+      line-height: 1.45;
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+      color: inherit;
+    }
+
+    table {
+      width: 100%;
+      margin: 12px 0 20px;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th,
+    td {
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--panel);
+      color: var(--ink);
+      font-weight: 650;
+    }
+
+    .lead {
+      max-width: 920px;
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 16px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      border-radius: 999px;
+      padding: 2px 10px;
+      background: var(--soft);
+      color: #334155;
+      font-size: 13px;
+    }
+
+    .toc {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 18px;
+      margin: 18px 0 28px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .toc a {
+      text-decoration: none;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin: 16px 0;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px 16px;
+      background: var(--panel);
+    }
+
+    .card h3 {
+      margin-top: 0;
+    }
+
+    .note {
+      margin: 14px 0;
+      padding: 12px 14px;
+      border-left: 4px solid var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .warn {
+      margin: 14px 0;
+      padding: 12px 14px;
+      border-left: 4px solid var(--warn);
+      background: var(--warn-soft);
+    }
+
+    .diagram {
+      white-space: pre;
+      overflow: auto;
+      margin: 14px 0 18px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f8fafc;
+      color: #0f172a;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    @media (max-width: 820px) {
+      main {
+        padding: 28px 16px 58px;
+      }
+
+      h1 {
+        font-size: 27px;
+      }
+
+      .toc,
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>TinyClaw Core Model Refactor v1</h1>
+      <p class="lead">
+        本报告沉淀 TinyClaw 新一轮 core model 共识：第三方平台逻辑外挂，
+        clawman 只接收标准化消息、调度 invocation、生成 delivery outbox。
+        本文不覆盖 clawman 内部 sandbox 模块重设计。
+      </p>
+      <div class="meta">
+        <span class="tag">状态：目标模型草案</span>
+        <span class="tag">范围：Core Model</span>
+        <span class="tag">Sandbox：单独设计</span>
+        <span class="tag">Token：CLAWMAN_API_TOKEN</span>
+      </div>
+    </header>
+
+    <nav class="toc" aria-label="目录">
+      <a href="#boundary">1. 系统边界</a>
+      <a href="#concepts">2. 核心概念</a>
+      <a href="#tables">3. 表模型</a>
+      <a href="#inbound">4. Inbound API</a>
+      <a href="#dispatch">5. Dispatch 规则</a>
+      <a href="#delivery">6. Delivery Pull API</a>
+      <a href="#decisions">7. 关键决策</a>
+      <a href="#out-of-scope">8. 暂不覆盖</a>
+    </nav>
+
+    <section id="boundary">
+      <h2>1. 系统边界</h2>
+      <p>
+        TinyClaw core 不再直接持有企业微信、微信、斗鱼等第三方平台协议逻辑。
+        第三方平台协议、凭据、cursor、offset、重连状态都属于外挂 Channel Adapter。
+      </p>
+
+      <div class="diagram">Third-party Platforms
+  - WeCom
+  - WeChat
+  - Douyu
+        |
+        v
+Channel Adapters
+  - normalize inbound messages
+  - own platform credentials/cursors
+  - poll deliveries and send externally
+        |
+        v
+clawman core
+  - rooms
+  - messages
+  - invocations
+  - deliveries
+        |
+        v
+Sandbox module
+  - designed separately</div>
+
+      <div class="grid">
+        <div class="card">
+          <h3>Channel Adapter 负责</h3>
+          <ul>
+            <li>拉取或接收平台消息。</li>
+            <li>持有平台凭据、cursor、offset、重连状态。</li>
+            <li>标准化 inbound message 后调用 clawman。</li>
+            <li>轮询 clawman deliveries，并执行真实外发。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>clawman 负责</h3>
+          <ul>
+            <li>接收标准化 inbound message。</li>
+            <li>自动创建 Room，保存 Message。</li>
+            <li>应用 Trigger Policy。</li>
+            <li>创建和推进 Invocation。</li>
+            <li>生成 Delivery outbox。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="concepts">
+      <h2>2. 核心概念</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>概念</th>
+            <th>定义</th>
+            <th>第一版约束</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>Room</code></td>
+            <td>TinyClaw 内部会话容器。</td>
+            <td>一个外部 Channel Room 严格映射到一个 Room。</td>
+          </tr>
+          <tr>
+            <td><code>Message</code></td>
+            <td>TinyClaw 内部入站事实，属于一个 Room。</td>
+            <td>不使用企业微信 archive seq 作为身份。</td>
+          </tr>
+          <tr>
+            <td><code>Invocation</code></td>
+            <td>一次 agent 执行。</td>
+            <td>第一版直接挂 Room；同一 Room 同时最多一个 active Invocation。</td>
+          </tr>
+          <tr>
+            <td><code>Delivery</code></td>
+            <td>Invocation 产生的外发项。</td>
+            <td>发送成功与 Invocation 完成解耦。</td>
+          </tr>
+          <tr>
+            <td><code>Trigger Policy</code></td>
+            <td>决定 inbound Message 是否触发 Invocation 的规则。</td>
+            <td>Room 级可覆盖；为空时使用 channel default。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="tables">
+      <h2>3. 表模型</h2>
+
+      <h3>rooms</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>字段</th>
+            <th>类型</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><code>id</code></td><td><code>bigint primary key</code></td><td>内部 Room ID。</td></tr>
+          <tr><td><code>tenant_id</code></td><td><code>text not null</code></td><td>第一版固定为 <code>default</code>。</td></tr>
+          <tr><td><code>channel</code></td><td><code>text not null</code></td><td>例如 <code>wecom</code>、<code>wechat</code>、<code>douyu</code>。</td></tr>
+          <tr><td><code>channel_room_id</code></td><td><code>text not null</code></td><td>外部平台会话 ID，第一版不可变。</td></tr>
+          <tr><td><code>channel_room_type</code></td><td><code>text not null</code></td><td>例如 <code>direct</code>、<code>group</code>、<code>live_room</code>。</td></tr>
+          <tr><td><code>display_name</code></td><td><code>text null</code></td><td>展示名。</td></tr>
+          <tr><td><code>trigger_policy</code></td><td><code>jsonb null</code></td><td>为空时使用 channel default。</td></tr>
+        </tbody>
+      </table>
+      <pre><code>unique(tenant_id, channel, channel_room_id)</code></pre>
+
+      <h3>messages</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>字段</th>
+            <th>类型</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><code>id</code></td><td><code>bigint primary key</code></td><td>内部 Message ID。</td></tr>
+          <tr><td><code>room_id</code></td><td><code>bigint not null</code></td><td>引用 Room。</td></tr>
+          <tr><td><code>source_message_id</code></td><td><code>text not null</code></td><td>adapter 提供的幂等键。</td></tr>
+          <tr><td><code>sender_id</code></td><td><code>text not null</code></td><td>外部发送者 ID。</td></tr>
+          <tr><td><code>sender_name</code></td><td><code>text null</code></td><td>外部发送者展示名。</td></tr>
+          <tr><td><code>payload</code></td><td><code>jsonb not null</code></td><td>标准化消息内容。</td></tr>
+          <tr><td><code>message_time</code></td><td><code>timestamptz not null</code></td><td>外部消息时间。</td></tr>
+          <tr><td><code>dispatch_state</code></td><td><code>bigint not null default 0</code></td><td>调度状态 sentinel。</td></tr>
+        </tbody>
+      </table>
+      <pre><code>unique(room_id, source_message_id)
+check(dispatch_state in (0, 1) or dispatch_state &gt;= 1000)</code></pre>
+
+      <div class="note">
+        <strong>dispatch_state 约定：</strong>
+        <code>0</code> 表示 waiting/context candidate，
+        <code>1</code> 表示 skipped，
+        <code>&gt;=1000</code> 按约定指向真实 Invocation ID。
+        该字段不设外键，详见 ADR-0001。
+      </div>
+
+      <h3>invocations</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>字段</th>
+            <th>类型</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><code>id</code></td><td><code>bigint primary key</code></td><td>从 <code>1000</code> 开始。</td></tr>
+          <tr><td><code>room_id</code></td><td><code>bigint not null</code></td><td>第一版直接挂 Room。</td></tr>
+          <tr><td><code>status</code></td><td><code>text not null</code></td><td><code>queued</code>、<code>running</code>、<code>completed</code>、<code>failed</code>、<code>cancelled</code>。</td></tr>
+          <tr><td><code>trigger_message_id</code></td><td><code>bigint null</code></td><td>触发本次执行的 Message。</td></tr>
+          <tr><td><code>input_snapshot</code></td><td><code>jsonb not null</code></td><td>Invocation 创建时的初始结构化输入快照。</td></tr>
+          <tr><td><code>output_snapshot</code></td><td><code>jsonb null</code></td><td>agent 执行结果，第一版可保存 final output 或失败提示。</td></tr>
+          <tr><td><code>started_at</code></td><td><code>timestamptz null</code></td><td>开始执行时间。</td></tr>
+          <tr><td><code>completed_at</code></td><td><code>timestamptz null</code></td><td>完成时间。</td></tr>
+        </tbody>
+      </table>
+      <pre><code>check(id &gt;= 1000)
+check(status in ('queued', 'running', 'completed', 'failed', 'cancelled'))
+
+CREATE UNIQUE INDEX uniq_active_invocation_per_room
+ON invocations (room_id)
+WHERE status IN ('queued', 'running');</code></pre>
+
+      <div class="note">
+        <code>input_snapshot</code> 是 Invocation 创建时的可复盘初始输入事实，不是从当前
+        <code>messages</code> 规则重新推导的缓存。它应包含初始 prompt、被选入的 messages、
+        memory、附件和其他上下文。Invocation active 期间追加的 Message 通过
+        <code>messages.dispatch_state = invocation.id</code> 关联，不回写这个初始快照。
+      </div>
+
+      <h3>deliveries</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>字段</th>
+            <th>类型</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><code>id</code></td><td><code>bigint primary key</code></td><td>内部 Delivery ID。</td></tr>
+          <tr><td><code>seq</code></td><td><code>bigint identity</code></td><td>全局递增 outbox offset。</td></tr>
+          <tr><td><code>room_id</code></td><td><code>bigint not null</code></td><td>通过 Room 找到 channel 目标。</td></tr>
+          <tr><td><code>invocation_id</code></td><td><code>bigint not null</code></td><td>来源 Invocation。</td></tr>
+          <tr><td><code>payload</code></td><td><code>jsonb not null</code></td><td>待发送内容。</td></tr>
+          <tr><td><code>status</code></td><td><code>text not null</code></td><td><code>pending</code>、<code>acked</code>、<code>failed</code>。</td></tr>
+          <tr><td><code>acked_at</code></td><td><code>timestamptz null</code></td><td>adapter ack 时间。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="inbound">
+      <h2>4. Inbound API</h2>
+      <p>Adapter 调用 clawman 写入标准化消息。第一版统一使用 <code>CLAWMAN_API_TOKEN</code>。</p>
+      <pre><code>POST /api/inbound
+Authorization: Bearer &lt;CLAWMAN_API_TOKEN&gt;</code></pre>
+
+      <pre><code>{
+  "channel": "wecom",
+  "channel_room_id": "room-123",
+  "channel_room_type": "group",
+  "source_message_id": "external-msg-123",
+  "sender_id": "user-1",
+  "sender_name": "Alice",
+  "message_time": "2026-05-19T10:00:00Z",
+  "payload": {
+    "type": "text",
+    "text": "hello"
+  }
+}</code></pre>
+
+      <ol>
+        <li>使用 <code>tenant_id = default</code>。</li>
+        <li>按 <code>(tenant_id, channel, channel_room_id)</code> upsert Room。</li>
+        <li>按 <code>(room_id, source_message_id)</code> 幂等插入 Message。</li>
+        <li>如果 Message 已存在，返回已有结果，不重复触发。</li>
+        <li>应用 Room Trigger Policy；为空时使用 channel default rule。</li>
+        <li>根据 dispatch 规则创建或追加 Invocation。</li>
+      </ol>
+    </section>
+
+    <section id="dispatch">
+      <h2>5. Dispatch 规则</h2>
+
+      <h3>基础状态</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>dispatch_state</th>
+            <th>语义</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><code>0</code></td><td>waiting/context candidate</td><td>未触发但可作为上下文。</td></tr>
+          <tr><td><code>1</code></td><td>skipped</td><td>永远不应进入 agent invocation。</td></tr>
+          <tr><td><code>&gt;=1000</code></td><td>attached</td><td>绑定到真实 Invocation。</td></tr>
+        </tbody>
+      </table>
+
+      <div class="warn">
+        未触发不等于 skipped。群聊里未触发的普通消息保持 <code>dispatch_state = 0</code>，
+        后续触发时可作为上下文进入 Invocation。
+      </div>
+
+      <h3>无 active Invocation</h3>
+      <ol>
+        <li>新 Message 初始写入 <code>dispatch_state = 0</code>。</li>
+        <li>如果消息触发执行，创建 <code>status = queued</code> 的 Invocation。</li>
+        <li>把同一 Room 中 <code>dispatch_state = 0</code> 的 Messages 绑定到该 Invocation。</li>
+      </ol>
+      <pre><code>UPDATE messages
+SET dispatch_state = $invocation_id
+WHERE room_id = $room_id
+  AND dispatch_state = 0;</code></pre>
+
+      <h3>已有 active Invocation</h3>
+      <p>
+        Active Invocation 只包括 <code>queued</code> 和 <code>running</code>。
+        当 Room 已有 active Invocation，新 Message 如果不是 skipped，直接绑定到该 Invocation。
+      </p>
+      <pre><code>messages.dispatch_state = active_invocation.id</code></pre>
+      <p>第一版只做追加，不做中断。</p>
+
+      <h3>Invocation 状态</h3>
+      <pre><code>queued -> running -> completed
+queued -> failed
+running -> failed
+queued/running -> cancelled</code></pre>
+
+      <p><code>failed</code> 是终态；第一版不自动重试 failed Invocation。Invocation 失败时，clawman 创建一条失败提示 Delivery，后续用户重新触发会创建新的 Invocation。</p>
+    </section>
+
+    <section id="delivery">
+      <h2>6. Delivery Pull API</h2>
+      <p>
+        Adapter 轮询 clawman deliveries，并自行负责真实外发和短期重试。
+        <code>deliveries.seq</code> 是全局递增 outbox offset，按 channel 过滤时允许有空洞。
+      </p>
+
+      <pre><code>GET /api/deliveries?channel=wecom&amp;seq=123
+Authorization: Bearer &lt;CLAWMAN_API_TOKEN&gt;</code></pre>
+
+      <p>成功发送后 ack：</p>
+      <pre><code>POST /api/deliveries/{id}/ack
+Authorization: Bearer &lt;CLAWMAN_API_TOKEN&gt;</code></pre>
+
+      <ul>
+        <li>ack 后 Delivery 保留，只更新状态。</li>
+        <li>第一版由 adapter 负责发送失败后的短期重试。</li>
+        <li>clawman 不主动重试 failed Delivery。</li>
+      </ul>
+    </section>
+
+    <section id="decisions">
+      <h2>7. 关键决策</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>决策</th>
+            <th>结论</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>第三方平台逻辑</td>
+            <td>从 clawman 中剥离，由外挂 Channel Adapter 持有。</td>
+          </tr>
+          <tr>
+            <td>Room 创建</td>
+            <td>Inbound message 自动创建 Room。</td>
+          </tr>
+          <tr>
+            <td>tenant</td>
+            <td>第一版单租户，固定 <code>tenant_id = default</code>。</td>
+          </tr>
+          <tr>
+            <td>幂等</td>
+            <td>Adapter 必须提供 <code>source_message_id</code>。</td>
+          </tr>
+          <tr>
+            <td>Trigger</td>
+            <td>clawman 根据 Room Trigger Policy 判断；adapter 不负责。</td>
+          </tr>
+          <tr>
+            <td>Agent Session</td>
+            <td>第一版隐式存在，不建 <code>agent_sessions</code> 表。</td>
+          </tr>
+          <tr>
+            <td>Delivery</td>
+            <td>Invocation 完成不等待 Delivery ack。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="out-of-scope">
+      <h2>8. 暂不覆盖</h2>
+      <ul>
+        <li>clawman 内部 sandbox 模块。</li>
+        <li>sandbox lifecycle / claim / runtime connection。</li>
+        <li>Tool Runtime Backend：后续优先按“clawman 持有 agent loop，sandbox 只执行工具调用”设计。</li>
+        <li>durable workflow engine：第一版先用 <code>invocations.status</code>、<code>input_snapshot</code>、<code>output_snapshot</code> 和 <code>dispatch_state</code> 承载恢复语义。</li>
+        <li>memory capability。</li>
+        <li>explicit send capability。</li>
+        <li>同一 Room 多个独立 Agent Session。</li>
+        <li>channel adapter 自身 cursor / offset / reconnect state。</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

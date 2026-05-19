@@ -20,9 +20,19 @@ type jobStore interface {
 	AuthenticateAppClient(ctx context.Context, clientID, clientSecret string) (string, bool, error)
 }
 
+type coreStore interface {
+	IngestCoreMessage(ctx context.Context, input InboundMessageInput) (InboundMessageResult, error)
+	CompleteCoreInvocation(ctx context.Context, invocationID int64, input CompleteInvocationInput) (InvocationResult, error)
+	FailCoreInvocation(ctx context.Context, invocationID int64, detail string) (InvocationResult, error)
+	ListCoreDeliveries(ctx context.Context, channel string, afterSeq int64) ([]CoreDelivery, error)
+	AckCoreDelivery(ctx context.Context, id int64) (CoreDelivery, error)
+}
+
 type controlAPI struct {
 	store         jobStore
+	core          coreStore
 	media         mediaService
+	apiToken      string
 	internalToken string
 }
 
@@ -46,7 +56,9 @@ type mediaService interface {
 func serveControlAPI(ctx context.Context, cfg Config, store *Store, media mediaService) {
 	api := &controlAPI{
 		store:         store,
+		core:          store,
 		media:         media,
+		apiToken:      strings.TrimSpace(cfg.ClawmanAPIToken),
 		internalToken: strings.TrimSpace(cfg.ClawmanInternalToken),
 	}
 
@@ -55,6 +67,10 @@ func serveControlAPI(ctx context.Context, cfg Config, store *Store, media mediaS
 		writeAPIJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("/api/wecom/jobs", api.handleListJobs)
+	mux.HandleFunc("/api/inbound", api.handleInbound)
+	mux.HandleFunc("/api/deliveries", api.handleListDeliveries)
+	mux.HandleFunc("/api/deliveries/", api.handleDeliveryAction)
+	mux.HandleFunc("/api/invocations/", api.handleInvocationAction)
 	mux.HandleFunc("/internal/media/fetch", api.handleFetchMedia)
 
 	srv := &http.Server{
