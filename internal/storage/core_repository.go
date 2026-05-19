@@ -69,6 +69,40 @@ func upsertCoreRoomTx(ctx context.Context, tx *sql.Tx, input core.InboundMessage
 	return room, nil
 }
 
+func getCoreRoomByIDTx(ctx context.Context, tx *sql.Tx, id int64) (core.Room, error) {
+	var room core.Room
+	var displayName sql.NullString
+	var triggerPolicy []byte
+	err := tx.QueryRowContext(ctx, `
+		SELECT id, tenant_id, channel, channel_room_id, channel_room_type, display_name, trigger_policy, created_at, updated_at
+		FROM rooms
+		WHERE id = $1
+	`, id).Scan(
+		&room.ID,
+		&room.TenantID,
+		&room.Channel,
+		&room.ChannelRoomID,
+		&room.ChannelRoomType,
+		&displayName,
+		&triggerPolicy,
+		&room.CreatedAt,
+		&room.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return core.Room{}, fmt.Errorf("room %d not found", id)
+		}
+		return core.Room{}, fmt.Errorf("get core room: %w", err)
+	}
+	if displayName.Valid {
+		room.DisplayName = displayName.String
+	}
+	if len(triggerPolicy) > 0 {
+		room.TriggerPolicy = append(json.RawMessage(nil), triggerPolicy...)
+	}
+	return room, nil
+}
+
 func insertCoreMessageTx(ctx context.Context, tx *sql.Tx, roomID int64, input core.InboundMessageInput) (bool, core.Message, error) {
 	var id int64
 	err := tx.QueryRowContext(ctx, `

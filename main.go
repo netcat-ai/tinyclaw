@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -45,7 +46,7 @@ func main() {
 	defer stop()
 
 	coreStore := storage.NewCoreStore(store.DB())
-	invocationScheduler := executor.NewScheduler(runCtx, coreStore, executor.UnconfiguredRunner{})
+	invocationScheduler := executor.NewScheduler(runCtx, coreStore, buildInvocationRunner(cfg))
 	coreAPI := httpapi.NewServer(coreStore, cfg.ClawmanAPIToken, invocationScheduler)
 
 	// Start metrics server
@@ -55,6 +56,21 @@ func main() {
 	<-runCtx.Done()
 
 	slog.Info("clawman stopped")
+}
+
+func buildInvocationRunner(cfg Config) executor.Runner {
+	switch strings.ToLower(strings.TrimSpace(cfg.AgentRunner)) {
+	case "codex":
+		return executor.NewCodexRunner(executor.CodexRunnerConfig{
+			Bin:     cfg.CodexBin,
+			WorkDir: executor.AbsoluteCodexWorkDir(cfg.CodexWorkDir),
+			Model:   cfg.CodexModel,
+			Sandbox: cfg.CodexSandbox,
+			Timeout: cfg.CodexRunnerTimeout,
+		})
+	default:
+		return executor.UnconfiguredRunner{}
+	}
 }
 
 func serveCoreAPI(ctx context.Context, addr string, handler http.Handler) {

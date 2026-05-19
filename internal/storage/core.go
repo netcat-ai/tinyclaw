@@ -109,12 +109,13 @@ func (s *CoreStore) CompleteCoreInvocation(ctx context.Context, invocationID int
 	if err != nil {
 		return core.InvocationResult{}, err
 	}
+	room, err := getCoreRoomByIDTx(ctx, tx, invocation.RoomID)
+	if err != nil {
+		return core.InvocationResult{}, err
+	}
 	var delivery *core.Delivery
 	if strings.TrimSpace(input.Text) != "" {
-		created, err := createCoreDeliveryTx(ctx, tx, invocation.RoomID, invocation.ID, mustJSON(map[string]any{
-			"type": "text",
-			"text": input.Text,
-		}))
+		created, err := createCoreDeliveryTx(ctx, tx, invocation.RoomID, invocation.ID, deliveryTextPayload(room, input.Text))
 		if err != nil {
 			return core.InvocationResult{}, err
 		}
@@ -179,10 +180,11 @@ func (s *CoreStore) FailCoreInvocation(ctx context.Context, invocationID int64, 
 	if err != nil {
 		return core.InvocationResult{}, err
 	}
-	delivery, err := createCoreDeliveryTx(ctx, tx, invocation.RoomID, invocation.ID, mustJSON(map[string]any{
-		"type": "text",
-		"text": detail,
-	}))
+	room, err := getCoreRoomByIDTx(ctx, tx, invocation.RoomID)
+	if err != nil {
+		return core.InvocationResult{}, err
+	}
+	delivery, err := createCoreDeliveryTx(ctx, tx, invocation.RoomID, invocation.ID, deliveryTextPayload(room, detail))
 	if err != nil {
 		return core.InvocationResult{}, err
 	}
@@ -235,4 +237,15 @@ func mustJSON(value any) json.RawMessage {
 		panic(err)
 	}
 	return data
+}
+
+func deliveryTextPayload(room core.Room, text string) json.RawMessage {
+	return mustJSON(map[string]any{
+		"type":            "text",
+		"text":            text,
+		"app":             room.Channel,
+		"channel":         room.Channel,
+		"channel_room_id": room.ChannelRoomID,
+		"recipient_alias": room.ChannelRoomID,
+	})
 }

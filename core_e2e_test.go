@@ -34,9 +34,10 @@ type coreE2EInvocationResponse struct {
 }
 
 type coreE2EDeliveryResponse struct {
-	ID           int64 `json:"id"`
-	InvocationID int64 `json:"invocation_id"`
-	Status       int16 `json:"status"`
+	ID           int64           `json:"id"`
+	InvocationID int64           `json:"invocation_id"`
+	Payload      json.RawMessage `json:"payload"`
+	Status       int16           `json:"status"`
 }
 
 type coreE2EDeliveriesPageResponse struct {
@@ -140,6 +141,19 @@ func TestCoreModelE2E(t *testing.T) {
 	}
 	if deliveries.Deliveries[0].InvocationID != invocationID {
 		t.Fatalf("delivery invocation id = %d, want %d", deliveries.Deliveries[0].InvocationID, invocationID)
+	}
+	var deliveryPayload struct {
+		Type           string `json:"type"`
+		Text           string `json:"text"`
+		App            string `json:"app"`
+		ChannelRoomID  string `json:"channel_room_id"`
+		RecipientAlias string `json:"recipient_alias"`
+	}
+	if err := json.Unmarshal(deliveries.Deliveries[0].Payload, &deliveryPayload); err != nil {
+		t.Fatalf("decode delivery payload: %v", err)
+	}
+	if deliveryPayload.Text != "done" || deliveryPayload.App != "wecom" || deliveryPayload.RecipientAlias != roomID || deliveryPayload.ChannelRoomID != roomID {
+		t.Fatalf("delivery payload = %+v, want routed text payload", deliveryPayload)
 	}
 
 	acked := ackDeliveryE2E(t, api, deliveries.Deliveries[0].ID)

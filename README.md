@@ -13,6 +13,14 @@ The current codebase has removed the old in-repo agent runtime, sandbox orchestr
 
 Triggered invocations are started by an in-process execution module. Until a real agent runner is configured, triggered invocations fail fast and produce a failure delivery.
 
+Set `AGENT_RUNNER=codex` to run triggered invocations through `codex exec`. Optional Codex runner settings:
+
+- `CODEX_BIN`: Codex executable, defaults to `codex`.
+- `CODEX_WORKDIR`: working directory passed to Codex, defaults to `.`.
+- `CODEX_MODEL`: optional model override.
+- `CODEX_SANDBOX`: Codex sandbox mode, defaults to `workspace-write`.
+- `CODEX_RUNNER_TIMEOUT`: execution timeout, defaults to `5m`.
+
 `clawman` now exposes the Core Model HTTP interface:
 
 - `POST /api/inbound`
