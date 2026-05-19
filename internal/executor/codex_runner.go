@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,11 +21,13 @@ import (
 const defaultCodexRunnerTimeout = 5 * time.Minute
 
 type CodexRunnerConfig struct {
-	Bin     string
-	WorkDir string
-	Model   string
-	Sandbox string
-	Timeout time.Duration
+	Bin       string
+	WorkDir   string
+	Model     string
+	Sandbox   string
+	Timeout   time.Duration
+	BaseURL   string
+	APIKeyEnv string
 }
 
 type CodexRunner struct {
@@ -42,6 +47,9 @@ func NewCodexRunner(config CodexRunnerConfig) *CodexRunner {
 	if config.Timeout <= 0 {
 		config.Timeout = defaultCodexRunnerTimeout
 	}
+	if strings.TrimSpace(config.APIKeyEnv) == "" {
+		config.APIKeyEnv = "OPENAI_API_KEY"
+	}
 	return &CodexRunner{config: config}
 }
 
@@ -51,6 +59,10 @@ func (r *CodexRunner) RunInvocation(ctx context.Context, run InvocationRun) (str
 	}
 	runCtx, cancel := context.WithTimeout(ctx, r.config.Timeout)
 	defer cancel()
+
+	if strings.TrimSpace(r.config.BaseURL) != "" {
+		return r.runResponsesAPI(runCtx, run)
+	}
 
 	outputFile, err := os.CreateTemp("", "tinyclaw-codex-output-*.txt")
 	if err != nil {
@@ -63,6 +75,8 @@ func (r *CodexRunner) RunInvocation(ctx context.Context, run InvocationRun) (str
 	args := []string{
 		"-a", "never",
 		"exec",
+		"--skip-git-repo-check",
+		"--ephemeral",
 		"--cd", r.config.WorkDir,
 		"--sandbox", r.config.Sandbox,
 		"--output-last-message", outputPath,
@@ -93,6 +107,97 @@ func (r *CodexRunner) RunInvocation(ctx context.Context, run InvocationRun) (str
 	text := strings.TrimSpace(string(data))
 	if text == "" {
 		text = strings.TrimSpace(combined.String())
+	}
+	return text, nil
+}
+
+func (r *CodexRunner) runResponsesAPI(ctx context.Context, run InvocationRun) (string, error) {
+	endpoint, err := responsesEndpoint(r.config.BaseURL)
+	if err != nil {
+		return "", err
+	}
+	apiKey := strings.TrimSpace(os.Getenv(r.config.APIKeyEnv))
+	if apiKey == "" {
+		return "", fmt.Errorf("%s is required for CODEX_BASE_URL", r.config.APIKeyEnv)
+	}
+	model := strings.TrimSpace(r.config.Model)
+	if model == "" {
+		model = "gpt-5.5"
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"model":  model,
+		"input":  BuildCodexPrompt(run),
+		"stream": false,
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode codex responses request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("create codex responses request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("call codex responses api: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return "", fmt.Errorf("read codex responses api: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("codex responses api status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+
+	text, err := extractResponsesText(data)
+	if err != nil {
+		return "", err
+	}
+	return text, nil
+}
+
+func responsesEndpoint(baseURL string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return "", fmt.Errorf("parse CODEX_BASE_URL: %w", err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("CODEX_BASE_URL must be an absolute URL")
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/v1/responses"
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), nil
+}
+
+func extractResponsesText(data []byte) (string, error) {
+	var parsed struct {
+		Output []struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return "", fmt.Errorf("decode codex responses api: %w", err)
+	}
+	var parts []string
+	for _, output := range parsed.Output {
+		for _, content := range output.Content {
+			if content.Type == "output_text" && strings.TrimSpace(content.Text) != "" {
+				parts = append(parts, strings.TrimSpace(content.Text))
+			}
+		}
+	}
+	text := strings.TrimSpace(strings.Join(parts, "\n"))
+	if text == "" {
+		return "", fmt.Errorf("codex responses api returned empty output")
 	}
 	return text, nil
 }

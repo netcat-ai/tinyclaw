@@ -20,6 +20,8 @@ Set `AGENT_RUNNER=codex` to run triggered invocations through `codex exec`. Opti
 - `CODEX_MODEL`: optional model override.
 - `CODEX_SANDBOX`: Codex sandbox mode, defaults to `workspace-write`.
 - `CODEX_RUNNER_TIMEOUT`: execution timeout, defaults to `5m`.
+- `CODEX_BASE_URL`: optional OpenAI-compatible Responses API endpoint base URL. When set, the runner calls `/v1/responses` directly instead of `codex exec`.
+- `CODEX_API_KEY_ENV`: environment variable name for the API key used with `CODEX_BASE_URL`, defaults to `OPENAI_API_KEY`.
 
 `clawman` now exposes the Core Model HTTP interface:
 
@@ -77,7 +79,23 @@ Main service:
 - `CONTROL_API_ADDR` default `:8081`
 - `METRICS_ADDR` default `:9090`
 
-Channel adapters own provider-specific configuration. The core service does not read `WECOM_*` environment variables.
+Channel adapters own provider-specific configuration. The current deployable binary can run the WeCom archive adapter in-process as a deployment bridge by setting `WECOM_ENABLED=true`. This keeps the Core Model API stable while avoiding a second service until the adapter is split out.
+
+WeCom archive adapter:
+
+- `WECOM_ENABLED`: enable in-process WeCom archive polling, defaults to false.
+- `WECOM_CORP_ID`
+- `WECOM_CORP_SECRET`
+- `WECOM_RSA_PRIVATE_KEY`
+- `WECOM_BOT_ID`: used to skip self-sent messages and identify direct chat peers.
+- `WECOM_POLL_INTERVAL`: defaults to `3s`.
+- `WECOM_POLL_LIMIT`: defaults to `100`.
+- `WECOM_SDK_TIMEOUT`: defaults to `30`.
+- `WECOM_START_SEQ`: initial archive seq when no adapter cursor exists, defaults to `0`.
+
+The adapter stores archive progress in `channel_adapter_cursors`. WeCom archive `seq` remains an adapter-local cursor and is not used as the TinyClaw Message identity.
+
+Mobile delivery uses `rooms.display_name` as `recipient_alias` when present, falling back to `channel_room_id`. For WeCom, keep `display_name` aligned with the visible conversation title on the phone; external contacts may display a different UI alias than their internal WeCom name.
 
 ## Design Docs
 

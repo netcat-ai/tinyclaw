@@ -18,7 +18,7 @@ func ShouldTriggerMessage(room Room, input InboundMessageInput) bool {
 	}
 	_ = json.Unmarshal(input.Payload, &payload)
 	text := strings.TrimSpace(payload.Text)
-	return strings.Contains(text, "@agent") || strings.Contains(text, "/ask")
+	return strings.Contains(text, "虾虾") || strings.Contains(text, "@agent") || strings.Contains(text, "/ask")
 }
 
 func EvaluateTriggerPolicy(policy json.RawMessage, input InboundMessageInput) (bool, bool) {

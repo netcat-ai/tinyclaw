@@ -240,12 +240,16 @@ func mustJSON(value any) json.RawMessage {
 }
 
 func deliveryTextPayload(room core.Room, text string) json.RawMessage {
+	recipientAlias := room.ChannelRoomID
+	if room.DisplayName != "" {
+		recipientAlias = room.DisplayName
+	}
 	return mustJSON(map[string]any{
 		"type":            "text",
 		"text":            text,
 		"app":             room.Channel,
 		"channel":         room.Channel,
 		"channel_room_id": room.ChannelRoomID,
-		"recipient_alias": room.ChannelRoomID,
+		"recipient_alias": recipientAlias,
 	})
 }

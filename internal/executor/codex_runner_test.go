@@ -2,6 +2,9 @@ package executor
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +32,39 @@ func TestBuildCodexPromptIncludesContextMessages(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
+	}
+}
+
+func TestCodexRunnerUsesResponsesAPI(t *testing.T) {
+	t.Setenv("TEST_CODEX_KEY", "test-key")
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("path = %q, want /v1/responses", r.URL.Path)
+		}
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = fmt.Fprint(w, `{"output":[{"content":[{"type":"output_text","text":"api answer"}]}]}`)
+	}))
+	defer server.Close()
+
+	runner := NewCodexRunner(CodexRunnerConfig{
+		BaseURL:   server.URL,
+		APIKeyEnv: "TEST_CODEX_KEY",
+		Model:     "gpt-5.5",
+		Timeout:   time.Second,
+	})
+
+	output, err := runner.RunInvocation(context.Background(), InvocationRun{
+		Invocation: core.Invocation{ID: 1000, RoomID: 10},
+	})
+	if err != nil {
+		t.Fatalf("RunInvocation error: %v", err)
+	}
+	if gotAuth != "Bearer test-key" {
+		t.Fatalf("Authorization = %q, want bearer key", gotAuth)
+	}
+	if output != "api answer" {
+		t.Fatalf("output = %q, want api answer", output)
 	}
 }
 

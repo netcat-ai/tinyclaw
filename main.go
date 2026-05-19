@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"tinyclaw/channel/wecom"
 	httpapi "tinyclaw/internal/api"
 	"tinyclaw/internal/executor"
 	"tinyclaw/internal/storage"
@@ -52,21 +53,44 @@ func main() {
 	// Start metrics server
 	go serveMetrics(runCtx, cfg.MetricsAddr)
 	go serveCoreAPI(runCtx, cfg.ControlAPIAddr, coreAPI)
+	if cfg.WeComEnabled {
+		go serveWeComArchiveAdapter(runCtx, store, coreStore, invocationScheduler, cfg)
+	}
 
 	<-runCtx.Done()
 
 	slog.Info("clawman stopped")
 }
 
+func serveWeComArchiveAdapter(ctx context.Context, store *Store, coreStore *storage.CoreStore, scheduler *executor.Scheduler, cfg Config) {
+	adapter := wecom.NewArchiveAdapter(store.DB(), coreStore, scheduler, wecom.ArchiveConfig{
+		CorpID:        cfg.WeComCorpID,
+		CorpSecret:    cfg.WeComCorpSecret,
+		RSAPrivateKey: cfg.WeComRSAPrivateKey,
+		BotID:         cfg.WeComBotID,
+		Proxy:         cfg.WeComProxy,
+		ProxyPassword: cfg.WeComProxyPassword,
+		PollInterval:  cfg.WeComPollInterval,
+		PollLimit:     cfg.WeComPollLimit,
+		SDKTimeout:    cfg.WeComSDKTimeout,
+		StartSeq:      cfg.WeComStartSeq,
+	})
+	if err := adapter.Run(ctx); err != nil {
+		slog.Error("wecom archive adapter stopped", "err", err)
+	}
+}
+
 func buildInvocationRunner(cfg Config) executor.Runner {
 	switch strings.ToLower(strings.TrimSpace(cfg.AgentRunner)) {
 	case "codex":
 		return executor.NewCodexRunner(executor.CodexRunnerConfig{
-			Bin:     cfg.CodexBin,
-			WorkDir: executor.AbsoluteCodexWorkDir(cfg.CodexWorkDir),
-			Model:   cfg.CodexModel,
-			Sandbox: cfg.CodexSandbox,
-			Timeout: cfg.CodexRunnerTimeout,
+			Bin:       cfg.CodexBin,
+			WorkDir:   executor.AbsoluteCodexWorkDir(cfg.CodexWorkDir),
+			Model:     cfg.CodexModel,
+			Sandbox:   cfg.CodexSandbox,
+			Timeout:   cfg.CodexRunnerTimeout,
+			BaseURL:   cfg.CodexBaseURL,
+			APIKeyEnv: cfg.CodexAPIKeyEnv,
 		})
 	default:
 		return executor.UnconfiguredRunner{}

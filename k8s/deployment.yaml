@@ -20,6 +20,10 @@ spec:
       imagePullSecrets:
         - name: ghcr-pull
       serviceAccountName: clawman
+      hostAliases:
+        - ip: "183.47.100.66"
+          hostnames:
+            - qyapi.weixin.qq.com
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -28,13 +32,11 @@ spec:
                   - key: region
                     operator: In
                     values:
-                      - bj
                       - sz
-                      - sh
       containers:
         - name: clawman
           image: ghcr.io/netcat-ai/tinyclaw:IMAGE_PLACEHOLDER
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8081
               name: control-api
@@ -43,6 +45,11 @@ spec:
                 name: tinyclaw-config
             - secretRef:
                 name: tinyclaw-secret
+          volumeMounts:
+            - name: codex-auth
+              mountPath: /root/.codex/auth.json
+              subPath: auth.json
+              readOnly: true
           resources:
             requests:
               cpu: 100m
@@ -50,3 +57,10 @@ spec:
             limits:
               cpu: "1"
               memory: 512Mi
+      volumes:
+        - name: codex-auth
+          secret:
+            secretName: tinyclaw-secret
+            items:
+              - key: CODEX_AUTH_JSON
+                path: auth.json
