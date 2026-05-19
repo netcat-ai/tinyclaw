@@ -6,38 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
-
-var (
-	msgPulled = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "tinyclaw_messages_pulled_total",
-		Help: "Total messages pulled from WeChat Work archive.",
-	})
-	msgSkipped = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "tinyclaw_messages_skipped_total",
-		Help: "Total messages skipped by reason.",
-	}, []string{"reason"})
-	dbOperations = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "tinyclaw_db_duration_seconds",
-		Help:    "Database operation latency.",
-		Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1},
-	}, []string{"operation"})
-	pullCycleErrors = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "tinyclaw_pull_cycle_errors_total",
-		Help: "Total pull cycle errors.",
-	})
-)
-
-func init() {
-	prometheus.MustRegister(
-		msgPulled,
-		msgSkipped,
-		dbOperations,
-		pullCycleErrors,
-	)
-}
 
 func serveMetrics(ctx context.Context, addr string) {
 	mux := http.NewServeMux()
@@ -58,13 +28,5 @@ func serveMetrics(ctx context.Context, addr string) {
 	slog.Info("metrics server starting", "addr", addr)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		slog.Error("metrics server failed", "err", err)
-	}
-}
-
-// dbTimer returns a function that records the duration of a DB operation when called.
-func dbTimer(operation string) func() {
-	start := time.Now()
-	return func() {
-		dbOperations.WithLabelValues(operation).Observe(time.Since(start).Seconds())
 	}
 }

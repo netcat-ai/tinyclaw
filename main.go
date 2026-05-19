@@ -36,11 +36,6 @@ func main() {
 		slog.Error("init postgres schema failed", "err", err)
 		os.Exit(1)
 	}
-	if err := store.ResetSentMessages(ctx); err != nil {
-		cancel()
-		slog.Error("reset sent messages failed", "err", err)
-		os.Exit(1)
-	}
 	cancel()
 
 	coreStore := storage.NewCoreStore(store.DB())
@@ -51,7 +46,7 @@ func main() {
 
 	// Start metrics server
 	go serveMetrics(runCtx, cfg.MetricsAddr)
-	go serveControlAPI(runCtx, cfg, store, coreAPI, nil)
+	go serveControlAPI(runCtx, cfg, coreAPI)
 
 	<-runCtx.Done()
 

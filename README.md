@@ -30,7 +30,7 @@ internal/api       HTTP adapter for Core Model routes
 channel/wecom/     Legacy WeCom SDK helpers and clients
 ```
 
-The root `main` package wires configuration, storage, metrics, the Core Model API, and remaining legacy WeCom archive ingestion.
+The root `main` package wires configuration, storage, metrics, and the Core Model API.
 
 ## Build And Test
 
@@ -48,7 +48,6 @@ Main service:
 - `DATABASE_URL`
 - `CLAWMAN_API_TOKEN`
 - `CONTROL_API_ADDR` default `:8081`
-- `CLAWMAN_INTERNAL_TOKEN`
 - `METRICS_ADDR` default `:9090`
 
 Channel adapters own provider-specific configuration. The core service does not read `WECOM_*` environment variables.
