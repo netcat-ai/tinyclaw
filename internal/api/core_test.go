@@ -40,6 +40,21 @@ func (f fakeCoreStore) AckCoreDelivery(ctx context.Context, id int64) (core.Deli
 	return f.ackFn(ctx, id)
 }
 
+func TestHealthz(t *testing.T) {
+	api := NewServer(nil, "api-secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	api.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if rec.Body.String() != `{"status":"ok"}` {
+		t.Fatalf("body = %q, want health payload", rec.Body.String())
+	}
+}
+
 func TestHandleInboundRequiresAPIToken(t *testing.T) {
 	api := &Server{
 		apiToken: "api-secret",

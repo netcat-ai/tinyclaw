@@ -31,7 +31,7 @@ func NewServer(core CoreStore, apiToken string) *Server {
 		apiToken: strings.TrimSpace(apiToken),
 		mux:      http.NewServeMux(),
 	}
-	server.RegisterCoreRoutes(server.mux)
+	server.RegisterRoutes(server.mux)
 	return server
 }
 
@@ -39,11 +39,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-func (s *Server) RegisterCoreRoutes(mux *http.ServeMux) {
+func (s *Server) RegisterRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/healthz", handleHealthz)
 	mux.HandleFunc("/api/inbound", s.handleInbound)
 	mux.HandleFunc("/api/deliveries", s.handleListDeliveries)
 	mux.HandleFunc("/api/deliveries/", s.handleDeliveryAction)
 	mux.HandleFunc("/api/invocations/", s.handleInvocationAction)
+}
+
+func handleHealthz(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
 type inboundResponse struct {

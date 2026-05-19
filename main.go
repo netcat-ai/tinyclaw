@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -46,9 +48,29 @@ func main() {
 
 	// Start metrics server
 	go serveMetrics(runCtx, cfg.MetricsAddr)
-	go serveControlAPI(runCtx, cfg, coreAPI)
+	go serveCoreAPI(runCtx, cfg.ControlAPIAddr, coreAPI)
 
 	<-runCtx.Done()
 
 	slog.Info("clawman stopped")
+}
+
+func serveCoreAPI(ctx context.Context, addr string, handler http.Handler) {
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+
+	slog.Info("core api starting", "addr", addr)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Error("core api failed", "err", err)
+	}
 }
