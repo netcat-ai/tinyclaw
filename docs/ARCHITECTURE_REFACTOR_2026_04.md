@@ -1,5 +1,7 @@
 # TinyClaw Architecture Refactor Plan (2026-04)
 
+> Historical: superseded by `docs/CORE_MODEL_REFACTOR_V1.md`. The current code no longer uses `jobs`, `RoomChat` gRPC, or sandbox-driven message execution.
+
 ## 1. 目标
 
 本文件只记录这轮架构调整已经确认的结论：

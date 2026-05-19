@@ -2,57 +2,25 @@ package main
 
 import "testing"
 
-func TestLoadConfigUsesWeComBotIDForGroupTriggerMentionFallback(t *testing.T) {
-	t.Setenv("DATABASE_URL", "postgres://example")
-	t.Setenv("WECOM_CORP_ID", "corp")
-	t.Setenv("WECOM_CORP_SECRET", "secret")
-	t.Setenv("WECOM_RSA_PRIVATE_KEY", "private-key")
-	t.Setenv("WECOM_BOT_ID", "moss")
-	t.Setenv("WECOM_GROUP_TRIGGER_MENTIONS", "")
+func TestLoadConfigUsesServiceDefaults(t *testing.T) {
+	t.Setenv("CONTROL_API_ADDR", "")
+	t.Setenv("METRICS_ADDR", "")
+	t.Setenv("CODEX_RUNNER_TIMEOUT", "")
 
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig error: %v", err)
 	}
-
-	if cfg.WeComBotID != "moss" {
-		t.Fatalf("WeComBotID = %q, want moss", cfg.WeComBotID)
+	if cfg.ControlAPIAddr != ":8081" {
+		t.Fatalf("ControlAPIAddr = %q, want :8081", cfg.ControlAPIAddr)
 	}
-	if len(cfg.WeComGroupTriggerMentions) != 1 || cfg.WeComGroupTriggerMentions[0] != "moss" {
-		t.Fatalf("WeComGroupTriggerMentions = %#v, want [moss]", cfg.WeComGroupTriggerMentions)
+	if cfg.MetricsAddr != ":9090" {
+		t.Fatalf("MetricsAddr = %q, want :9090", cfg.MetricsAddr)
 	}
-}
-
-func TestLoadConfigUsesDefaultSandboxWakePlaceholder(t *testing.T) {
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig error: %v", err)
+	if cfg.CodexBin != "codex" {
+		t.Fatalf("CodexBin = %q, want codex", cfg.CodexBin)
 	}
-	if cfg.SandboxWakePlaceholder != defaultSandboxWakePlaceholder {
-		t.Fatalf("SandboxWakePlaceholder = %q, want %q", cfg.SandboxWakePlaceholder, defaultSandboxWakePlaceholder)
-	}
-}
-
-func TestLoadConfigCanDisableSandboxWakePlaceholder(t *testing.T) {
-	t.Setenv("SANDBOX_WAKE_PLACEHOLDER", "off")
-
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig error: %v", err)
-	}
-	if cfg.SandboxWakePlaceholder != "" {
-		t.Fatalf("SandboxWakePlaceholder = %q, want empty", cfg.SandboxWakePlaceholder)
-	}
-}
-
-func TestLoadConfigEmptySandboxWakePlaceholderUsesDefault(t *testing.T) {
-	t.Setenv("SANDBOX_WAKE_PLACEHOLDER", "")
-
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig error: %v", err)
-	}
-	if cfg.SandboxWakePlaceholder != defaultSandboxWakePlaceholder {
-		t.Fatalf("SandboxWakePlaceholder = %q, want %q", cfg.SandboxWakePlaceholder, defaultSandboxWakePlaceholder)
+	if cfg.CodexRunnerTimeout.String() != "5m0s" {
+		t.Fatalf("CodexRunnerTimeout = %s, want 5m0s", cfg.CodexRunnerTimeout)
 	}
 }

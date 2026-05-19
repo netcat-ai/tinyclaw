@@ -2,14 +2,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
-	"k8s.io/client-go/rest"
-	"tinyclaw/sandbox"
+	"tinyclaw/channel/wecom"
+	httpapi "tinyclaw/internal/api"
+	"tinyclaw/internal/executor"
+	"tinyclaw/internal/storage"
 )
 
 const dbStartupTimeout = 10 * time.Second
@@ -21,9 +26,6 @@ func main() {
 	if err != nil {
 		slog.Error("load config failed", "err", err)
 		os.Exit(1)
-	}
-	if cfg.WeComBotID == "" {
-		slog.Warn("WECOM_BOT_ID is empty; bot-sent direct messages will be ingested as room_id=<bot_id> and may create self-loop sandboxes")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), dbStartupTimeout)
@@ -39,56 +41,78 @@ func main() {
 		slog.Error("init postgres schema failed", "err", err)
 		os.Exit(1)
 	}
-	if err := store.ResetSentMessages(ctx); err != nil {
-		cancel()
-		slog.Error("reset sent messages failed", "err", err)
-		os.Exit(1)
-	}
 	cancel()
-
-	k8sCfg, err := rest.InClusterConfig()
-	if err != nil {
-		slog.Error("k8s in-cluster config failed", "err", err)
-		os.Exit(1)
-	}
-	orch := sandbox.NewOrchestrator(sandbox.Config{
-		Namespace:    cfg.SandboxNamespace,
-		TemplateName: cfg.SandboxTemplateName,
-		ReadyTimeout: time.Duration(cfg.SandboxReadyTimeoutSec) * time.Second,
-		RestConfig:   k8sCfg,
-	})
-	slog.Info(
-		"sandbox claim integration enabled",
-		"namespace", cfg.SandboxNamespace,
-		"template", cfg.SandboxTemplateName,
-	)
-
-	gateway := NewMessageGateway(cfg, orch.ResolveRoomID)
-
-	clawman, err := NewClawman(cfg, store, orch, gateway)
-	if err != nil {
-		slog.Error("init clawman failed", "err", err)
-		os.Exit(1)
-	}
-	defer clawman.Close()
 
 	runCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	coreStore := storage.NewCoreStore(store.DB())
+	invocationScheduler := executor.NewScheduler(runCtx, coreStore, buildInvocationRunner(cfg))
+	coreAPI := httpapi.NewServer(coreStore, cfg.ClawmanAPIToken, invocationScheduler)
+
 	// Start metrics server
 	go serveMetrics(runCtx, cfg.MetricsAddr)
-	go serveControlAPI(runCtx, cfg, store)
-	go func() {
-		if err := gateway.Serve(runCtx); err != nil {
-			slog.Error("clawman grpc gateway stopped with error", "err", err)
-			stop()
-		}
-	}()
-
-	if err := clawman.Run(runCtx); err != nil {
-		slog.Error("clawman stopped with error", "err", err)
-		os.Exit(1)
+	go serveCoreAPI(runCtx, cfg.ControlAPIAddr, coreAPI)
+	if cfg.WeComEnabled {
+		go serveWeComArchiveAdapter(runCtx, store, coreStore, invocationScheduler, cfg)
 	}
 
+	<-runCtx.Done()
+
 	slog.Info("clawman stopped")
+}
+
+func serveWeComArchiveAdapter(ctx context.Context, store *Store, coreStore *storage.CoreStore, scheduler *executor.Scheduler, cfg Config) {
+	adapter := wecom.NewArchiveAdapter(store.DB(), coreStore, scheduler, wecom.ArchiveConfig{
+		CorpID:        cfg.WeComCorpID,
+		CorpSecret:    cfg.WeComCorpSecret,
+		RSAPrivateKey: cfg.WeComRSAPrivateKey,
+		BotID:         cfg.WeComBotID,
+		Proxy:         cfg.WeComProxy,
+		ProxyPassword: cfg.WeComProxyPassword,
+		PollInterval:  cfg.WeComPollInterval,
+		PollLimit:     cfg.WeComPollLimit,
+		SDKTimeout:    cfg.WeComSDKTimeout,
+		StartSeq:      cfg.WeComStartSeq,
+	})
+	if err := adapter.Run(ctx); err != nil {
+		slog.Error("wecom archive adapter stopped", "err", err)
+	}
+}
+
+func buildInvocationRunner(cfg Config) executor.Runner {
+	switch strings.ToLower(strings.TrimSpace(cfg.AgentRunner)) {
+	case "codex":
+		return executor.NewCodexRunner(executor.CodexRunnerConfig{
+			Bin:       cfg.CodexBin,
+			WorkDir:   executor.AbsoluteCodexWorkDir(cfg.CodexWorkDir),
+			Model:     cfg.CodexModel,
+			Sandbox:   cfg.CodexSandbox,
+			Timeout:   cfg.CodexRunnerTimeout,
+			BaseURL:   cfg.CodexBaseURL,
+			APIKeyEnv: cfg.CodexAPIKeyEnv,
+		})
+	default:
+		return executor.UnconfiguredRunner{}
+	}
+}
+
+func serveCoreAPI(ctx context.Context, addr string, handler http.Handler) {
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+
+	slog.Info("core api starting", "addr", addr)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Error("core api failed", "err", err)
+	}
 }

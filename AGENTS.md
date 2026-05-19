@@ -2,8 +2,8 @@
 
 ## Structure
 - `README.md`: project summary and current consensus.
-- `docs/ARCHITECTURE_V0.md`: runtime architecture and event flow.
-- `docs/AGENT_SANDBOX_INTEGRATION_V0.md`: agent-sandbox integration design.
+- `docs/CORE_MODEL_REFACTOR_V1.md`: current Core Model design.
+- `docs/adr/`: architecture decision records.
 - `docs/NEXT_STEPS.md`: execution roadmap.
 - `docs/CONVERSATION_LOG.md`: decision history.
 
@@ -38,8 +38,22 @@ Prefer updating an existing document over creating overlapping files.
 - Keep comments minimal and meaningful.
 - Do not add dependencies or configuration unless necessary.
 
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are tracked in GitHub Issues for `netcat-ai/tinyclaw`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Triage uses the default five-label vocabulary. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Domain documentation uses a single-context layout. See `docs/agents/domain.md`.
+
 ## Commits And PRs
-- Commit format: `<type>: <summary>` such as `docs: clarify sandbox claim flow`.
+- Commit format: `<type>: <summary>` such as `docs: clarify core model flow`.
 - Keep one logical change per commit.
 - PRs should include purpose, affected files, and key decision changes.
 
