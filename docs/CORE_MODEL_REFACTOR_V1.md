@@ -134,13 +134,7 @@ Terminal Invocation：
 4 cancelled
 ```
 
-数据库应保证同一 Room 只有一个 active Invocation：
-
-```sql
-CREATE UNIQUE INDEX uniq_active_invocation_per_room
-ON invocations (room_id)
-WHERE status IN (0, 1);
-```
+第一版暂不在数据库层限制同一 Room 的 active Invocation 数量；执行侧先按应用逻辑选择最新 active Invocation。
 
 `failed` 是终态；第一版不自动重试 failed Invocation。
 Invocation 失败时，clawman 创建一条失败提示 Delivery，后续用户重新触发会创建新的 Invocation。

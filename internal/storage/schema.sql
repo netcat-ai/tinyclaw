@@ -36,10 +36,6 @@ CREATE TABLE IF NOT EXISTS invocations (
 	completed_at TIMESTAMPTZ
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_invocations_one_active_per_room
-ON invocations (room_id)
-WHERE status IN (0, 1);
-
 CREATE TABLE IF NOT EXISTS deliveries (
 	id BIGSERIAL PRIMARY KEY,
 	seq BIGSERIAL UNIQUE,
