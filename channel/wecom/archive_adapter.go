@@ -38,10 +38,11 @@ type InboundStore interface {
 }
 
 type ArchiveAdapter struct {
-	db     *sql.DB
-	store  InboundStore
-	cfg    ArchiveConfig
-	client *Client
+	db            *sql.DB
+	store         InboundStore
+	cfg           ArchiveConfig
+	archiveClient *Client
+	contactClient *Client
 }
 
 type archiveMessage struct {
@@ -64,10 +65,11 @@ func NewArchiveAdapter(db *sql.DB, store InboundStore, cfg ArchiveConfig) *Archi
 		contactSecret = cfg.CorpSecret
 	}
 	return &ArchiveAdapter{
-		db:     db,
-		store:  store,
-		cfg:    cfg,
-		client: NewClient(cfg.CorpID, contactSecret),
+		db:            db,
+		store:         store,
+		cfg:           cfg,
+		archiveClient: NewClient(cfg.CorpID, cfg.CorpSecret),
+		contactClient: NewClient(cfg.CorpID, contactSecret),
 	}
 }
 
@@ -233,21 +235,27 @@ func (a *ArchiveAdapter) toCreateMessageInput(ctx context.Context, seq int64, ms
 
 func (a *ArchiveAdapter) resolveRoomDisplayName(ctx context.Context, roomType string, channelRoomID string) string {
 	channelRoomID = strings.TrimSpace(channelRoomID)
-	if channelRoomID == "" || a.client == nil {
+	if channelRoomID == "" {
 		return ""
 	}
 	if roomType == core.RoomChatTypeGroup {
-		chat, err := a.client.GetArchiveGroupChat(ctx, channelRoomID)
+		if a.archiveClient == nil {
+			return ""
+		}
+		chat, err := a.archiveClient.GetArchiveGroupChat(ctx, channelRoomID)
 		if err != nil {
 			slog.Warn("resolve wecom group name failed", "room_id", channelRoomID, "err", err)
 			return ""
 		}
 		return strings.TrimSpace(chat.Name)
 	}
-	if contact, err := a.client.GetExternalContact(ctx, channelRoomID); err == nil && strings.TrimSpace(contact.Name) != "" {
+	if a.contactClient == nil {
+		return ""
+	}
+	if contact, err := a.contactClient.GetExternalContact(ctx, channelRoomID); err == nil && strings.TrimSpace(contact.Name) != "" {
 		return strings.TrimSpace(contact.Name)
 	}
-	if user, err := a.client.GetUser(ctx, channelRoomID); err == nil && strings.TrimSpace(user.Name) != "" {
+	if user, err := a.contactClient.GetUser(ctx, channelRoomID); err == nil && strings.TrimSpace(user.Name) != "" {
 		return strings.TrimSpace(user.Name)
 	}
 	slog.Warn("resolve wecom direct room name failed", "room_id", channelRoomID)
@@ -256,13 +264,13 @@ func (a *ArchiveAdapter) resolveRoomDisplayName(ctx context.Context, roomType st
 
 func (a *ArchiveAdapter) resolveSenderName(ctx context.Context, senderID string) string {
 	senderID = strings.TrimSpace(senderID)
-	if senderID == "" || a.client == nil {
+	if senderID == "" || a.contactClient == nil {
 		return ""
 	}
-	if contact, err := a.client.GetExternalContact(ctx, senderID); err == nil && strings.TrimSpace(contact.Name) != "" {
+	if contact, err := a.contactClient.GetExternalContact(ctx, senderID); err == nil && strings.TrimSpace(contact.Name) != "" {
 		return strings.TrimSpace(contact.Name)
 	}
-	if user, err := a.client.GetUser(ctx, senderID); err == nil && strings.TrimSpace(user.Name) != "" {
+	if user, err := a.contactClient.GetUser(ctx, senderID); err == nil && strings.TrimSpace(user.Name) != "" {
 		return strings.TrimSpace(user.Name)
 	}
 	return ""
