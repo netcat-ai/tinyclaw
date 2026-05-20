@@ -53,6 +53,54 @@ func TestResolveGroupDisplayNameUsesArchiveSecret(t *testing.T) {
 	}
 }
 
+func TestResolveGroupDisplayNameFallsBackToExternalGroupSecret(t *testing.T) {
+	var groupChatToken string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/gettoken":
+			secret := r.URL.Query().Get("corpsecret")
+			writeJSONTest(t, w, map[string]any{
+				"errcode":      0,
+				"access_token": "token-for-" + secret,
+				"expires_in":   7200,
+			})
+		case "/cgi-bin/msgaudit/groupchat/get":
+			writeJSONTest(t, w, map[string]any{
+				"errcode": 301059,
+				"errmsg":  "only support inner room",
+			})
+		case "/cgi-bin/externalcontact/groupchat/get":
+			groupChatToken = r.URL.Query().Get("access_token")
+			writeJSONTest(t, w, map[string]any{
+				"errcode": 0,
+				"group_chat": map[string]any{
+					"chat_id": "external-room-id",
+					"name":    "External Group",
+				},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	SetBaseURL(server.URL)
+	defer ResetBaseURL()
+
+	adapter := NewArchiveAdapter(nil, nil, ArchiveConfig{
+		CorpID:        "corp-id",
+		CorpSecret:    "archive-secret",
+		ContactSecret: "contact-secret",
+	})
+
+	name := adapter.resolveRoomDisplayName(context.Background(), core.RoomChatTypeGroup, "external-room-id")
+	if name != "External Group" {
+		t.Fatalf("name = %q, want External Group", name)
+	}
+	if groupChatToken != "token-for-contact-secret" {
+		t.Fatalf("group chat token = %q, want contact token", groupChatToken)
+	}
+}
+
 func writeJSONTest(t *testing.T, w http.ResponseWriter, value any) {
 	t.Helper()
 	w.Header().Set("Content-Type", "application/json")

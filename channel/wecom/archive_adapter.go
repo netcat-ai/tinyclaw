@@ -243,11 +243,16 @@ func (a *ArchiveAdapter) resolveRoomDisplayName(ctx context.Context, roomType st
 			return ""
 		}
 		chat, err := a.archiveClient.GetArchiveGroupChat(ctx, channelRoomID)
+		if err == nil {
+			return strings.TrimSpace(chat.Name)
+		}
+		if name := a.resolveExternalGroupDisplayName(ctx, channelRoomID, err); name != "" {
+			return name
+		}
 		if err != nil {
 			slog.Warn("resolve wecom group name failed", "room_id", channelRoomID, "err", err)
 			return ""
 		}
-		return strings.TrimSpace(chat.Name)
 	}
 	if a.contactClient == nil {
 		return ""
@@ -260,6 +265,19 @@ func (a *ArchiveAdapter) resolveRoomDisplayName(ctx context.Context, roomType st
 	}
 	slog.Warn("resolve wecom direct room name failed", "room_id", channelRoomID)
 	return ""
+}
+
+func (a *ArchiveAdapter) resolveExternalGroupDisplayName(ctx context.Context, channelRoomID string, archiveErr error) string {
+	apiErr, ok := archiveErr.(*APIError)
+	if !ok || apiErr.Code != 301059 || a.contactClient == nil {
+		return ""
+	}
+	chat, err := a.contactClient.GetGroupChat(ctx, channelRoomID)
+	if err != nil {
+		slog.Warn("resolve wecom external group name failed", "room_id", channelRoomID, "err", err)
+		return ""
+	}
+	return strings.TrimSpace(chat.Name)
 }
 
 func (a *ArchiveAdapter) resolveSenderName(ctx context.Context, senderID string) string {
