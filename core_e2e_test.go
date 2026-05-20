@@ -13,31 +13,35 @@ import (
 
 	httpapi "tinyclaw/internal/api"
 	"tinyclaw/internal/core"
+	"tinyclaw/internal/executor"
 	"tinyclaw/internal/storage"
 )
 
-type coreE2EInboundResponse struct {
-	Message    coreE2EMessageResponse     `json:"message"`
-	Invocation *coreE2EInvocationResponse `json:"invocation,omitempty"`
-	Duplicate  bool                       `json:"duplicate"`
-	Triggered  bool                       `json:"triggered"`
-	Appended   bool                       `json:"appended"`
+type coreE2ERoomResponse struct {
+	Room struct {
+		ID int64 `json:"id"`
+	} `json:"room"`
+	AgentSession struct {
+		ID int64 `json:"id"`
+	} `json:"agent_session"`
 }
 
 type coreE2EMessageResponse struct {
-	ID      int64 `json:"id"`
-	Skipped bool  `json:"skipped"`
-}
-
-type coreE2EInvocationResponse struct {
-	ID int64 `json:"id"`
+	Message struct {
+		ID      int64 `json:"id"`
+		Skipped bool  `json:"skipped"`
+	} `json:"message"`
+	Duplicate bool `json:"duplicate"`
+	Triggered bool `json:"triggered"`
 }
 
 type coreE2EDeliveryResponse struct {
-	ID           int64           `json:"id"`
-	InvocationID int64           `json:"invocation_id"`
-	Payload      json.RawMessage `json:"payload"`
-	Status       int16           `json:"status"`
+	ID                   int64           `json:"id"`
+	AgentSessionID       int64           `json:"agent_session_id"`
+	SourceMessageAfterID int64           `json:"source_message_after_id"`
+	SourceMessageUntilID int64           `json:"source_message_until_id"`
+	Payload              json.RawMessage `json:"payload"`
+	Status               int16           `json:"status"`
 }
 
 type coreE2EDeliveriesPageResponse struct {
@@ -63,14 +67,15 @@ func TestCoreModelE2E(t *testing.T) {
 
 	coreStore := storage.NewCoreStore(store.DB())
 	api := httpapi.NewServer(coreStore, "e2e-token")
-	roomID := fmt.Sprintf("e2e-room-%d", time.Now().UnixNano())
+	roomName := fmt.Sprintf("e2e-room-%d", time.Now().UnixNano())
+	roomResp := postRoomE2E(t, api, roomName)
 
-	contextResp := postInboundE2E(t, api, roomID, "msg-1", "context message")
+	contextResp := postMessageE2E(t, api, roomResp.Room.ID, "msg-1", "context message")
 	if contextResp.Message.Skipped {
 		t.Fatal("context skipped = true, want false")
 	}
 
-	duplicateResp := postInboundE2E(t, api, roomID, "msg-1", "context message")
+	duplicateResp := postMessageE2E(t, api, roomResp.Room.ID, "msg-1", "context message")
 	if !duplicateResp.Duplicate {
 		t.Fatal("duplicate = false, want true")
 	}
@@ -78,127 +83,91 @@ func TestCoreModelE2E(t *testing.T) {
 		t.Fatalf("duplicate message id = %d, want %d", duplicateResp.Message.ID, contextResp.Message.ID)
 	}
 
-	triggerResp := postInboundE2E(t, api, roomID, "msg-2", "@agent handle this")
-	if !triggerResp.Triggered || triggerResp.Invocation == nil {
-		t.Fatalf("trigger response did not create invocation: %+v", triggerResp)
-	}
-	invocationID := triggerResp.Invocation.ID
-	if invocationID < 1000 {
-		t.Fatalf("invocation id = %d, want >= 1000", invocationID)
+	triggerResp := postMessageE2E(t, api, roomResp.Room.ID, "msg-2", "@agent handle this")
+	if !triggerResp.Triggered {
+		t.Fatalf("trigger response did not update agent session: %+v", triggerResp)
 	}
 
-	appendResp := postInboundE2E(t, api, roomID, "msg-3", "more context")
-	if !appendResp.Appended {
-		t.Fatal("appended = false, want true")
-	}
-
-	started, err := coreStore.StartCoreInvocation(ctx, invocationID)
-	if err != nil {
-		t.Fatalf("start invocation: %v", err)
-	}
-	if started.StartMessageID != appendResp.Message.ID || started.LastSeenMessageID != appendResp.Message.ID {
-		t.Fatalf("started cursor = (%d,%d), want %d", started.StartMessageID, started.LastSeenMessageID, appendResp.Message.ID)
-	}
-	contextMessages, err := coreStore.ListCoreInvocationContextMessages(ctx, invocationID)
-	if err != nil {
-		t.Fatalf("list invocation context messages: %v", err)
-	}
-	if len(contextMessages) != 3 {
-		t.Fatalf("context messages len = %d, want 3", len(contextMessages))
-	}
-
-	liveResp := postInboundE2E(t, api, roomID, "msg-4", "live follow-up")
-	if !liveResp.Appended {
-		t.Fatal("live appended = false, want true")
-	}
-	newMessages, err := coreStore.ReadCoreInvocationNewMessages(ctx, invocationID)
-	if err != nil {
-		t.Fatalf("read new invocation messages: %v", err)
-	}
-	if len(newMessages) != 1 || newMessages[0].ID != liveResp.Message.ID {
-		t.Fatalf("new messages = %+v, want message id %d", newMessages, liveResp.Message.ID)
-	}
-	newMessages, err = coreStore.ReadCoreInvocationNewMessages(ctx, invocationID)
-	if err != nil {
-		t.Fatalf("read new invocation messages again: %v", err)
-	}
-	if len(newMessages) != 0 {
-		t.Fatalf("new messages after cursor advance = %d, want 0", len(newMessages))
-	}
-
-	completeResp := postInvocationActionE2E(t, api, invocationID, "complete", `{"text":"done"}`)
-	delivery, ok := completeResp["delivery"].(map[string]any)
-	if !ok {
-		t.Fatalf("completion response has no delivery: %+v", completeResp)
-	}
-	if delivery["status"] != float64(core.DeliveryStatusPending) {
-		t.Fatalf("delivery status = %v, want %d", delivery["status"], core.DeliveryStatusPending)
+	scheduler := executor.NewScheduler(ctx, coreStore, executor.StaticRunner{Text: "done"})
+	if !scheduler.RunOnce(ctx) {
+		t.Fatal("scheduler RunOnce = false, want true")
 	}
 
 	deliveries := listDeliveriesE2E(t, api, "wecom", 0)
 	if len(deliveries.Deliveries) != 1 {
 		t.Fatalf("deliveries len = %d, want 1", len(deliveries.Deliveries))
 	}
-	if deliveries.Deliveries[0].InvocationID != invocationID {
-		t.Fatalf("delivery invocation id = %d, want %d", deliveries.Deliveries[0].InvocationID, invocationID)
+	delivery := deliveries.Deliveries[0]
+	if delivery.AgentSessionID != roomResp.AgentSession.ID {
+		t.Fatalf("delivery agent session id = %d, want %d", delivery.AgentSessionID, roomResp.AgentSession.ID)
+	}
+	if delivery.SourceMessageAfterID != 0 || delivery.SourceMessageUntilID != triggerResp.Message.ID {
+		t.Fatalf("delivery source window = (%d,%d], want (0,%d]", delivery.SourceMessageAfterID, delivery.SourceMessageUntilID, triggerResp.Message.ID)
 	}
 	var deliveryPayload struct {
+		Kind           string `json:"kind"`
 		Type           string `json:"type"`
 		Text           string `json:"text"`
 		App            string `json:"app"`
 		ChannelRoomID  string `json:"channel_room_id"`
 		RecipientAlias string `json:"recipient_alias"`
 	}
-	if err := json.Unmarshal(deliveries.Deliveries[0].Payload, &deliveryPayload); err != nil {
+	if err := json.Unmarshal(delivery.Payload, &deliveryPayload); err != nil {
 		t.Fatalf("decode delivery payload: %v", err)
 	}
-	if deliveryPayload.Text != "done" || deliveryPayload.App != "wecom" || deliveryPayload.RecipientAlias != roomID || deliveryPayload.ChannelRoomID != roomID {
+	if deliveryPayload.Kind != "agent_output" || deliveryPayload.Text != "done" || deliveryPayload.App != "wecom" || deliveryPayload.RecipientAlias != roomName || deliveryPayload.ChannelRoomID != roomName {
 		t.Fatalf("delivery payload = %+v, want routed text payload", deliveryPayload)
 	}
 
-	acked := ackDeliveryE2E(t, api, deliveries.Deliveries[0].ID)
+	acked := ackDeliveryE2E(t, api, delivery.ID)
 	if acked.Status != core.DeliveryStatusAcked {
 		t.Fatalf("acked status = %d, want %d", acked.Status, core.DeliveryStatusAcked)
 	}
 }
 
-func postInboundE2E(t *testing.T, api http.Handler, roomID, sourceID, text string) coreE2EInboundResponse {
+func postRoomE2E(t *testing.T, api http.Handler, roomName string) coreE2ERoomResponse {
 	t.Helper()
 	body := fmt.Sprintf(`{
 		"channel":"wecom",
 		"channel_room_id":%q,
 		"channel_room_type":"group",
+		"display_name":%q,
+		"outbound_alias":%q,
+		"agent_enabled":true
+	}`, roomName, roomName, roomName)
+	req := httptest.NewRequest(http.MethodPost, "/api/rooms", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer e2e-token")
+	rec := httptest.NewRecorder()
+	api.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("room status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload coreE2ERoomResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode room response: %v", err)
+	}
+	return payload
+}
+
+func postMessageE2E(t *testing.T, api http.Handler, roomID int64, sourceID, text string) coreE2EMessageResponse {
+	t.Helper()
+	body := fmt.Sprintf(`{
+		"room_id":%d,
 		"source_message_id":%q,
 		"sender_id":"alice",
 		"message_time":"2026-05-19T10:00:00Z",
 		"payload":{"type":"text","text":%q}
 	}`, roomID, sourceID, text)
-	req := httptest.NewRequest(http.MethodPost, "/api/inbound", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/messages", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer e2e-token")
 	rec := httptest.NewRecorder()
 	api.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("inbound status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+		t.Fatalf("message status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	var payload coreE2EInboundResponse
+	var payload coreE2EMessageResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode inbound response: %v", err)
-	}
-	return payload
-}
-
-func postInvocationActionE2E(t *testing.T, api http.Handler, invocationID int64, action string, body string) map[string]any {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/invocations/%d/%s", invocationID, action), strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer e2e-token")
-	rec := httptest.NewRecorder()
-	api.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("invocation action status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode invocation response: %v", err)
+		t.Fatalf("decode message response: %v", err)
 	}
 	return payload
 }

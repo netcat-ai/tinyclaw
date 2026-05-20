@@ -47,14 +47,15 @@ func main() {
 	defer stop()
 
 	coreStore := storage.NewCoreStore(store.DB())
-	invocationScheduler := executor.NewScheduler(runCtx, coreStore, buildInvocationRunner(cfg))
-	coreAPI := httpapi.NewServer(coreStore, cfg.ClawmanAPIToken, invocationScheduler)
+	agentScheduler := executor.NewScheduler(runCtx, coreStore, buildAgentRunner(cfg))
+	coreAPI := httpapi.NewServer(coreStore, cfg.ClawmanAPIToken)
 
 	// Start metrics server
+	go agentScheduler.RunLoop()
 	go serveMetrics(runCtx, cfg.MetricsAddr)
 	go serveCoreAPI(runCtx, cfg.ControlAPIAddr, coreAPI)
 	if cfg.WeComEnabled {
-		go serveWeComArchiveAdapter(runCtx, store, coreStore, invocationScheduler, cfg)
+		go serveWeComArchiveAdapter(runCtx, store, coreStore, cfg)
 	}
 
 	<-runCtx.Done()
@@ -62,10 +63,11 @@ func main() {
 	slog.Info("clawman stopped")
 }
 
-func serveWeComArchiveAdapter(ctx context.Context, store *Store, coreStore *storage.CoreStore, scheduler *executor.Scheduler, cfg Config) {
-	adapter := wecom.NewArchiveAdapter(store.DB(), coreStore, scheduler, wecom.ArchiveConfig{
+func serveWeComArchiveAdapter(ctx context.Context, store *Store, coreStore *storage.CoreStore, cfg Config) {
+	adapter := wecom.NewArchiveAdapter(store.DB(), coreStore, wecom.ArchiveConfig{
 		CorpID:        cfg.WeComCorpID,
 		CorpSecret:    cfg.WeComCorpSecret,
+		ContactSecret: cfg.WeComContactSecret,
 		RSAPrivateKey: cfg.WeComRSAPrivateKey,
 		BotID:         cfg.WeComBotID,
 		Proxy:         cfg.WeComProxy,
@@ -80,7 +82,7 @@ func serveWeComArchiveAdapter(ctx context.Context, store *Store, coreStore *stor
 	}
 }
 
-func buildInvocationRunner(cfg Config) executor.Runner {
+func buildAgentRunner(cfg Config) executor.Runner {
 	switch strings.ToLower(strings.TrimSpace(cfg.AgentRunner)) {
 	case "codex":
 		return executor.NewCodexRunner(executor.CodexRunnerConfig{

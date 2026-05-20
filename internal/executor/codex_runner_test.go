@@ -14,9 +14,16 @@ import (
 	"tinyclaw/internal/core"
 )
 
+var testAgentRun = core.AgentRun{
+	AgentSessionID:       100,
+	RoomID:               10,
+	SourceMessageAfterID: 0,
+	SourceMessageUntilID: 2,
+}
+
 func TestBuildCodexPromptIncludesContextMessages(t *testing.T) {
-	prompt := BuildCodexPrompt(InvocationRun{
-		Invocation: core.Invocation{ID: 1000, RoomID: 10},
+	prompt := BuildCodexPrompt(AgentRunRequest{
+		AgentRun: testAgentRun,
 		ContextMessages: []core.Message{
 			{ID: 1, SenderName: "Alice", Payload: []byte(`{"type":"text","text":"hello"}`)},
 			{ID: 2, SenderID: "bob", Payload: []byte(`{"type":"text","text":"@agent help"}`)},
@@ -24,8 +31,9 @@ func TestBuildCodexPromptIncludesContextMessages(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"Invocation ID: 1000",
+		"Agent Session ID: 100",
 		"Room ID: 10",
+		"Message Window: (0, 2]",
 		"id=1 sender=Alice text=\"hello\"",
 		"id=2 sender=bob text=\"@agent help\"",
 	} {
@@ -54,11 +62,11 @@ func TestCodexRunnerUsesResponsesAPI(t *testing.T) {
 		Timeout:   time.Second,
 	})
 
-	output, err := runner.RunInvocation(context.Background(), InvocationRun{
-		Invocation: core.Invocation{ID: 1000, RoomID: 10},
+	output, err := runner.RunAgent(context.Background(), AgentRunRequest{
+		AgentRun: testAgentRun,
 	})
 	if err != nil {
-		t.Fatalf("RunInvocation error: %v", err)
+		t.Fatalf("RunAgent error: %v", err)
 	}
 	if gotAuth != "Bearer test-key" {
 		t.Fatalf("Authorization = %q, want bearer key", gotAuth)
@@ -92,11 +100,11 @@ printf "fake codex answer" > "$output"
 		Timeout: time.Second,
 	})
 
-	output, err := runner.RunInvocation(context.Background(), InvocationRun{
-		Invocation: core.Invocation{ID: 1000, RoomID: 10},
+	output, err := runner.RunAgent(context.Background(), AgentRunRequest{
+		AgentRun: testAgentRun,
 	})
 	if err != nil {
-		t.Fatalf("RunInvocation error: %v", err)
+		t.Fatalf("RunAgent error: %v", err)
 	}
 	if output != "fake codex answer" {
 		t.Fatalf("output = %q, want fake codex answer", output)

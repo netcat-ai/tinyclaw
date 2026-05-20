@@ -12,34 +12,23 @@ import (
 )
 
 type CoreStore interface {
-	IngestCoreMessage(ctx context.Context, input core.InboundMessageInput) (core.InboundMessageResult, error)
-	CompleteCoreInvocation(ctx context.Context, invocationID int64, input core.CompleteInvocationInput) (core.InvocationResult, error)
-	FailCoreInvocation(ctx context.Context, invocationID int64, detail string) (core.InvocationResult, error)
+	RegisterRoom(ctx context.Context, input core.RegisterRoomInput) (core.RegisterRoomResult, error)
+	CreateMessage(ctx context.Context, input core.CreateMessageInput) (core.CreateMessageResult, error)
 	ListCoreDeliveries(ctx context.Context, channel string, afterID int64) ([]core.Delivery, error)
 	AckCoreDelivery(ctx context.Context, id int64) (core.Delivery, error)
 }
 
-type InvocationScheduler interface {
-	ScheduleInvocation(invocationID int64)
-}
-
 type Server struct {
-	core      CoreStore
-	scheduler InvocationScheduler
-	apiToken  string
-	mux       *http.ServeMux
+	core     CoreStore
+	apiToken string
+	mux      *http.ServeMux
 }
 
-func NewServer(core CoreStore, apiToken string, schedulers ...InvocationScheduler) *Server {
-	var scheduler InvocationScheduler
-	if len(schedulers) > 0 {
-		scheduler = schedulers[0]
-	}
+func NewServer(core CoreStore, apiToken string) *Server {
 	server := &Server{
-		core:      core,
-		scheduler: scheduler,
-		apiToken:  strings.TrimSpace(apiToken),
-		mux:       http.NewServeMux(),
+		core:     core,
+		apiToken: strings.TrimSpace(apiToken),
+		mux:      http.NewServeMux(),
 	}
 	server.RegisterRoutes(server.mux)
 	return server
@@ -51,10 +40,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", handleHealthz)
-	mux.HandleFunc("/api/inbound", s.handleInbound)
+	mux.HandleFunc("/api/rooms", s.handleRooms)
+	mux.HandleFunc("/api/messages", s.handleMessages)
 	mux.HandleFunc("/api/deliveries", s.handleListDeliveries)
 	mux.HandleFunc("/api/deliveries/", s.handleDeliveryAction)
-	mux.HandleFunc("/api/invocations/", s.handleInvocationAction)
 }
 
 func handleHealthz(w http.ResponseWriter, _ *http.Request) {
@@ -63,13 +52,15 @@ func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
-type inboundResponse struct {
-	Room       coreRoomResponse        `json:"room"`
-	Message    coreMessageResponse     `json:"message"`
-	Invocation *coreInvocationResponse `json:"invocation,omitempty"`
-	Duplicate  bool                    `json:"duplicate"`
-	Triggered  bool                    `json:"triggered"`
-	Appended   bool                    `json:"appended"`
+type registerRoomResponse struct {
+	Room         coreRoomResponse         `json:"room"`
+	AgentSession coreAgentSessionResponse `json:"agent_session"`
+}
+
+type createMessageResponse struct {
+	Message   coreMessageResponse `json:"message"`
+	Duplicate bool                `json:"duplicate"`
+	Triggered bool                `json:"triggered"`
 }
 
 type coreRoomResponse struct {
@@ -79,6 +70,17 @@ type coreRoomResponse struct {
 	ChannelRoomID   string `json:"channel_room_id"`
 	ChannelRoomType string `json:"channel_room_type"`
 	DisplayName     string `json:"display_name,omitempty"`
+	OutboundAlias   string `json:"outbound_alias"`
+}
+
+type coreAgentSessionResponse struct {
+	ID                     int64           `json:"id"`
+	RoomID                 int64           `json:"room_id"`
+	AgentKey               string          `json:"agent_key"`
+	Enabled                bool            `json:"enabled"`
+	TriggerPolicy          json.RawMessage `json:"trigger_policy,omitempty"`
+	TriggerMessageID       int64           `json:"trigger_message_id,omitempty"`
+	LastProcessedMessageID int64           `json:"last_processed_message_id"`
 }
 
 type coreMessageResponse struct {
@@ -91,22 +93,14 @@ type coreMessageResponse struct {
 	Skipped         bool            `json:"skipped"`
 }
 
-type coreInvocationResponse struct {
-	ID                int64  `json:"id"`
-	RoomID            int64  `json:"room_id"`
-	Status            int16  `json:"status"`
-	TriggerMessageID  int64  `json:"trigger_message_id,omitempty"`
-	StartMessageID    int64  `json:"start_message_id,omitempty"`
-	LastSeenMessageID int64  `json:"last_seen_message_id,omitempty"`
-	ErrorDetail       string `json:"error_detail,omitempty"`
-}
-
 type coreDeliveryResponse struct {
-	ID           int64           `json:"id"`
-	RoomID       int64           `json:"room_id"`
-	InvocationID int64           `json:"invocation_id"`
-	Payload      json.RawMessage `json:"payload"`
-	Status       int16           `json:"status"`
+	ID                   int64           `json:"id"`
+	RoomID               int64           `json:"room_id"`
+	AgentSessionID       int64           `json:"agent_session_id"`
+	SourceMessageAfterID int64           `json:"source_message_after_id"`
+	SourceMessageUntilID int64           `json:"source_message_until_id"`
+	Payload              json.RawMessage `json:"payload"`
+	Status               int16           `json:"status"`
 }
 
 type deliveriesPageResponse struct {
@@ -114,12 +108,7 @@ type deliveriesPageResponse struct {
 	NextID     int64                  `json:"next_id"`
 }
 
-type invocationActionRequest struct {
-	Text   string `json:"text"`
-	Detail string `json:"detail"`
-}
-
-func (s *Server) handleInbound(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
 		return
@@ -133,27 +122,54 @@ func (s *Server) handleInbound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var input core.InboundMessageInput
+	var input core.RegisterRoomInput
 	if err := readJSONBody(r, &input); err != nil {
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	result, err := s.core.IngestCoreMessage(r.Context(), input)
+	result, err := s.core.RegisterRoom(r.Context(), input)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	if result.Triggered && result.Invocation != nil && s.scheduler != nil {
-		s.scheduler.ScheduleInvocation(result.Invocation.ID)
+	writeAPIJSON(w, http.StatusOK, registerRoomResponse{
+		Room:         roomToResponse(result.Room),
+		AgentSession: agentSessionToResponse(result.AgentSession),
+	})
+}
+
+func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
+		return
+	}
+	if !s.authenticateAPIBearer(r) {
+		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API bearer token")
+		return
+	}
+	if s.core == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "disabled", "core API is unavailable")
+		return
 	}
 
-	writeAPIJSON(w, http.StatusOK, inboundResponse{
-		Room:       roomToResponse(result.Room),
-		Message:    messageToResponse(result.Message),
-		Invocation: invocationPtrToResponse(result.Invocation),
-		Duplicate:  result.Duplicate,
-		Triggered:  result.Triggered,
-		Appended:   result.Appended,
+	var input core.CreateMessageInput
+	if err := readJSONBody(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	result, err := s.core.CreateMessage(r.Context(), input)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeAPIError(w, http.StatusNotFound, "room_not_found", err.Error())
+			return
+		}
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	writeAPIJSON(w, http.StatusOK, createMessageResponse{
+		Message:   messageToResponse(result.Message),
+		Duplicate: result.Duplicate,
+		Triggered: result.Triggered,
 	})
 }
 
@@ -212,48 +228,6 @@ func (s *Server) handleDeliveryAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeAPIJSON(w, http.StatusOK, deliveryToResponse(delivery))
-}
-
-func (s *Server) handleInvocationAction(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
-		return
-	}
-	if !s.authenticateAPIBearer(r) {
-		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API bearer token")
-		return
-	}
-	id, action, ok := parseIDActionPath(strings.TrimPrefix(r.URL.Path, "/api/invocations/"))
-	if !ok {
-		writeAPIError(w, http.StatusNotFound, "not_found", "unknown invocation action")
-		return
-	}
-	var req invocationActionRequest
-	if err := readJSONBody(r, &req); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	var result core.InvocationResult
-	var err error
-	switch action {
-	case "complete":
-		result, err = s.core.CompleteCoreInvocation(r.Context(), id, core.CompleteInvocationInput{
-			Text: req.Text,
-		})
-	case "fail":
-		result, err = s.core.FailCoreInvocation(r.Context(), id, req.Detail)
-	default:
-		writeAPIError(w, http.StatusNotFound, "not_found", "unknown invocation action")
-		return
-	}
-	if err != nil {
-		writeAPIError(w, http.StatusBadRequest, "invocation_failed", err.Error())
-		return
-	}
-	writeAPIJSON(w, http.StatusOK, map[string]any{
-		"invocation": invocationToResponse(result.Invocation),
-		"delivery":   deliveryPtrToResponse(result.Delivery),
-	})
 }
 
 func (s *Server) authenticateAPIBearer(r *http.Request) bool {
@@ -315,6 +289,19 @@ func roomToResponse(room core.Room) coreRoomResponse {
 		ChannelRoomID:   room.ChannelRoomID,
 		ChannelRoomType: room.ChannelRoomType,
 		DisplayName:     room.DisplayName,
+		OutboundAlias:   room.OutboundAlias,
+	}
+}
+
+func agentSessionToResponse(session core.AgentSession) coreAgentSessionResponse {
+	return coreAgentSessionResponse{
+		ID:                     session.ID,
+		RoomID:                 session.RoomID,
+		AgentKey:               session.AgentKey,
+		Enabled:                session.Enabled,
+		TriggerPolicy:          session.TriggerPolicy,
+		TriggerMessageID:       session.TriggerMessageID,
+		LastProcessedMessageID: session.LastProcessedMessageID,
 	}
 }
 
@@ -330,40 +317,14 @@ func messageToResponse(message core.Message) coreMessageResponse {
 	}
 }
 
-func invocationPtrToResponse(invocation *core.Invocation) *coreInvocationResponse {
-	if invocation == nil {
-		return nil
-	}
-	response := invocationToResponse(*invocation)
-	return &response
-}
-
-func invocationToResponse(invocation core.Invocation) coreInvocationResponse {
-	return coreInvocationResponse{
-		ID:                invocation.ID,
-		RoomID:            invocation.RoomID,
-		Status:            invocation.Status,
-		TriggerMessageID:  invocation.TriggerMessageID,
-		StartMessageID:    invocation.StartMessageID,
-		LastSeenMessageID: invocation.LastSeenMessageID,
-		ErrorDetail:       invocation.ErrorDetail,
-	}
-}
-
-func deliveryPtrToResponse(delivery *core.Delivery) *coreDeliveryResponse {
-	if delivery == nil {
-		return nil
-	}
-	response := deliveryToResponse(*delivery)
-	return &response
-}
-
 func deliveryToResponse(delivery core.Delivery) coreDeliveryResponse {
 	return coreDeliveryResponse{
-		ID:           delivery.ID,
-		RoomID:       delivery.RoomID,
-		InvocationID: delivery.InvocationID,
-		Payload:      delivery.Payload,
-		Status:       delivery.Status,
+		ID:                   delivery.ID,
+		RoomID:               delivery.RoomID,
+		AgentSessionID:       delivery.AgentSessionID,
+		SourceMessageAfterID: delivery.SourceMessageAfterID,
+		SourceMessageUntilID: delivery.SourceMessageUntilID,
+		Payload:              delivery.Payload,
+		Status:               delivery.Status,
 	}
 }

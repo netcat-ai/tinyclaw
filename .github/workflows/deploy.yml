@@ -126,19 +126,15 @@ jobs:
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Apply deployment
-        run: |
-          kubectl apply -f k8s/service.yaml
-          kubectl apply -f k8s/ingress.yaml
-          kubectl apply -f k8s/deployment.yaml
-
-      - name: Update image
         env:
           DEFAULT_IMAGE_TAG: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
           MANUAL_IMAGE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.image_tag || '' }}
         run: |
           IMAGE_TAG="${MANUAL_IMAGE_TAG:-$DEFAULT_IMAGE_TAG}"
           IMAGE_REF="ghcr.io/${{ github.repository_owner }}/tinyclaw:${IMAGE_TAG}"
-          kubectl -n claw set image deployment/clawman clawman="${IMAGE_REF}"
+          kubectl apply -f k8s/service.yaml
+          kubectl apply -f k8s/ingress.yaml
+          sed "s|ghcr.io/netcat-ai/tinyclaw:IMAGE_PLACEHOLDER|${IMAGE_REF}|g" k8s/deployment.yaml | kubectl apply -f -
 
       - name: Wait rollout
         run: |
