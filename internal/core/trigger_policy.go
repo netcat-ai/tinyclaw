@@ -5,11 +5,11 @@ import (
 	"strings"
 )
 
-func ShouldTriggerMessage(room Room, input InboundMessageInput) bool {
-	if decision, ok := EvaluateTriggerPolicy(room.TriggerPolicy, input); ok {
+func ShouldTriggerMessage(room Room, session AgentSession, input CreateMessageInput) bool {
+	if decision, ok := EvaluateTriggerPolicy(session.TriggerPolicy, room.ChannelRoomType, input); ok {
 		return decision
 	}
-	if input.ChannelRoomType == RoomChatTypeDirect {
+	if room.ChannelRoomType == RoomChatTypeDirect {
 		return true
 	}
 	var payload struct {
@@ -21,7 +21,7 @@ func ShouldTriggerMessage(room Room, input InboundMessageInput) bool {
 	return strings.Contains(text, "虾虾") || strings.Contains(text, "@agent") || strings.Contains(text, "/ask")
 }
 
-func EvaluateTriggerPolicy(policy json.RawMessage, input InboundMessageInput) (bool, bool) {
+func EvaluateTriggerPolicy(policy json.RawMessage, channelRoomType string, input CreateMessageInput) (bool, bool) {
 	if len(policy) == 0 {
 		return false, false
 	}
@@ -34,7 +34,7 @@ func EvaluateTriggerPolicy(policy json.RawMessage, input InboundMessageInput) (b
 	if err := json.Unmarshal(policy, &parsed); err != nil {
 		return false, false
 	}
-	if input.ChannelRoomType == RoomChatTypeDirect && parsed.DirectDefault != nil {
+	if channelRoomType == RoomChatTypeDirect && parsed.DirectDefault != nil {
 		return *parsed.DirectDefault, true
 	}
 	switch strings.ToLower(strings.TrimSpace(parsed.Mode)) {

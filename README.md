@@ -3,17 +3,17 @@
 TinyClaw is a room-scoped agent runtime control plane. The current implementation is centered on the Core Model:
 
 - **Room**: TinyClaw-owned conversation container mapped from an external Channel Room.
+- **Agent Session**: one configured agent context inside a Room, with its own trigger and processed-message checkpoint.
 - **Message**: inbound fact for exactly one Room.
-- **Invocation**: one agent execution attempt for a Room.
-- **Delivery**: outbound item produced by an Invocation.
+- **Delivery**: outbound item produced by an agent run.
 
 ## Current State
 
 The current codebase has removed the old in-repo agent runtime, sandbox orchestrator, and `RoomChat` gRPC bridge. Channel-specific ingestion and sending should live in external Channel Adapters that call TinyClaw APIs.
 
-Triggered invocations are started by an in-process execution module. Until an agent runner is configured, triggered invocations fail fast and produce a failure delivery.
+Triggered Agent Sessions are picked up by an in-process execution loop. Until an agent runner is configured, triggered runs fail fast and produce a failure delivery.
 
-Set `AGENT_RUNNER=codex` to run triggered invocations through `codex exec`. Optional Codex runner settings:
+Set `AGENT_RUNNER=codex` to run triggered Agent Sessions through `codex exec`. Optional Codex runner settings:
 
 - `CODEX_BIN`: Codex executable, defaults to `codex`.
 - `CODEX_WORKDIR`: working directory passed to Codex, defaults to `.`.
@@ -25,11 +25,12 @@ Set `AGENT_RUNNER=codex` to run triggered invocations through `codex exec`. Opti
 
 `clawman` now exposes the Core Model HTTP interface:
 
-- `POST /api/inbound`
+- `POST /api/rooms`
+- `POST /api/messages`
 - `GET /api/deliveries?channel=<channel>&id=<last_id>`
 - `POST /api/deliveries/{id}/ack`
-- `POST /api/invocations/{id}/complete`
-- `POST /api/invocations/{id}/fail`
+
+`POST /api/inbound` has been removed; adapters must register a Room first, then submit Messages with `room_id`.
 
 API requests use `Authorization: Bearer $CLAWMAN_API_TOKEN`.
 
@@ -39,7 +40,7 @@ API requests use `Authorization: Bearer $CLAWMAN_API_TOKEN`.
 internal/core      Core Model types and Trigger Policy
 internal/storage   PostgreSQL implementation for Core Model persistence
 internal/api       HTTP adapter for Core Model routes
-internal/executor  Invocation execution module and runner context
+internal/executor  Agent execution loop and runner context
 channel/wecom/     Legacy WeCom SDK helpers and clients
 ```
 
@@ -50,7 +51,7 @@ The root `main` package wires configuration, storage, metrics, and the Core Mode
 2026-05-20 local phone integration passed for the Enterprise WeChat path:
 
 ```text
-POST /api/inbound -> Codex runner -> delivery -> MobileClaw poll -> Enterprise WeChat send -> ack
+POST /api/rooms -> POST /api/messages -> Codex runner -> delivery -> MobileClaw poll -> Enterprise WeChat send -> ack
 ```
 
 The verified MobileClaw delivery payload uses:
@@ -86,6 +87,7 @@ WeCom archive adapter:
 - `WECOM_ENABLED`: enable in-process WeCom archive polling, defaults to false.
 - `WECOM_CORP_ID`
 - `WECOM_CORP_SECRET`
+- `WECOM_CONTACT_SECRET`: secret used for WeCom contact/group metadata lookups; falls back to `WECOM_CORP_SECRET`.
 - `WECOM_RSA_PRIVATE_KEY`
 - `WECOM_BOT_ID`: used to skip self-sent messages and identify direct chat peers.
 - `WECOM_POLL_INTERVAL`: defaults to `3s`.
@@ -95,7 +97,7 @@ WeCom archive adapter:
 
 The adapter stores archive progress in `channel_adapter_cursors`. WeCom archive `seq` remains an adapter-local cursor and is not used as the TinyClaw Message identity.
 
-Mobile delivery uses `rooms.display_name` as `recipient_alias` when present, falling back to `channel_room_id`. For WeCom, keep `display_name` aligned with the visible conversation title on the phone; external contacts may display a different UI alias than their internal WeCom name.
+Mobile delivery uses `rooms.outbound_alias` as `recipient_alias`, falling back to `display_name` and then `channel_room_id`. For WeCom, the in-process adapter resolves a room/contact name before registering the Room.
 
 ## Design Docs
 

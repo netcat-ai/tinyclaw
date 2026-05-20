@@ -4,111 +4,136 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
+	"time"
 
 	"tinyclaw/internal/core"
 )
 
+const (
+	defaultPollInterval = time.Second
+	defaultLockTTL      = 5 * time.Minute
+)
+
 type Store interface {
-	StartCoreInvocation(ctx context.Context, invocationID int64) (core.Invocation, error)
-	ListCoreInvocationContextMessages(ctx context.Context, invocationID int64) ([]core.Message, error)
-	ReadCoreInvocationNewMessages(ctx context.Context, invocationID int64) ([]core.Message, error)
-	CompleteCoreInvocation(ctx context.Context, invocationID int64, input core.CompleteInvocationInput) (core.InvocationResult, error)
-	FailCoreInvocation(ctx context.Context, invocationID int64, detail string) (core.InvocationResult, error)
+	ClaimNextAgentRun(ctx context.Context, owner string, ttl time.Duration) (core.AgentRun, bool, error)
+	ListAgentRunMessages(ctx context.Context, run core.AgentRun) ([]core.Message, error)
+	CompleteAgentRun(ctx context.Context, run core.AgentRun, output string) (*core.Delivery, error)
+	FailAgentRun(ctx context.Context, run core.AgentRun, detail string) (*core.Delivery, error)
 }
 
 type Runner interface {
-	RunInvocation(ctx context.Context, run InvocationRun) (string, error)
+	RunAgent(ctx context.Context, run AgentRunRequest) (string, error)
 }
 
-type InvocationRun struct {
-	Invocation      core.Invocation
+type AgentRunRequest struct {
+	AgentRun        core.AgentRun
 	ContextMessages []core.Message
-	readNewMessages func(context.Context) ([]core.Message, error)
-}
-
-func (r InvocationRun) ReadNewMessages(ctx context.Context) ([]core.Message, error) {
-	if r.readNewMessages == nil {
-		return nil, nil
-	}
-	return r.readNewMessages(ctx)
 }
 
 type Scheduler struct {
-	ctx    context.Context
-	store  Store
-	runner Runner
+	ctx          context.Context
+	store        Store
+	runner       Runner
+	owner        string
+	pollInterval time.Duration
+	lockTTL      time.Duration
 }
 
 func NewScheduler(ctx context.Context, store Store, runner Runner) *Scheduler {
+	hostname, _ := os.Hostname()
+	if hostname == "" {
+		hostname = "clawman"
+	}
 	return &Scheduler{
-		ctx:    ctx,
-		store:  store,
-		runner: runner,
+		ctx:          ctx,
+		store:        store,
+		runner:       runner,
+		owner:        fmt.Sprintf("%s-%d", hostname, os.Getpid()),
+		pollInterval: defaultPollInterval,
+		lockTTL:      defaultLockTTL,
 	}
 }
 
-func (s *Scheduler) ScheduleInvocation(invocationID int64) {
-	if s == nil || s.store == nil || s.runner == nil || invocationID <= 0 {
-		return
-	}
-	go s.RunOnce(s.ctx, invocationID)
-}
-
-func (s *Scheduler) RunOnce(ctx context.Context, invocationID int64) {
+func (s *Scheduler) RunLoop() {
 	if s == nil || s.store == nil || s.runner == nil {
 		return
+	}
+	ctx := s.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ticker := time.NewTicker(s.pollInterval)
+	defer ticker.Stop()
+	for {
+		s.RunAvailable(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Scheduler) RunAvailable(ctx context.Context) {
+	for {
+		ran := s.RunOnce(ctx)
+		if !ran {
+			return
+		}
+	}
+}
+
+func (s *Scheduler) RunOnce(ctx context.Context) bool {
+	if s == nil || s.store == nil || s.runner == nil {
+		return false
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-
-	invocation, err := s.store.StartCoreInvocation(ctx, invocationID)
+	run, ok, err := s.store.ClaimNextAgentRun(ctx, s.owner, s.lockTTL)
 	if err != nil {
-		slog.Error("start invocation failed", "invocation_id", invocationID, "err", err)
-		return
+		slog.Error("claim agent run failed", "err", err)
+		return false
+	}
+	if !ok {
+		return false
 	}
 
-	contextMessages, err := s.store.ListCoreInvocationContextMessages(ctx, invocation.ID)
+	contextMessages, err := s.store.ListAgentRunMessages(ctx, run)
 	if err != nil {
-		s.failInvocation(ctx, invocation.ID, err)
-		return
+		s.failAgentRun(ctx, run, err)
+		return true
 	}
 
-	run := InvocationRun{
-		Invocation:      invocation,
+	output, err := s.runner.RunAgent(ctx, AgentRunRequest{
+		AgentRun:        run,
 		ContextMessages: contextMessages,
-		readNewMessages: func(readCtx context.Context) ([]core.Message, error) {
-			if readCtx == nil {
-				readCtx = ctx
-			}
-			return s.store.ReadCoreInvocationNewMessages(readCtx, invocation.ID)
-		},
-	}
-
-	output, err := s.runner.RunInvocation(ctx, run)
+	})
 	if err != nil {
-		s.failInvocation(ctx, invocation.ID, err)
-		return
+		s.failAgentRun(ctx, run, err)
+		return true
 	}
-	if _, err := s.store.CompleteCoreInvocation(ctx, invocation.ID, core.CompleteInvocationInput{Text: output}); err != nil {
-		slog.Error("complete invocation failed", "invocation_id", invocation.ID, "err", err)
+	if _, err := s.store.CompleteAgentRun(ctx, run, output); err != nil {
+		slog.Error("complete agent run failed", "agent_session_id", run.AgentSessionID, "err", err)
 	}
+	return true
 }
 
-func (s *Scheduler) failInvocation(ctx context.Context, invocationID int64, err error) {
+func (s *Scheduler) failAgentRun(ctx context.Context, run core.AgentRun, err error) {
 	detail := strings.TrimSpace(err.Error())
 	if detail == "" {
 		detail = "执行失败，请稍后重试"
 	}
-	if _, failErr := s.store.FailCoreInvocation(ctx, invocationID, detail); failErr != nil {
-		slog.Error("fail invocation failed", "invocation_id", invocationID, "err", failErr)
+	if _, failErr := s.store.FailAgentRun(ctx, run, detail); failErr != nil {
+		slog.Error("fail agent run failed", "agent_session_id", run.AgentSessionID, "err", failErr)
 	}
 }
 
 type UnconfiguredRunner struct{}
 
-func (UnconfiguredRunner) RunInvocation(context.Context, InvocationRun) (string, error) {
+func (UnconfiguredRunner) RunAgent(context.Context, AgentRunRequest) (string, error) {
 	return "", fmt.Errorf("agent executor 未配置")
 }
 
@@ -116,6 +141,6 @@ type StaticRunner struct {
 	Text string
 }
 
-func (r StaticRunner) RunInvocation(context.Context, InvocationRun) (string, error) {
+func (r StaticRunner) RunAgent(context.Context, AgentRunRequest) (string, error) {
 	return r.Text, nil
 }

@@ -11,7 +11,7 @@ import (
 	"tinyclaw/internal/core"
 )
 
-func validateInboundMessage(input core.InboundMessageInput) error {
+func validateRegisterRoom(input core.RegisterRoomInput) error {
 	switch {
 	case input.Channel == "":
 		return fmt.Errorf("channel is required")
@@ -19,6 +19,19 @@ func validateInboundMessage(input core.InboundMessageInput) error {
 		return fmt.Errorf("channel_room_id is required")
 	case input.ChannelRoomType == "":
 		return fmt.Errorf("channel_room_type is required")
+	case input.OutboundAlias == "":
+		return fmt.Errorf("outbound_alias is required")
+	}
+	if len(input.TriggerPolicy) > 0 && !json.Valid(input.TriggerPolicy) {
+		return fmt.Errorf("trigger_policy must be valid JSON")
+	}
+	return nil
+}
+
+func validateCreateMessage(input core.CreateMessageInput) error {
+	switch {
+	case input.RoomID <= 0:
+		return fmt.Errorf("room_id is required")
 	case input.SourceMessageID == "":
 		return fmt.Errorf("source_message_id is required")
 	case input.SenderID == "":
@@ -30,80 +43,115 @@ func validateInboundMessage(input core.InboundMessageInput) error {
 	return nil
 }
 
-func upsertCoreRoomTx(ctx context.Context, tx *sql.Tx, input core.InboundMessageInput) (core.Room, error) {
+func upsertRoomTx(ctx context.Context, tx *sql.Tx, input core.RegisterRoomInput) (core.Room, error) {
 	var room core.Room
 	var displayName sql.NullString
-	var triggerPolicy []byte
 	err := tx.QueryRowContext(ctx, `
 		INSERT INTO rooms (
 			tenant_id,
 			channel,
 			channel_room_id,
 			channel_room_type,
-			display_name
+			display_name,
+			outbound_alias
 		)
-		VALUES ($1, $2, $3, $4, $5)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (tenant_id, channel, channel_room_id) DO UPDATE
-		SET updated_at = NOW()
-		RETURNING id, tenant_id, channel, channel_room_id, channel_room_type, display_name, trigger_policy, created_at, updated_at
-	`, core.DefaultTenantID, input.Channel, input.ChannelRoomID, input.ChannelRoomType, nullIfEmpty(input.ChannelRoomID)).Scan(
+		SET display_name = EXCLUDED.display_name,
+		    outbound_alias = EXCLUDED.outbound_alias,
+		    updated_at = NOW()
+		RETURNING id, tenant_id, channel, channel_room_id, channel_room_type, display_name, outbound_alias, created_at, updated_at
+	`, core.DefaultTenantID, input.Channel, input.ChannelRoomID, input.ChannelRoomType, nullIfEmpty(input.DisplayName), input.OutboundAlias).Scan(
 		&room.ID,
 		&room.TenantID,
 		&room.Channel,
 		&room.ChannelRoomID,
 		&room.ChannelRoomType,
 		&displayName,
-		&triggerPolicy,
+		&room.OutboundAlias,
 		&room.CreatedAt,
 		&room.UpdatedAt,
 	)
 	if err != nil {
-		return core.Room{}, fmt.Errorf("upsert core room: %w", err)
+		return core.Room{}, fmt.Errorf("upsert room: %w", err)
 	}
 	if displayName.Valid {
 		room.DisplayName = displayName.String
 	}
-	if len(triggerPolicy) > 0 {
-		room.TriggerPolicy = append(json.RawMessage(nil), triggerPolicy...)
-	}
 	return room, nil
 }
 
-func getCoreRoomByIDTx(ctx context.Context, tx *sql.Tx, id int64) (core.Room, error) {
-	var room core.Room
-	var displayName sql.NullString
+func upsertAgentSessionTx(ctx context.Context, tx *sql.Tx, roomID int64, input core.RegisterRoomInput) (core.AgentSession, error) {
+	agentKey := input.AgentKey
+	if agentKey == "" {
+		agentKey = core.DefaultAgentKey
+	}
+	var session core.AgentSession
 	var triggerPolicy []byte
+	var triggerMessageID sql.NullInt64
+	var lockOwner sql.NullString
+	var lockExpiresAt sql.NullTime
 	err := tx.QueryRowContext(ctx, `
-		SELECT id, tenant_id, channel, channel_room_id, channel_room_type, display_name, trigger_policy, created_at, updated_at
+		INSERT INTO agent_sessions (
+			room_id,
+			agent_key,
+			enabled,
+			trigger_policy
+		)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (room_id, agent_key) DO UPDATE
+		SET enabled = EXCLUDED.enabled,
+		    trigger_policy = EXCLUDED.trigger_policy,
+		    updated_at = NOW()
+		RETURNING id, room_id, agent_key, enabled, trigger_policy, trigger_message_id, last_processed_message_id, lock_owner, lock_expires_at, created_at, updated_at
+	`, roomID, agentKey, input.AgentEnabled, nullJSON(input.TriggerPolicy)).Scan(
+		&session.ID,
+		&session.RoomID,
+		&session.AgentKey,
+		&session.Enabled,
+		&triggerPolicy,
+		&triggerMessageID,
+		&session.LastProcessedMessageID,
+		&lockOwner,
+		&lockExpiresAt,
+		&session.CreatedAt,
+		&session.UpdatedAt,
+	)
+	if err != nil {
+		return core.AgentSession{}, fmt.Errorf("upsert agent session: %w", err)
+	}
+	if len(triggerPolicy) > 0 {
+		session.TriggerPolicy = append(json.RawMessage(nil), triggerPolicy...)
+	}
+	if triggerMessageID.Valid {
+		session.TriggerMessageID = triggerMessageID.Int64
+	}
+	if lockOwner.Valid {
+		session.LockOwner = lockOwner.String
+	}
+	if lockExpiresAt.Valid {
+		session.LockExpiresAt = lockExpiresAt.Time
+	}
+	return session, nil
+}
+
+func getCoreRoomByIDTx(ctx context.Context, tx *sql.Tx, id int64) (core.Room, error) {
+	row := tx.QueryRowContext(ctx, `
+		SELECT id, tenant_id, channel, channel_room_id, channel_room_type, display_name, outbound_alias, created_at, updated_at
 		FROM rooms
 		WHERE id = $1
-	`, id).Scan(
-		&room.ID,
-		&room.TenantID,
-		&room.Channel,
-		&room.ChannelRoomID,
-		&room.ChannelRoomType,
-		&displayName,
-		&triggerPolicy,
-		&room.CreatedAt,
-		&room.UpdatedAt,
-	)
+	`, id)
+	room, err := scanCoreRoom(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return core.Room{}, fmt.Errorf("room %d not found", id)
 		}
-		return core.Room{}, fmt.Errorf("get core room: %w", err)
-	}
-	if displayName.Valid {
-		room.DisplayName = displayName.String
-	}
-	if len(triggerPolicy) > 0 {
-		room.TriggerPolicy = append(json.RawMessage(nil), triggerPolicy...)
+		return core.Room{}, fmt.Errorf("get room: %w", err)
 	}
 	return room, nil
 }
 
-func insertCoreMessageTx(ctx context.Context, tx *sql.Tx, roomID int64, input core.InboundMessageInput) (bool, core.Message, error) {
+func insertCoreMessageTx(ctx context.Context, tx *sql.Tx, input core.CreateMessageInput) (bool, core.Message, error) {
 	var id int64
 	err := tx.QueryRowContext(ctx, `
 		INSERT INTO messages (
@@ -118,16 +166,16 @@ func insertCoreMessageTx(ctx context.Context, tx *sql.Tx, roomID int64, input co
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (room_id, source_message_id) DO NOTHING
 		RETURNING id
-	`, roomID, input.SourceMessageID, input.SenderID, nullIfEmpty(input.SenderName), input.Payload, input.MessageTime, input.Skipped).Scan(&id)
+	`, input.RoomID, input.SourceMessageID, input.SenderID, nullIfEmpty(input.SenderName), input.Payload, input.MessageTime, input.Skipped).Scan(&id)
 	switch {
 	case err == nil:
 		message, getErr := getCoreMessageByIDTx(ctx, tx, id)
 		return true, message, getErr
 	case errors.Is(err, sql.ErrNoRows):
-		message, getErr := getCoreMessageBySourceTx(ctx, tx, roomID, input.SourceMessageID)
+		message, getErr := getCoreMessageBySourceTx(ctx, tx, input.RoomID, input.SourceMessageID)
 		return false, message, getErr
 	default:
-		return false, core.Message{}, fmt.Errorf("insert core message: %w", err)
+		return false, core.Message{}, fmt.Errorf("insert message: %w", err)
 	}
 }
 
@@ -150,126 +198,160 @@ func getCoreMessageBySourceTx(ctx context.Context, tx *sql.Tx, roomID int64, sou
 	return scanCoreMessage(row)
 }
 
-func getActiveInvocationForRoomTx(ctx context.Context, tx *sql.Tx, roomID int64) (core.Invocation, bool, error) {
-	row := tx.QueryRowContext(ctx, `
-		SELECT id, room_id, status, trigger_message_id, start_message_id, last_seen_message_id, error_detail, created_at, started_at, completed_at
-		FROM invocations
+func listEnabledAgentSessionsForRoomTx(ctx context.Context, tx *sql.Tx, roomID int64) ([]core.AgentSession, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, room_id, agent_key, enabled, trigger_policy, trigger_message_id, last_processed_message_id, lock_owner, lock_expires_at, created_at, updated_at
+		FROM agent_sessions
 		WHERE room_id = $1
-		  AND status IN ($2, $3)
-		ORDER BY id DESC
-		LIMIT 1
-	`, roomID, core.InvocationStatusQueued, core.InvocationStatusRunning)
-	invocation, err := scanCoreInvocation(row)
+		  AND enabled = TRUE
+		ORDER BY id ASC
+	`, roomID)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return core.Invocation{}, false, nil
-		}
-		return core.Invocation{}, false, err
-	}
-	return invocation, true, nil
-}
-
-func createCoreInvocationTx(ctx context.Context, tx *sql.Tx, roomID int64, triggerMessageID int64) (core.Invocation, error) {
-	var invocation core.Invocation
-	row := tx.QueryRowContext(ctx, `
-		INSERT INTO invocations (
-			room_id,
-			status,
-			trigger_message_id
-		)
-		VALUES ($1, $2, $3)
-		RETURNING id, room_id, status, trigger_message_id, start_message_id, last_seen_message_id, error_detail, created_at, started_at, completed_at
-	`, roomID, core.InvocationStatusQueued, triggerMessageID)
-	invocation, err := scanCoreInvocation(row)
-	if err != nil {
-		return core.Invocation{}, fmt.Errorf("create core invocation: %w", err)
-	}
-	return invocation, nil
-}
-
-func listInvocationContextMessages(ctx context.Context, db *sql.DB, invocationID int64) ([]core.Message, error) {
-	rows, err := db.QueryContext(ctx, `
-		SELECT m.id, m.room_id, m.source_message_id, m.sender_id, m.sender_name, m.payload, m.message_time, m.skipped, m.created_at
-		FROM messages m
-		JOIN invocations i ON i.room_id = m.room_id
-		WHERE i.id = $1
-		  AND i.start_message_id IS NOT NULL
-		  AND m.id <= i.start_message_id
-		  AND m.skipped = FALSE
-		ORDER BY m.id ASC
-	`, invocationID)
-	if err != nil {
-		return nil, fmt.Errorf("list invocation context messages: %w", err)
+		return nil, fmt.Errorf("list agent sessions: %w", err)
 	}
 	defer rows.Close()
 
-	messages, err := scanCoreMessages(rows)
-	if err != nil {
-		return nil, err
+	var sessions []core.AgentSession
+	for rows.Next() {
+		session, err := scanAgentSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, session)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate invocation context messages: %w", err)
+		return nil, fmt.Errorf("iterate agent sessions: %w", err)
 	}
-	return messages, nil
+	return sessions, nil
 }
 
-func readInvocationNewMessagesTx(ctx context.Context, tx *sql.Tx, invocationID int64) ([]core.Message, error) {
-	invocation, err := getInvocationForUpdateTx(ctx, tx, invocationID)
+func markAgentSessionTriggeredTx(ctx context.Context, tx *sql.Tx, sessionID int64, messageID int64) error {
+	_, err := tx.ExecContext(ctx, `
+		UPDATE agent_sessions
+		SET trigger_message_id = $2,
+		    updated_at = NOW()
+		WHERE id = $1
+		  AND (trigger_message_id IS NULL OR trigger_message_id < $2)
+	`, sessionID, messageID)
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("mark agent session triggered: %w", err)
 	}
-	if invocation.Status != core.InvocationStatusRunning {
-		return nil, fmt.Errorf("running invocation %d not found", invocationID)
+	return nil
+}
+
+func claimNextAgentRunTx(ctx context.Context, tx *sql.Tx, owner string, ttl time.Duration) (core.AgentRun, bool, error) {
+	var run core.AgentRun
+	expiresAt := time.Now().UTC().Add(ttl)
+	row := tx.QueryRowContext(ctx, `
+		WITH candidate AS (
+			SELECT s.id
+			FROM agent_sessions s
+			WHERE s.enabled = TRUE
+			  AND s.trigger_message_id IS NOT NULL
+			  AND s.trigger_message_id > s.last_processed_message_id
+			  AND (s.lock_expires_at IS NULL OR s.lock_expires_at < NOW())
+			ORDER BY s.updated_at ASC, s.id ASC
+			LIMIT 1
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE agent_sessions s
+		SET lock_owner = $1,
+		    lock_expires_at = $2,
+		    updated_at = NOW()
+		FROM candidate
+		WHERE s.id = candidate.id
+		RETURNING s.id, s.room_id, s.agent_key, s.last_processed_message_id, s.trigger_message_id, s.lock_owner
+	`, owner, expiresAt)
+	err := row.Scan(
+		&run.AgentSessionID,
+		&run.RoomID,
+		&run.AgentKey,
+		&run.SourceMessageAfterID,
+		&run.SourceMessageUntilID,
+		&run.LockOwner,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return core.AgentRun{}, false, nil
+		}
+		return core.AgentRun{}, false, fmt.Errorf("claim agent run: %w", err)
 	}
-	rows, err := tx.QueryContext(ctx, `
+	return run, true, nil
+}
+
+func listAgentRunMessages(ctx context.Context, db *sql.DB, run core.AgentRun) ([]core.Message, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT id, room_id, source_message_id, sender_id, sender_name, payload, message_time, skipped, created_at
 		FROM messages
 		WHERE room_id = $1
 		  AND id > $2
+		  AND id <= $3
 		  AND skipped = FALSE
 		ORDER BY id ASC
-	`, invocation.RoomID, invocation.LastSeenMessageID)
+	`, run.RoomID, run.SourceMessageAfterID, run.SourceMessageUntilID)
 	if err != nil {
-		return nil, fmt.Errorf("read new invocation messages: %w", err)
+		return nil, fmt.Errorf("list agent run messages: %w", err)
 	}
 	defer rows.Close()
+	return scanCoreMessages(rows)
+}
 
-	messages, err := scanCoreMessages(rows)
+func finishAgentRunTx(ctx context.Context, tx *sql.Tx, run core.AgentRun, payload json.RawMessage) (*core.Delivery, error) {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE agent_sessions
+		SET last_processed_message_id = $2,
+		    lock_owner = NULL,
+		    lock_expires_at = NULL,
+		    updated_at = NOW()
+		WHERE id = $1
+		  AND lock_owner = $3
+	`, run.AgentSessionID, run.SourceMessageUntilID, run.LockOwner); err != nil {
+		return nil, fmt.Errorf("finish agent run: %w", err)
+	}
+	if len(payload) == 0 {
+		return nil, nil
+	}
+	delivery, err := createCoreDeliveryTx(ctx, tx, run, payload)
 	if err != nil {
 		return nil, err
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate new invocation messages: %w", err)
-	}
-	if len(messages) == 0 {
-		return nil, nil
-	}
-	lastSeen := messages[len(messages)-1].ID
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE invocations
-		SET last_seen_message_id = $2
-		WHERE id = $1
-	`, invocationID, lastSeen); err != nil {
-		return nil, fmt.Errorf("update invocation last seen message: %w", err)
-	}
-	return messages, nil
+	return &delivery, nil
 }
 
-func getInvocationForUpdateTx(ctx context.Context, tx *sql.Tx, invocationID int64) (core.Invocation, error) {
+func createCoreDeliveryTx(ctx context.Context, tx *sql.Tx, run core.AgentRun, payload json.RawMessage) (core.Delivery, error) {
 	row := tx.QueryRowContext(ctx, `
-		SELECT id, room_id, status, trigger_message_id, start_message_id, last_seen_message_id, error_detail, created_at, started_at, completed_at
-		FROM invocations
-		WHERE id = $1
-		FOR UPDATE
-	`, invocationID)
-	invocation, err := scanCoreInvocation(row)
+		INSERT INTO deliveries (
+			room_id,
+			agent_session_id,
+			source_message_after_id,
+			source_message_until_id,
+			payload,
+			status
+		)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, room_id, agent_session_id, source_message_after_id, source_message_until_id, payload, status, created_at, acked_at
+	`, run.RoomID, run.AgentSessionID, run.SourceMessageAfterID, run.SourceMessageUntilID, payload, core.DeliveryStatusPending)
+	delivery, err := scanCoreDelivery(row)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return core.Invocation{}, fmt.Errorf("invocation %d not found", invocationID)
-		}
-		return core.Invocation{}, fmt.Errorf("get invocation for update: %w", err)
+		return core.Delivery{}, fmt.Errorf("create delivery: %w", err)
 	}
-	return invocation, nil
+	return delivery, nil
+}
+
+func ackCoreDelivery(ctx context.Context, db *sql.DB, id int64) (core.Delivery, error) {
+	row := db.QueryRowContext(ctx, `
+		UPDATE deliveries
+		SET status = $2,
+		    acked_at = NOW()
+		WHERE id = $1
+		  AND status = $3
+		RETURNING id, room_id, agent_session_id, source_message_after_id, source_message_until_id, payload, status, created_at, acked_at
+	`, id, core.DeliveryStatusAcked, core.DeliveryStatusPending)
+	delivery, err := scanCoreDelivery(row)
+	if err != nil {
+		return core.Delivery{}, fmt.Errorf("ack delivery: %w", err)
+	}
+	return delivery, nil
 }
 
 func scanCoreMessages(rows *sql.Rows) ([]core.Message, error) {
@@ -281,130 +363,36 @@ func scanCoreMessages(rows *sql.Rows) ([]core.Message, error) {
 		}
 		messages = append(messages, message)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate messages: %w", err)
+	}
 	return messages, nil
-}
-
-func updateInvocationRunningTx(ctx context.Context, tx *sql.Tx, invocationID int64) (core.Invocation, error) {
-	row := tx.QueryRowContext(ctx, `
-		UPDATE invocations
-		SET status = $2,
-		    start_message_id = (
-		        SELECT MAX(id)
-		        FROM messages
-		        WHERE room_id = invocations.room_id
-		          AND skipped = FALSE
-		    ),
-		    last_seen_message_id = (
-		        SELECT MAX(id)
-		        FROM messages
-		        WHERE room_id = invocations.room_id
-		          AND skipped = FALSE
-		    ),
-		    started_at = NOW()
-		WHERE id = $1
-		  AND status = $3
-		RETURNING id, room_id, status, trigger_message_id, start_message_id, last_seen_message_id, error_detail, created_at, started_at, completed_at
-	`, invocationID, core.InvocationStatusRunning, core.InvocationStatusQueued)
-	invocation, err := scanCoreInvocation(row)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return core.Invocation{}, fmt.Errorf("queued invocation %d not found", invocationID)
-		}
-		return core.Invocation{}, fmt.Errorf("start invocation: %w", err)
-	}
-	return invocation, nil
-}
-
-func updateInvocationCompletedTx(ctx context.Context, tx *sql.Tx, invocationID int64) (core.Invocation, error) {
-	row := tx.QueryRowContext(ctx, `
-		UPDATE invocations
-		SET status = $2,
-		    completed_at = NOW()
-		WHERE id = $1
-		  AND status IN ($3, $4)
-		RETURNING id, room_id, status, trigger_message_id, start_message_id, last_seen_message_id, error_detail, created_at, started_at, completed_at
-	`, invocationID, core.InvocationStatusCompleted, core.InvocationStatusQueued, core.InvocationStatusRunning)
-	invocation, err := scanCoreInvocation(row)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return core.Invocation{}, fmt.Errorf("active invocation %d not found", invocationID)
-		}
-		return core.Invocation{}, fmt.Errorf("complete invocation: %w", err)
-	}
-	return invocation, nil
-}
-
-func updateInvocationFailedTx(ctx context.Context, tx *sql.Tx, invocationID int64, detail string) (core.Invocation, error) {
-	row := tx.QueryRowContext(ctx, `
-		UPDATE invocations
-		SET status = $2,
-		    error_detail = $3,
-		    completed_at = NOW()
-		WHERE id = $1
-		  AND status IN ($4, $5)
-		RETURNING id, room_id, status, trigger_message_id, start_message_id, last_seen_message_id, error_detail, created_at, started_at, completed_at
-	`, invocationID, core.InvocationStatusFailed, detail, core.InvocationStatusQueued, core.InvocationStatusRunning)
-	invocation, err := scanCoreInvocation(row)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return core.Invocation{}, fmt.Errorf("active invocation %d not found", invocationID)
-		}
-		return core.Invocation{}, fmt.Errorf("fail invocation: %w", err)
-	}
-	return invocation, nil
-}
-
-func createCoreDeliveryTx(ctx context.Context, tx *sql.Tx, roomID int64, invocationID int64, payload json.RawMessage) (core.Delivery, error) {
-	row := tx.QueryRowContext(ctx, `
-		INSERT INTO deliveries (
-			room_id,
-			invocation_id,
-			payload,
-			status
-		)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, room_id, invocation_id, payload, status, created_at, acked_at
-	`, roomID, invocationID, payload, core.DeliveryStatusPending)
-	delivery, err := scanCoreDelivery(row)
-	if err != nil {
-		return core.Delivery{}, fmt.Errorf("create core delivery: %w", err)
-	}
-	return delivery, nil
-}
-
-func ackCoreDelivery(ctx context.Context, db *sql.DB, id int64) (core.Delivery, error) {
-	var delivery core.Delivery
-	var ackedAt sql.NullTime
-	err := db.QueryRowContext(ctx, `
-		UPDATE deliveries
-		SET status = $2,
-		    acked_at = NOW()
-		WHERE id = $1
-		  AND status = $3
-		RETURNING id, room_id, invocation_id, payload, status, created_at, acked_at
-	`, id, core.DeliveryStatusAcked, core.DeliveryStatusPending).Scan(
-		&delivery.ID,
-		&delivery.RoomID,
-		&delivery.InvocationID,
-		&delivery.Payload,
-		&delivery.Status,
-		&delivery.CreatedAt,
-		&ackedAt,
-	)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return core.Delivery{}, fmt.Errorf("pending delivery %d not found", id)
-		}
-		return core.Delivery{}, fmt.Errorf("ack core delivery: %w", err)
-	}
-	if ackedAt.Valid {
-		delivery.AckedAt = ackedAt.Time
-	}
-	return delivery, nil
 }
 
 type scanner interface {
 	Scan(dest ...any) error
+}
+
+func scanCoreRoom(row scanner) (core.Room, error) {
+	var room core.Room
+	var displayName sql.NullString
+	if err := row.Scan(
+		&room.ID,
+		&room.TenantID,
+		&room.Channel,
+		&room.ChannelRoomID,
+		&room.ChannelRoomType,
+		&displayName,
+		&room.OutboundAlias,
+		&room.CreatedAt,
+		&room.UpdatedAt,
+	); err != nil {
+		return core.Room{}, err
+	}
+	if displayName.Valid {
+		room.DisplayName = displayName.String
+	}
+	return room, nil
 }
 
 func scanCoreMessage(row scanner) (core.Message, error) {
@@ -429,47 +417,40 @@ func scanCoreMessage(row scanner) (core.Message, error) {
 	return message, nil
 }
 
-func scanCoreInvocation(row scanner) (core.Invocation, error) {
-	var invocation core.Invocation
+func scanAgentSession(row scanner) (core.AgentSession, error) {
+	var session core.AgentSession
+	var triggerPolicy []byte
 	var triggerMessageID sql.NullInt64
-	var startMessageID sql.NullInt64
-	var lastSeenMessageID sql.NullInt64
-	var errorDetail sql.NullString
-	var startedAt sql.NullTime
-	var completedAt sql.NullTime
+	var lockOwner sql.NullString
+	var lockExpiresAt sql.NullTime
 	if err := row.Scan(
-		&invocation.ID,
-		&invocation.RoomID,
-		&invocation.Status,
+		&session.ID,
+		&session.RoomID,
+		&session.AgentKey,
+		&session.Enabled,
+		&triggerPolicy,
 		&triggerMessageID,
-		&startMessageID,
-		&lastSeenMessageID,
-		&errorDetail,
-		&invocation.CreatedAt,
-		&startedAt,
-		&completedAt,
+		&session.LastProcessedMessageID,
+		&lockOwner,
+		&lockExpiresAt,
+		&session.CreatedAt,
+		&session.UpdatedAt,
 	); err != nil {
-		return core.Invocation{}, err
+		return core.AgentSession{}, err
+	}
+	if len(triggerPolicy) > 0 {
+		session.TriggerPolicy = append(json.RawMessage(nil), triggerPolicy...)
 	}
 	if triggerMessageID.Valid {
-		invocation.TriggerMessageID = triggerMessageID.Int64
+		session.TriggerMessageID = triggerMessageID.Int64
 	}
-	if startMessageID.Valid {
-		invocation.StartMessageID = startMessageID.Int64
+	if lockOwner.Valid {
+		session.LockOwner = lockOwner.String
 	}
-	if lastSeenMessageID.Valid {
-		invocation.LastSeenMessageID = lastSeenMessageID.Int64
+	if lockExpiresAt.Valid {
+		session.LockExpiresAt = lockExpiresAt.Time
 	}
-	if errorDetail.Valid {
-		invocation.ErrorDetail = errorDetail.String
-	}
-	if startedAt.Valid {
-		invocation.StartedAt = startedAt.Time
-	}
-	if completedAt.Valid {
-		invocation.CompletedAt = completedAt.Time
-	}
-	return invocation, nil
+	return session, nil
 }
 
 func scanCoreDelivery(row scanner) (core.Delivery, error) {
@@ -478,13 +459,15 @@ func scanCoreDelivery(row scanner) (core.Delivery, error) {
 	if err := row.Scan(
 		&delivery.ID,
 		&delivery.RoomID,
-		&delivery.InvocationID,
+		&delivery.AgentSessionID,
+		&delivery.SourceMessageAfterID,
+		&delivery.SourceMessageUntilID,
 		&delivery.Payload,
 		&delivery.Status,
 		&delivery.CreatedAt,
 		&ackedAt,
 	); err != nil {
-		return core.Delivery{}, fmt.Errorf("scan core delivery: %w", err)
+		return core.Delivery{}, err
 	}
 	if ackedAt.Valid {
 		delivery.AckedAt = ackedAt.Time
@@ -492,16 +475,16 @@ func scanCoreDelivery(row scanner) (core.Delivery, error) {
 	return delivery, nil
 }
 
-func nullIfEmpty(value string) any {
+func nullIfEmpty(value string) sql.NullString {
 	if value == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: value, Valid: true}
+}
+
+func nullJSON(value json.RawMessage) any {
+	if len(value) == 0 {
 		return nil
 	}
 	return value
-}
-
-func nullTime(t time.Time) any {
-	if t.IsZero() {
-		return nil
-	}
-	return t
 }

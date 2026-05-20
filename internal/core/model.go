@@ -7,12 +7,7 @@ import (
 
 const (
 	DefaultTenantID = "default"
-
-	InvocationStatusQueued    int16 = 0
-	InvocationStatusRunning   int16 = 1
-	InvocationStatusCompleted int16 = 2
-	InvocationStatusFailed    int16 = 3
-	InvocationStatusCancelled int16 = 4
+	DefaultAgentKey = "default"
 
 	DeliveryStatusPending int16 = 0
 	DeliveryStatusAcked   int16 = 1
@@ -29,9 +24,23 @@ type Room struct {
 	ChannelRoomID   string
 	ChannelRoomType string
 	DisplayName     string
-	TriggerPolicy   json.RawMessage
+	OutboundAlias   string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+}
+
+type AgentSession struct {
+	ID                     int64
+	RoomID                 int64
+	AgentKey               string
+	Enabled                bool
+	TriggerPolicy          json.RawMessage
+	TriggerMessageID       int64
+	LastProcessedMessageID int64
+	LockOwner              string
+	LockExpiresAt          time.Time
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 type Message struct {
@@ -46,33 +55,36 @@ type Message struct {
 	CreatedAt       time.Time
 }
 
-type Invocation struct {
-	ID                int64
-	RoomID            int64
-	Status            int16
-	TriggerMessageID  int64
-	StartMessageID    int64
-	LastSeenMessageID int64
-	ErrorDetail       string
-	CreatedAt         time.Time
-	StartedAt         time.Time
-	CompletedAt       time.Time
-}
-
 type Delivery struct {
-	ID           int64
-	RoomID       int64
-	InvocationID int64
-	Payload      json.RawMessage
-	Status       int16
-	CreatedAt    time.Time
-	AckedAt      time.Time
+	ID                   int64
+	RoomID               int64
+	AgentSessionID       int64
+	SourceMessageAfterID int64
+	SourceMessageUntilID int64
+	Payload              json.RawMessage
+	Status               int16
+	CreatedAt            time.Time
+	AckedAt              time.Time
 }
 
-type InboundMessageInput struct {
+type RegisterRoomInput struct {
 	Channel         string          `json:"channel"`
 	ChannelRoomID   string          `json:"channel_room_id"`
 	ChannelRoomType string          `json:"channel_room_type"`
+	DisplayName     string          `json:"display_name"`
+	OutboundAlias   string          `json:"outbound_alias"`
+	AgentKey        string          `json:"agent_key"`
+	AgentEnabled    bool            `json:"agent_enabled"`
+	TriggerPolicy   json.RawMessage `json:"trigger_policy"`
+}
+
+type RegisterRoomResult struct {
+	Room         Room         `json:"room"`
+	AgentSession AgentSession `json:"agent_session"`
+}
+
+type CreateMessageInput struct {
+	RoomID          int64           `json:"room_id"`
 	SourceMessageID string          `json:"source_message_id"`
 	SenderID        string          `json:"sender_id"`
 	SenderName      string          `json:"sender_name"`
@@ -81,20 +93,17 @@ type InboundMessageInput struct {
 	Skipped         bool            `json:"skipped"`
 }
 
-type InboundMessageResult struct {
-	Room       Room        `json:"room"`
-	Message    Message     `json:"message"`
-	Invocation *Invocation `json:"invocation,omitempty"`
-	Duplicate  bool        `json:"duplicate"`
-	Triggered  bool        `json:"triggered"`
-	Appended   bool        `json:"appended"`
+type CreateMessageResult struct {
+	Message   Message `json:"message"`
+	Duplicate bool    `json:"duplicate"`
+	Triggered bool    `json:"triggered"`
 }
 
-type CompleteInvocationInput struct {
-	Text string `json:"text"`
-}
-
-type InvocationResult struct {
-	Invocation Invocation `json:"invocation"`
-	Delivery   *Delivery  `json:"delivery,omitempty"`
+type AgentRun struct {
+	AgentSessionID       int64
+	RoomID               int64
+	AgentKey             string
+	SourceMessageAfterID int64
+	SourceMessageUntilID int64
+	LockOwner            string
 }

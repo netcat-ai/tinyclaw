@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -53,7 +52,7 @@ func NewCodexRunner(config CodexRunnerConfig) *CodexRunner {
 	return &CodexRunner{config: config}
 }
 
-func (r *CodexRunner) RunInvocation(ctx context.Context, run InvocationRun) (string, error) {
+func (r *CodexRunner) RunAgent(ctx context.Context, run AgentRunRequest) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -111,7 +110,7 @@ func (r *CodexRunner) RunInvocation(ctx context.Context, run InvocationRun) (str
 	return text, nil
 }
 
-func (r *CodexRunner) runResponsesAPI(ctx context.Context, run InvocationRun) (string, error) {
+func (r *CodexRunner) runResponsesAPI(ctx context.Context, run AgentRunRequest) (string, error) {
 	endpoint, err := responsesEndpoint(r.config.BaseURL)
 	if err != nil {
 		return "", err
@@ -202,14 +201,16 @@ func extractResponsesText(data []byte) (string, error) {
 	return text, nil
 }
 
-func BuildCodexPrompt(run InvocationRun) string {
+func BuildCodexPrompt(run AgentRunRequest) string {
 	var builder strings.Builder
 	builder.WriteString("You are the TinyClaw agent runner. Answer the latest user request for this room.\n")
 	builder.WriteString("Return only the message text that should be sent back to the room.\n\n")
-	builder.WriteString("Invocation ID: ")
-	builder.WriteString(strconv.FormatInt(run.Invocation.ID, 10))
+	builder.WriteString("Agent Session ID: ")
+	builder.WriteString(fmt.Sprintf("%d", run.AgentRun.AgentSessionID))
 	builder.WriteString("\nRoom ID: ")
-	builder.WriteString(strconv.FormatInt(run.Invocation.RoomID, 10))
+	builder.WriteString(fmt.Sprintf("%d", run.AgentRun.RoomID))
+	builder.WriteString("\nMessage Window: ")
+	builder.WriteString(fmt.Sprintf("(%d, %d]", run.AgentRun.SourceMessageAfterID, run.AgentRun.SourceMessageUntilID))
 	builder.WriteString("\n\nConversation messages:\n")
 	if len(run.ContextMessages) == 0 {
 		builder.WriteString("(empty)\n")

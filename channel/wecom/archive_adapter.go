@@ -21,6 +21,7 @@ const (
 type ArchiveConfig struct {
 	CorpID        string
 	CorpSecret    string
+	ContactSecret string
 	RSAPrivateKey string
 	BotID         string
 	Proxy         string
@@ -32,18 +33,15 @@ type ArchiveConfig struct {
 }
 
 type InboundStore interface {
-	IngestCoreMessage(ctx context.Context, input core.InboundMessageInput) (core.InboundMessageResult, error)
-}
-
-type InvocationScheduler interface {
-	ScheduleInvocation(invocationID int64)
+	RegisterRoom(ctx context.Context, input core.RegisterRoomInput) (core.RegisterRoomResult, error)
+	CreateMessage(ctx context.Context, input core.CreateMessageInput) (core.CreateMessageResult, error)
 }
 
 type ArchiveAdapter struct {
-	db        *sql.DB
-	store     InboundStore
-	scheduler InvocationScheduler
-	cfg       ArchiveConfig
+	db     *sql.DB
+	store  InboundStore
+	cfg    ArchiveConfig
+	client *Client
 }
 
 type archiveMessage struct {
@@ -59,12 +57,17 @@ type archiveMessage struct {
 	} `json:"text"`
 }
 
-func NewArchiveAdapter(db *sql.DB, store InboundStore, scheduler InvocationScheduler, cfg ArchiveConfig) *ArchiveAdapter {
+func NewArchiveAdapter(db *sql.DB, store InboundStore, cfg ArchiveConfig) *ArchiveAdapter {
+	cfg = cfg.withDefaults()
+	contactSecret := strings.TrimSpace(cfg.ContactSecret)
+	if contactSecret == "" {
+		contactSecret = cfg.CorpSecret
+	}
 	return &ArchiveAdapter{
-		db:        db,
-		store:     store,
-		scheduler: scheduler,
-		cfg:       cfg.withDefaults(),
+		db:     db,
+		store:  store,
+		cfg:    cfg,
+		client: NewClient(cfg.CorpID, contactSecret),
 	}
 }
 
@@ -164,25 +167,45 @@ func (a *ArchiveAdapter) ingestChatData(ctx context.Context, sdk *finance.SDK, i
 	if err := json.Unmarshal(plain, &msg); err != nil {
 		return fmt.Errorf("decode wecom message seq %d: %w", item.Seq, err)
 	}
-	input := a.toInboundInput(item.Seq, msg, plain)
-	result, err := a.store.IngestCoreMessage(ctx, input)
-	if err != nil {
-		return fmt.Errorf("ingest wecom message seq %d: %w", item.Seq, err)
+	roomInput, ok := a.toRegisterRoomInput(ctx, msg)
+	if !ok {
+		slog.Warn("skip wecom message because room profile is unresolved", "seq", item.Seq, "msgid", msg.MsgID)
+		return nil
 	}
-	if result.Triggered && result.Invocation != nil && a.scheduler != nil {
-		a.scheduler.ScheduleInvocation(result.Invocation.ID)
+	roomResult, err := a.store.RegisterRoom(ctx, roomInput)
+	if err != nil {
+		return fmt.Errorf("register wecom room seq %d: %w", item.Seq, err)
+	}
+	messageInput := a.toCreateMessageInput(ctx, item.Seq, msg, plain, roomResult.Room.ID)
+	if _, err := a.store.CreateMessage(ctx, messageInput); err != nil {
+		return fmt.Errorf("create wecom message seq %d: %w", item.Seq, err)
 	}
 	return nil
 }
 
-func (a *ArchiveAdapter) toInboundInput(seq int64, msg archiveMessage, raw json.RawMessage) core.InboundMessageInput {
+func (a *ArchiveAdapter) toRegisterRoomInput(ctx context.Context, msg archiveMessage) (core.RegisterRoomInput, bool) {
 	roomType := core.RoomChatTypeDirect
 	channelRoomID := directRoomID(msg, a.cfg.BotID)
 	if strings.TrimSpace(msg.RoomID) != "" {
 		roomType = core.RoomChatTypeGroup
 		channelRoomID = strings.TrimSpace(msg.RoomID)
 	}
+	displayName := a.resolveRoomDisplayName(ctx, roomType, channelRoomID)
+	if displayName == "" {
+		return core.RegisterRoomInput{}, false
+	}
+	return core.RegisterRoomInput{
+		Channel:         defaultWeComChannel,
+		ChannelRoomID:   channelRoomID,
+		ChannelRoomType: roomType,
+		DisplayName:     displayName,
+		OutboundAlias:   displayName,
+		AgentKey:        core.DefaultAgentKey,
+		AgentEnabled:    true,
+	}, true
+}
 
+func (a *ArchiveAdapter) toCreateMessageInput(ctx context.Context, seq int64, msg archiveMessage, raw json.RawMessage, roomID int64) core.CreateMessageInput {
 	skipped := strings.TrimSpace(msg.Action) != "send" || strings.TrimSpace(msg.MsgType) != "text" || strings.TrimSpace(msg.From) == strings.TrimSpace(a.cfg.BotID)
 	payload := map[string]any{
 		"type":        msg.MsgType,
@@ -197,16 +220,52 @@ func (a *ArchiveAdapter) toInboundInput(seq int64, msg archiveMessage, raw json.
 		payload["raw"] = json.RawMessage(raw)
 	}
 
-	return core.InboundMessageInput{
-		Channel:         defaultWeComChannel,
-		ChannelRoomID:   channelRoomID,
-		ChannelRoomType: roomType,
+	return core.CreateMessageInput{
+		RoomID:          roomID,
 		SourceMessageID: sourceMessageID(seq, msg.MsgID),
 		SenderID:        strings.TrimSpace(msg.From),
+		SenderName:      a.resolveSenderName(ctx, strings.TrimSpace(msg.From)),
 		MessageTime:     archiveMessageTime(msg.MsgTime),
 		Payload:         mustJSON(payload),
 		Skipped:         skipped,
 	}
+}
+
+func (a *ArchiveAdapter) resolveRoomDisplayName(ctx context.Context, roomType string, channelRoomID string) string {
+	channelRoomID = strings.TrimSpace(channelRoomID)
+	if channelRoomID == "" || a.client == nil {
+		return ""
+	}
+	if roomType == core.RoomChatTypeGroup {
+		chat, err := a.client.GetArchiveGroupChat(ctx, channelRoomID)
+		if err != nil {
+			slog.Warn("resolve wecom group name failed", "room_id", channelRoomID, "err", err)
+			return ""
+		}
+		return strings.TrimSpace(chat.Name)
+	}
+	if contact, err := a.client.GetExternalContact(ctx, channelRoomID); err == nil && strings.TrimSpace(contact.Name) != "" {
+		return strings.TrimSpace(contact.Name)
+	}
+	if user, err := a.client.GetUser(ctx, channelRoomID); err == nil && strings.TrimSpace(user.Name) != "" {
+		return strings.TrimSpace(user.Name)
+	}
+	slog.Warn("resolve wecom direct room name failed", "room_id", channelRoomID)
+	return ""
+}
+
+func (a *ArchiveAdapter) resolveSenderName(ctx context.Context, senderID string) string {
+	senderID = strings.TrimSpace(senderID)
+	if senderID == "" || a.client == nil {
+		return ""
+	}
+	if contact, err := a.client.GetExternalContact(ctx, senderID); err == nil && strings.TrimSpace(contact.Name) != "" {
+		return strings.TrimSpace(contact.Name)
+	}
+	if user, err := a.client.GetUser(ctx, senderID); err == nil && strings.TrimSpace(user.Name) != "" {
+		return strings.TrimSpace(user.Name)
+	}
+	return ""
 }
 
 func directRoomID(msg archiveMessage, botID string) string {

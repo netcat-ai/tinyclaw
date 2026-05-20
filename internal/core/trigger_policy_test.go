@@ -24,9 +24,8 @@ func TestEvaluateTriggerPolicyUsesMentionsAndKeywords(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := EvaluateTriggerPolicy(policy, InboundMessageInput{
-				ChannelRoomType: RoomChatTypeGroup,
-				Payload:         json.RawMessage(`{"type":"text","text":` + mustJSONString(tc.text) + `}`),
+			got, ok := EvaluateTriggerPolicy(policy, RoomChatTypeGroup, CreateMessageInput{
+				Payload: json.RawMessage(`{"type":"text","text":` + mustJSONString(tc.text) + `}`),
 			})
 			if !ok {
 				t.Fatal("policy was not evaluated")
@@ -39,9 +38,8 @@ func TestEvaluateTriggerPolicyUsesMentionsAndKeywords(t *testing.T) {
 }
 
 func TestEvaluateTriggerPolicyUsesDirectDefault(t *testing.T) {
-	got, ok := EvaluateTriggerPolicy(json.RawMessage(`{"direct_default":false}`), InboundMessageInput{
-		ChannelRoomType: RoomChatTypeDirect,
-		Payload:         json.RawMessage(`{"type":"text","text":"hello"}`),
+	got, ok := EvaluateTriggerPolicy(json.RawMessage(`{"direct_default":false}`), RoomChatTypeDirect, CreateMessageInput{
+		Payload: json.RawMessage(`{"type":"text","text":"hello"}`),
 	})
 	if !ok {
 		t.Fatal("policy was not evaluated")
