@@ -138,4 +138,4 @@ jobs:
 
       - name: Wait rollout
         run: |
-          kubectl -n claw rollout status deployment/clawman --timeout=300s
+          kubectl -n claw rollout status deployment/clawman --timeout=1800s
