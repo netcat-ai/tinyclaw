@@ -49,6 +49,14 @@ Message 不再使用企业微信 archive `seq` 作为身份。第三方平台消
 
 第一版 agent final output 非空时，clawman 自动创建一条 Delivery；final output 为空时，只推进 Agent Session 的处理边界，不产生 Delivery。
 
+### Room Memory
+
+`Room Memory` 是归属于 Room 的长期记忆，不归属于 Agent Session、runner session 或 sandbox。
+
+Agent Session 在 Agent Run 中可以通过 Clawman 颁发的短期 memory capability token 主动执行 Memory Search。Memory Search 只返回当前 Agent Run 所属 Room 的 active Memory Items，不接受 agent 传入的 `room_id`。
+
+第一版 Memory Item 类型只包含 `fact`、`preference`、`todo`。普通更正通过 `stale` 或 `closed` 状态表达，不物理删除。
+
 ## 3. 表模型
 
 ### rooms
@@ -141,6 +149,54 @@ Delivery 不冗余保存 `channel` / `channel_room_id`；外发时通过 `room_i
 
 `source_message_after_id` 和 `source_message_until_id` 记录产生该 Delivery 的 Message 窗口，语义等同于 `message.id > source_message_after_id AND message.id <= source_message_until_id`。
 
+### memory_items
+
+```text
+id bigint primary key
+room_id bigint not null references rooms(id)
+type text not null
+key text not null
+content text not null
+status text not null
+source_message_after_id bigint not null
+source_message_until_id bigint not null
+created_by_agent_session_id bigint null references agent_sessions(id)
+updated_by_agent_session_id bigint null references agent_sessions(id)
+created_at timestamptz not null
+updated_at timestamptz not null
+
+unique(room_id, type, key)
+```
+
+第一版 `type` 只允许 `fact`、`preference`、`todo`。默认 Memory Search 只返回 `status = active`。
+
+### memory_write_jobs
+
+```text
+id bigint primary key
+room_id bigint not null references rooms(id)
+agent_session_id bigint not null references agent_sessions(id)
+agent_key text not null
+source_message_after_id bigint not null
+source_message_until_id bigint not null
+operation_key text not null unique
+op text not null
+type text not null
+key text not null
+content text not null
+status text not null
+attempts integer not null
+last_error text null
+created_at timestamptz not null
+updated_at timestamptz not null
+```
+
+Agent Run Result 中的 Memory Write Proposals 不直接修改 Room Memory，而是先写入 `memory_write_jobs`。后台 worker 异步应用 pending jobs，并做有限重试。
+
+### memory_change_audit
+
+记录 Memory Write Job 对 Room Memory 的 durable change audit。第一版不把 Memory Search 写入 durable audit；search 只使用结构化日志。
+
 ## 4. Room And Message APIs
 
 Adapter 先注册或更新 Room，再向已注册 Room 写入标准化 Message。旧 `POST /api/inbound` 不保留；Room 生命周期和 Message 生命周期分开。
@@ -222,7 +278,14 @@ Message 入库后不再改所属关系。未触发消息仍保留在 room messag
 
 Agent run 由 clawman 进程内 execution loop 启动，不设计外部 claim API。execution loop 抢占 Agent Session lock，读取 `last_processed_message_id < id <= trigger_message_id` 的初始上下文，并调用 agent runner。
 
-当前实现提供 `CodexRunner`：设置 `AGENT_RUNNER=codex` 后，execution module 会调用本机 `codex exec`，并把 runner final output 写成 Delivery。
+当前实现提供 `CodexRunner`：设置 `AGENT_RUNNER=codex` 后，execution module 会调用本机 `codex exec`，并把 runner 输出解析成 Agent Run Result。
+
+Agent Run Result 包含：
+
+- user-visible final output
+- Memory Write Proposals
+
+Codex run 会收到 memory search endpoint 和短期 capability token。Codex 可以在运行中主动调用 Memory Search；Clawman 从 token 绑定 Room，不信任 agent 传入的 `room_id`。
 
 Agent final output 处理：
 
@@ -231,6 +294,16 @@ non-empty output -> create delivery(status=pending)
 empty output     -> no delivery
 failure          -> create failure delivery(status=pending)
 ```
+
+Memory Write Proposals 处理：
+
+```text
+valid proposal   -> enqueue memory_write_job(status=pending)
+invalid proposal -> enqueue memory_write_job(status=rejected)
+pending job      -> background worker applies Room Memory change
+```
+
+Memory Write Job 失败不阻止 Delivery 创建。
 
 Agent run 成功或失败后都推进 `agent_sessions.last_processed_message_id` 到本次窗口的 `trigger_message_id`，并释放 lock。成功且 final output 非空时创建 Delivery；失败时写日志并创建失败提示 Delivery。失败不自动重试，后续新触发消息会创建新的处理窗口。
 
@@ -266,6 +339,6 @@ ack 后 Delivery 保留，只更新状态。
 - sandbox lifecycle / runtime connection
 - Tool Runtime Backend：后续优先按“clawman 持有 agent loop，sandbox 只执行工具调用”设计
 - durable workflow engine：第一版先用 Agent Session trigger/checkpoint/lock 和 deliveries 承载恢复语义
-- memory capability
+- vector / hybrid memory ranking
 - explicit send capability
 - channel adapter 自身 cursor / offset / reconnect state

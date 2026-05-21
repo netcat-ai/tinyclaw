@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -139,7 +140,7 @@ func (s *CoreStore) ListAgentRunMessages(ctx context.Context, run core.AgentRun)
 	return listAgentRunMessages(ctx, s.db, run)
 }
 
-func (s *CoreStore) CompleteAgentRun(ctx context.Context, run core.AgentRun, output string) (*core.Delivery, error) {
+func (s *CoreStore) CompleteAgentRun(ctx context.Context, run core.AgentRun, result core.AgentRunResult) (*core.Delivery, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin complete agent run tx: %w", err)
@@ -147,12 +148,12 @@ func (s *CoreStore) CompleteAgentRun(ctx context.Context, run core.AgentRun, out
 	defer tx.Rollback()
 
 	var payload json.RawMessage
-	if strings.TrimSpace(output) != "" {
+	if strings.TrimSpace(result.FinalOutput) != "" {
 		room, err := getCoreRoomByIDTx(ctx, tx, run.RoomID)
 		if err != nil {
 			return nil, err
 		}
-		payload = deliveryTextPayload(room, "agent_output", output)
+		payload = deliveryTextPayload(room, "agent_output", result.FinalOutput)
 	}
 	delivery, err := finishAgentRunTx(ctx, tx, run, payload)
 	if err != nil {
@@ -160,6 +161,9 @@ func (s *CoreStore) CompleteAgentRun(ctx context.Context, run core.AgentRun, out
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit complete agent run: %w", err)
+	}
+	if err := s.EnqueueMemoryWriteJobs(ctx, run, result.MemoryWriteProposals); err != nil {
+		slog.Warn("enqueue memory write jobs failed", "agent_session_id", run.AgentSessionID, "err", err)
 	}
 	return delivery, nil
 }

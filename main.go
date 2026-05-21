@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -48,10 +50,13 @@ func main() {
 
 	coreStore := storage.NewCoreStore(store.DB())
 	agentScheduler := executor.NewScheduler(runCtx, coreStore, buildAgentRunner(cfg))
+	agentScheduler.SetMemorySearchURL(memorySearchEndpoint(cfg.ControlAPIAddr))
+	memoryWriteWorker := executor.NewMemoryWriteWorker(runCtx, coreStore)
 	coreAPI := httpapi.NewServer(coreStore, cfg.ClawmanAPIToken)
 
 	// Start metrics server
 	go agentScheduler.RunLoop()
+	go memoryWriteWorker.RunLoop()
 	go serveMetrics(runCtx, cfg.MetricsAddr)
 	go serveCoreAPI(runCtx, cfg.ControlAPIAddr, coreAPI)
 	if cfg.WeComEnabled {
@@ -61,6 +66,31 @@ func main() {
 	<-runCtx.Done()
 
 	slog.Info("clawman stopped")
+}
+
+func memorySearchEndpoint(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return ""
+	}
+	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
+		parsed, err := url.Parse(addr)
+		if err != nil {
+			return ""
+		}
+		parsed.Path = strings.TrimRight(parsed.Path, "/") + "/internal/memory/search"
+		parsed.RawQuery = ""
+		parsed.Fragment = ""
+		return parsed.String()
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/internal/memory/search"
 }
 
 func serveWeComArchiveAdapter(ctx context.Context, store *Store, coreStore *storage.CoreStore, cfg Config) {

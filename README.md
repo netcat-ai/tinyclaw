@@ -5,6 +5,7 @@ TinyClaw is a room-scoped agent runtime control plane. The current implementatio
 - **Room**: TinyClaw-owned conversation container mapped from an external Channel Room.
 - **Agent Session**: one configured agent context inside a Room, with its own trigger and processed-message checkpoint.
 - **Message**: inbound fact for exactly one Room.
+- **Room Memory**: durable Room-owned knowledge searched by Agent Sessions during Agent Runs.
 - **Delivery**: outbound item produced by an agent run.
 
 ## Current State
@@ -23,6 +24,8 @@ Set `AGENT_RUNNER=codex` to run triggered Agent Sessions through `codex exec`. O
 - `CODEX_BASE_URL`: optional OpenAI-compatible Responses API endpoint base URL. When set, the runner calls `/v1/responses` directly instead of `codex exec`.
 - `CODEX_API_KEY_ENV`: environment variable name for the API key used with `CODEX_BASE_URL`, defaults to `OPENAI_API_KEY`.
 
+Codex runs receive a short-lived Room Memory Search capability. The capability calls Clawman's internal memory endpoint with a run-bound token; it does not accept `room_id` from the agent. Runner output is parsed as an Agent Run Result with user-visible final output and optional Memory Write Proposals. Memory writes are persisted as background jobs and do not block Delivery creation.
+
 `clawman` now exposes the Core Model HTTP interface:
 
 - `POST /api/rooms`
@@ -40,7 +43,7 @@ API requests use `Authorization: Bearer $CLAWMAN_API_TOKEN`.
 internal/core      Core Model types and Trigger Policy
 internal/storage   PostgreSQL implementation for Core Model persistence
 internal/api       HTTP adapter for Core Model routes
-internal/executor  Agent execution loop and runner context
+internal/executor  Agent execution loop, memory write worker, and runner context
 channel/wecom/     Legacy WeCom SDK helpers and clients
 ```
 
@@ -104,4 +107,5 @@ Mobile delivery uses `rooms.outbound_alias` as `recipient_alias`, falling back t
 - [Core Model Refactor V1](./docs/CORE_MODEL_REFACTOR_V1.md)
 - [Next Steps](./docs/NEXT_STEPS.md)
 - [Append-Only Room Messages ADR](./docs/adr/0001-append-only-room-messages.md)
+- [Room-Owned Memory ADR](./docs/adr/0002-use-room-owned-memory.md)
 - Historical docs such as [Architecture V0](./docs/ARCHITECTURE_V0.md), [Architecture Refactor 2026-04](./docs/ARCHITECTURE_REFACTOR_2026_04.md), [Agent Sandbox Integration V0](./docs/AGENT_SANDBOX_INTEGRATION_V0.md), and [Room Memory V0](./docs/ROOM_MEMORY_V0.md) no longer describe current code.

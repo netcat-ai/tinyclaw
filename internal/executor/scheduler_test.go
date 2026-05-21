@@ -14,7 +14,7 @@ type fakeStore struct {
 	completed       bool
 	failed          bool
 	contextMessages []core.Message
-	completedText   string
+	completedResult core.AgentRunResult
 	failedDetail    string
 }
 
@@ -36,9 +36,9 @@ func (s *fakeStore) ListAgentRunMessages(context.Context, core.AgentRun) ([]core
 	return s.contextMessages, nil
 }
 
-func (s *fakeStore) CompleteAgentRun(_ context.Context, _ core.AgentRun, output string) (*core.Delivery, error) {
+func (s *fakeStore) CompleteAgentRun(_ context.Context, _ core.AgentRun, result core.AgentRunResult) (*core.Delivery, error) {
 	s.completed = true
-	s.completedText = output
+	s.completedResult = result
 	return nil, nil
 }
 
@@ -50,17 +50,24 @@ func (s *fakeStore) FailAgentRun(_ context.Context, _ core.AgentRun, detail stri
 
 type errorRunner struct{}
 
-func (errorRunner) RunAgent(context.Context, AgentRunRequest) (string, error) {
-	return "", fmt.Errorf("boom")
+func (errorRunner) RunAgent(context.Context, AgentRunRequest) (core.AgentRunResult, error) {
+	return core.AgentRunResult{}, fmt.Errorf("boom")
 }
 
 type contextRunner struct {
 	contextCount int
 }
 
-func (r *contextRunner) RunAgent(_ context.Context, run AgentRunRequest) (string, error) {
+func (r *contextRunner) RunAgent(_ context.Context, run AgentRunRequest) (core.AgentRunResult, error) {
 	r.contextCount = len(run.ContextMessages)
-	return "done", nil
+	return core.AgentRunResult{
+		FinalOutput: "done",
+		MemoryWriteProposals: []core.MemoryWriteProposal{{
+			Op:      core.MemoryWriteOpUpsertFact,
+			Key:     "project",
+			Content: "TinyClaw has Room Memory.",
+		}},
+	}, nil
 }
 
 func TestRunOnceCompletesAgentRun(t *testing.T) {
@@ -77,8 +84,11 @@ func TestRunOnceCompletesAgentRun(t *testing.T) {
 	if !store.completed {
 		t.Fatal("completed = false, want true")
 	}
-	if store.completedText != "done" {
-		t.Fatalf("completed text = %q, want done", store.completedText)
+	if store.completedResult.FinalOutput != "done" {
+		t.Fatalf("completed text = %q, want done", store.completedResult.FinalOutput)
+	}
+	if len(store.completedResult.MemoryWriteProposals) != 1 {
+		t.Fatalf("memory proposals = %d, want 1", len(store.completedResult.MemoryWriteProposals))
 	}
 	if runner.contextCount != 2 {
 		t.Fatalf("context count = %d, want 2", runner.contextCount)

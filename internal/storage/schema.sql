@@ -50,3 +50,60 @@ CREATE TABLE IF NOT EXISTS deliveries (
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	acked_at TIMESTAMPTZ
 );
+
+CREATE TABLE IF NOT EXISTS memory_items (
+	id BIGSERIAL PRIMARY KEY,
+	room_id BIGINT NOT NULL REFERENCES rooms(id),
+	type TEXT NOT NULL,
+	key TEXT NOT NULL,
+	content TEXT NOT NULL,
+	status TEXT NOT NULL,
+	source_message_after_id BIGINT NOT NULL DEFAULT 0,
+	source_message_until_id BIGINT NOT NULL DEFAULT 0,
+	created_by_agent_session_id BIGINT REFERENCES agent_sessions(id),
+	updated_by_agent_session_id BIGINT REFERENCES agent_sessions(id),
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	UNIQUE (room_id, type, key)
+);
+
+CREATE TABLE IF NOT EXISTS memory_write_jobs (
+	id BIGSERIAL PRIMARY KEY,
+	room_id BIGINT NOT NULL REFERENCES rooms(id),
+	agent_session_id BIGINT NOT NULL REFERENCES agent_sessions(id),
+	agent_key TEXT NOT NULL,
+	source_message_after_id BIGINT NOT NULL,
+	source_message_until_id BIGINT NOT NULL,
+	operation_key TEXT NOT NULL UNIQUE,
+	op TEXT NOT NULL,
+	type TEXT NOT NULL,
+	key TEXT NOT NULL,
+	content TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL,
+	attempts INTEGER NOT NULL DEFAULT 0,
+	last_error TEXT,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS memory_change_audit (
+	id BIGSERIAL PRIMARY KEY,
+	memory_item_id BIGINT REFERENCES memory_items(id),
+	memory_write_job_id BIGINT REFERENCES memory_write_jobs(id),
+	room_id BIGINT NOT NULL REFERENCES rooms(id),
+	agent_session_id BIGINT REFERENCES agent_sessions(id),
+	action TEXT NOT NULL,
+	payload JSONB NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS memory_capability_tokens (
+	token_hash TEXT PRIMARY KEY,
+	room_id BIGINT NOT NULL REFERENCES rooms(id),
+	agent_session_id BIGINT NOT NULL REFERENCES agent_sessions(id),
+	agent_key TEXT NOT NULL,
+	source_message_after_id BIGINT NOT NULL,
+	source_message_until_id BIGINT NOT NULL,
+	expires_at TIMESTAMPTZ NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

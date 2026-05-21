@@ -17,6 +17,7 @@ type fakeCoreStore struct {
 	messageFn  func(context.Context, core.CreateMessageInput) (core.CreateMessageResult, error)
 	listFn     func(context.Context, string, int64) ([]core.Delivery, error)
 	ackFn      func(context.Context, int64) (core.Delivery, error)
+	memoryFn   func(context.Context, string, core.MemorySearchInput) ([]core.MemoryItem, error)
 }
 
 func (f fakeCoreStore) RegisterRoom(ctx context.Context, input core.RegisterRoomInput) (core.RegisterRoomResult, error) {
@@ -33,6 +34,10 @@ func (f fakeCoreStore) ListCoreDeliveries(ctx context.Context, channel string, a
 
 func (f fakeCoreStore) AckCoreDelivery(ctx context.Context, id int64) (core.Delivery, error) {
 	return f.ackFn(ctx, id)
+}
+
+func (f fakeCoreStore) SearchRoomMemoryByToken(ctx context.Context, token string, input core.MemorySearchInput) ([]core.MemoryItem, error) {
+	return f.memoryFn(ctx, token, input)
 }
 
 func TestHealthz(t *testing.T) {
@@ -161,5 +166,51 @@ func TestHandleMessagesCreatesMessage(t *testing.T) {
 	}
 	if !payload.Triggered {
 		t.Fatal("triggered = false, want true")
+	}
+}
+
+func TestHandleMemorySearchUsesCapabilityToken(t *testing.T) {
+	api := NewServer(fakeCoreStore{
+		memoryFn: func(_ context.Context, token string, input core.MemorySearchInput) ([]core.MemoryItem, error) {
+			if token != "memory-token" {
+				t.Fatalf("token = %q, want memory-token", token)
+			}
+			if input.RoomID != 0 {
+				t.Fatalf("room id should not come from request, got %d", input.RoomID)
+			}
+			if input.Query != "language" || len(input.Types) != 1 || input.Types[0] != core.MemoryTypePreference {
+				t.Fatalf("unexpected input: %+v", input)
+			}
+			return []core.MemoryItem{{
+				ID:      1,
+				RoomID:  10,
+				Type:    core.MemoryTypePreference,
+				Key:     "reply_language",
+				Content: "中文回复",
+				Status:  core.MemoryStatusActive,
+			}}, nil
+		},
+	}, "api-secret")
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/memory/search", strings.NewReader(`{
+		"room_id":999,
+		"query":"language",
+		"types":["preference"],
+		"limit":5
+	}`))
+	req.Header.Set("Authorization", "Bearer memory-token")
+	rec := httptest.NewRecorder()
+
+	api.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload memorySearchResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].Key != "reply_language" {
+		t.Fatalf("unexpected payload: %+v", payload)
 	}
 }

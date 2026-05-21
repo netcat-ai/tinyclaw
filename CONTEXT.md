@@ -36,6 +36,46 @@ _Avoid_: Known room, send-ready room
 A long-running agent context inside a **Room** with its own processing progress.
 _Avoid_: Room, Agent Run
 
+**Room Memory**:
+Durable knowledge owned by one **Room** and used by **Agent Sessions** in that Room.
+_Avoid_: Agent memory, runner session memory, sandbox memory
+
+**Memory Search**:
+A governed **Room Memory** lookup requested by an **Agent Session** during an **Agent Run**.
+_Avoid_: Prompt preload, direct database query, runner memory
+
+**Memory Capability Token**:
+A short-lived authority that binds memory capability calls to one **Agent Run**.
+_Avoid_: Room id parameter, channel token, runner API key
+
+**Memory Item**:
+A durable unit of **Room Memory** returned by **Memory Search** or changed by a **Memory Write Proposal**.
+_Avoid_: Raw message, generated summary, vector chunk
+
+**Memory Fact**:
+A **Memory Item** that records stable knowledge about a **Room**.
+_Avoid_: Raw transcript, temporary observation
+
+**Memory Preference**:
+A **Memory Item** that records a stable behavior preference for a **Room**.
+_Avoid_: One-off instruction, style note
+
+**Memory Todo**:
+A **Memory Item** that records follow-up work for a **Room**.
+_Avoid_: Schedule, Scheduled Message, task row
+
+**Stale Memory**:
+A **Memory Item** kept for audit but no longer active for recall.
+_Avoid_: Deleted memory, corrected fact
+
+**Memory Write Proposal**:
+A structured request from an **Agent Run** to change **Room Memory** after the run finishes.
+_Avoid_: Direct memory write, tool-side mutation
+
+**Memory Write Job**:
+A background job that applies a **Memory Write Proposal** to **Room Memory**.
+_Avoid_: Delivery, Scheduled Message, direct write
+
 **Sandbox**:
 A future replaceable tool-execution instance. It is not the current agent executor.
 _Avoid_: Worker, consumer, bot instance
@@ -76,6 +116,10 @@ _Avoid_: Message id, cursor
 One execution attempt for an **Agent Session** over a bounded **Message** window.
 _Avoid_: Message, task, scheduler job
 
+**Agent Run Result**:
+The structured result of an **Agent Run**, including user-visible output and optional **Memory Write Proposals**.
+_Avoid_: Raw runner text, Delivery
+
 **Delivery**:
 A channel-bound outbound item produced from an **Agent Run**.
 _Avoid_: Job, reply row
@@ -100,6 +144,22 @@ _Avoid_: Clawman state, Message id, processing seq
 
 - A **Room** may have one or more **Agent Sessions**.
 - An **Agent Session** belongs to exactly one **Room**.
+- A **Room** may have **Room Memory**.
+- **Room Memory** belongs to exactly one **Room**.
+- **Agent Sessions** may read and write their **Room**'s **Room Memory**.
+- An **Agent Session** may request **Memory Search** during an **Agent Run**.
+- **Memory Search** uses the current **Agent Run** to determine the **Room**.
+- **Memory Search** returns **Memory Items** with source metadata.
+- **Memory Search** does not return raw **Messages**.
+- A **Memory Capability Token** binds **Memory Search** to one **Agent Run**.
+- An **Agent Run** may produce **Memory Write Proposals** for its **Room**.
+- Clawman validates **Memory Write Proposals** but does not create them from message rules.
+- A **Memory Write Proposal** may produce one or more **Memory Write Jobs**.
+- A **Memory Write Job** changes **Room Memory** asynchronously from a durable pending record.
+- First-version **Memory Items** are **Memory Facts**, **Memory Preferences**, or **Memory Todos**.
+- **Memory Search** returns active **Memory Items** by default.
+- A **Stale Memory** item is only returned when explicitly requested.
+- A **Memory Todo** does not wake an **Agent Session**; a time-based reminder belongs to a **Schedule**.
 - A future **Sandbox** may serve one **Agent Session** during its lifecycle, but current agent execution does not require a sandbox.
 - A **Tool Runtime Backend** owns backend-specific **Runtime Sessions**.
 - In the first execution model, a **Runtime Session** is scoped to one **Room** and reused across tool calls, but its identity is private to the **Tool Runtime Backend**.
@@ -117,7 +177,9 @@ _Avoid_: Clawman state, Message id, processing seq
 - A **Message** belongs to exactly one **Room**.
 - A **Source Message ID** is unique within one tenant, channel, and **Channel Room**.
 - An **Agent Run** belongs to exactly one **Agent Session**.
+- An **Agent Run** produces one **Agent Run Result**.
 - An **Agent Run** may produce zero or more **Deliveries**.
+- An **Agent Run Result** may produce zero or more **Deliveries**.
 - A **Delivery** targets exactly one external channel destination.
 - A **Trigger Policy** belongs to an **Agent Session**; when absent, `clawman` uses the channel default.
 - A **Schedule** belongs to exactly one **Agent Session**.
@@ -142,6 +204,22 @@ _Avoid_: Clawman state, Message id, processing seq
 - Duplicate inbound delivery from **Channel Adapters** is expected; resolved: every inbound **Message** must carry a **Source Message ID** for idempotent insertion.
 - **Room** was used as both external conversation container and agent execution boundary; resolved: **Room** is the conversation container, while **Agent Session** is the execution and long-running context boundary.
 - Multiple agents in one **Room** require distinct **Agent Sessions**; resolved: each **Agent Session** tracks its own processing progress.
+- Long-term memory was considered as **Agent Session** or runner-owned state; resolved: use **Room Memory** for durable Room-owned knowledge, with **Agent Sessions** as readers and writers.
+- **Room Memory** recall was considered as prompt preload; resolved: use **Memory Search** as the canonical recall action requested by an **Agent Session** during an **Agent Run**.
+- Running agents were considered allowed to directly mutate **Room Memory**; resolved: first version uses **Memory Search** during the run and **Memory Write Proposals** after the run.
+- **Memory Write Proposals** were considered as synchronous Agent Run writes; resolved: they create asynchronous **Memory Write Jobs**.
+- Clawman was considered as the semantic memory extractor; resolved: the **Agent Run** proposes memory changes, while Clawman validates and applies them.
+- **Memory Write Jobs** were considered as best effort in-memory work; resolved: first version uses a simple durable pending record with limited retry.
+- **Memory Search** was considered as a generated summary; resolved: it returns ranked **Memory Items** with source metadata.
+- **Memory Search** was considered as accepting a `room_id`; resolved: the **Room** comes from the current **Agent Run**, not from tool parameters.
+- **Memory Search** was considered as a per-run sidecar concern; resolved: Clawman owns the memory capability endpoint, while runner-specific tool protocols are adapters.
+- **Memory Search** was considered as historical message search; resolved: it only searches **Room Memory**, while raw **Message** search would be a separate capability.
+- Durable audit was considered for **Memory Search**; resolved: first version keeps durable audit for memory changes and uses structured logs for search.
+- **Memory Item** types were considered open-ended; resolved: first version only uses **Memory Fact**, **Memory Preference**, and **Memory Todo**.
+- TencentDB Agent Memory-style explicit layers were considered for first-version schema; resolved: first version uses typed **Memory Items** with source metadata instead of layer fields.
+- Agent runner output was considered as raw text; resolved: use **Agent Run Result** as the domain result, with runner-specific text parsing as an adapter detail.
+- Memory deletion was considered for ordinary corrections; resolved: first version marks **Memory Items** stale or closes **Memory Todos** instead of physically deleting them.
+- **Memory Todo** was considered as a reminder mechanism; resolved: memory supports understanding and work continuity, while reminders belong to **Schedule**.
 - `jobs` was used for outbound replies; resolved: use **Delivery** as the domain term, with `jobs` treated as a legacy implementation detail.
 - Trigger logic was considered adapter-owned; resolved: **Channel Adapters** standardize messages, while `clawman` applies each **Room**'s **Trigger Policy** or channel default.
 - The sandbox module was considered as clawman core logic; resolved: use **Tool Runtime Backend** as the abstraction, with provider-specific **Runtime Sessions** such as E2B or agent-sandbox.

@@ -15,6 +15,25 @@ const (
 
 	RoomChatTypeDirect = "direct"
 	RoomChatTypeGroup  = "group"
+
+	MemoryTypeFact       = "fact"
+	MemoryTypePreference = "preference"
+	MemoryTypeTodo       = "todo"
+
+	MemoryStatusActive = "active"
+	MemoryStatusStale  = "stale"
+	MemoryStatusClosed = "closed"
+
+	MemoryWriteOpUpsertFact    = "upsert_fact"
+	MemoryWriteOpSetPreference = "set_preference"
+	MemoryWriteOpAddTodo       = "add_todo"
+	MemoryWriteOpCloseTodo     = "close_todo"
+	MemoryWriteOpMarkStale     = "mark_stale"
+
+	MemoryWriteJobStatusPending  = "pending"
+	MemoryWriteJobStatusApplied  = "applied"
+	MemoryWriteJobStatusFailed   = "failed"
+	MemoryWriteJobStatusRejected = "rejected"
 )
 
 type Room struct {
@@ -67,6 +86,60 @@ type Delivery struct {
 	AckedAt              time.Time
 }
 
+type MemoryItem struct {
+	ID                    int64     `json:"id"`
+	RoomID                int64     `json:"room_id"`
+	Type                  string    `json:"type"`
+	Key                   string    `json:"key"`
+	Content               string    `json:"content"`
+	Status                string    `json:"status"`
+	SourceMessageAfterID  int64     `json:"source_message_after_id"`
+	SourceMessageUntilID  int64     `json:"source_message_until_id"`
+	CreatedByAgentSession int64     `json:"created_by_agent_session_id"`
+	UpdatedByAgentSession int64     `json:"updated_by_agent_session_id"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
+}
+
+type MemorySearchInput struct {
+	RoomID          int64    `json:"-"`
+	Query           string   `json:"query"`
+	Types           []string `json:"types"`
+	Limit           int      `json:"limit"`
+	IncludeInactive bool     `json:"include_inactive"`
+}
+
+type MemorySearchResult struct {
+	Request MemorySearchInput `json:"request"`
+	Items   []MemoryItem      `json:"items"`
+}
+
+type MemoryWriteProposal struct {
+	Op      string `json:"op"`
+	Type    string `json:"type,omitempty"`
+	Key     string `json:"key"`
+	Content string `json:"content,omitempty"`
+}
+
+type MemoryWriteJob struct {
+	ID                   int64
+	RoomID               int64
+	AgentSessionID       int64
+	AgentKey             string
+	SourceMessageAfterID int64
+	SourceMessageUntilID int64
+	OperationKey         string
+	Op                   string
+	Type                 string
+	Key                  string
+	Content              string
+	Status               string
+	Attempts             int
+	LastError            string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
+
 type RegisterRoomInput struct {
 	Channel         string          `json:"channel"`
 	ChannelRoomID   string          `json:"channel_room_id"`
@@ -97,6 +170,12 @@ type CreateMessageResult struct {
 	Message   Message `json:"message"`
 	Duplicate bool    `json:"duplicate"`
 	Triggered bool    `json:"triggered"`
+}
+
+type AgentRunResult struct {
+	FinalOutput           string                `json:"final_output"`
+	MemorySearchRequests  []MemorySearchInput   `json:"memory_search_requests,omitempty"`
+	MemoryWriteProposals  []MemoryWriteProposal `json:"memory_write_proposals,omitempty"`
 }
 
 type AgentRun struct {

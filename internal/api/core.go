@@ -18,6 +18,10 @@ type CoreStore interface {
 	AckCoreDelivery(ctx context.Context, id int64) (core.Delivery, error)
 }
 
+type MemorySearchStore interface {
+	SearchRoomMemoryByToken(ctx context.Context, token string, input core.MemorySearchInput) ([]core.MemoryItem, error)
+}
+
 type Server struct {
 	core     CoreStore
 	apiToken string
@@ -44,6 +48,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/messages", s.handleMessages)
 	mux.HandleFunc("/api/deliveries", s.handleListDeliveries)
 	mux.HandleFunc("/api/deliveries/", s.handleDeliveryAction)
+	mux.HandleFunc("/internal/memory/search", s.handleMemorySearch)
 }
 
 func handleHealthz(w http.ResponseWriter, _ *http.Request) {
@@ -106,6 +111,10 @@ type coreDeliveryResponse struct {
 type deliveriesPageResponse struct {
 	Deliveries []coreDeliveryResponse `json:"deliveries"`
 	NextID     int64                  `json:"next_id"`
+}
+
+type memorySearchResponse struct {
+	Items []core.MemoryItem `json:"items"`
 }
 
 func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
@@ -230,16 +239,48 @@ func (s *Server) handleDeliveryAction(w http.ResponseWriter, r *http.Request) {
 	writeAPIJSON(w, http.StatusOK, deliveryToResponse(delivery))
 }
 
+func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
+		return
+	}
+	store, ok := s.core.(MemorySearchStore)
+	if !ok {
+		writeAPIError(w, http.StatusServiceUnavailable, "disabled", "memory search is unavailable")
+		return
+	}
+	token := bearerToken(r)
+	if token == "" {
+		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing memory capability token")
+		return
+	}
+	var input core.MemorySearchInput
+	if err := readJSONBody(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	items, err := store.SearchRoomMemoryByToken(r.Context(), token, input)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "search_failed", err.Error())
+		return
+	}
+	writeAPIJSON(w, http.StatusOK, memorySearchResponse{Items: items})
+}
+
 func (s *Server) authenticateAPIBearer(r *http.Request) bool {
 	if strings.TrimSpace(s.apiToken) == "" {
 		return false
 	}
+	token := bearerToken(r)
+	return token != "" && token == s.apiToken
+}
+
+func bearerToken(r *http.Request) string {
 	value := strings.TrimSpace(r.Header.Get("Authorization"))
 	if !strings.HasPrefix(value, "Bearer ") {
-		return false
+		return ""
 	}
-	token := strings.TrimSpace(strings.TrimPrefix(value, "Bearer "))
-	return token != "" && token == s.apiToken
+	return strings.TrimSpace(strings.TrimPrefix(value, "Bearer "))
 }
 
 func readJSONBody(r *http.Request, target any) error {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -67,6 +68,8 @@ func TestCoreModelE2E(t *testing.T) {
 
 	coreStore := storage.NewCoreStore(store.DB())
 	api := httpapi.NewServer(coreStore, "e2e-token")
+	apiServer := httptest.NewServer(api)
+	defer apiServer.Close()
 	roomName := fmt.Sprintf("e2e-room-%d", time.Now().UnixNano())
 	roomResp := postRoomE2E(t, api, roomName)
 
@@ -88,14 +91,61 @@ func TestCoreModelE2E(t *testing.T) {
 		t.Fatalf("trigger response did not update agent session: %+v", triggerResp)
 	}
 
-	scheduler := executor.NewScheduler(ctx, coreStore, executor.StaticRunner{Text: "done"})
+	scheduler := executor.NewScheduler(ctx, coreStore, executor.StaticRunner{
+		Text: "done",
+		MemoryWriteProposals: []core.MemoryWriteProposal{{
+			Op:      core.MemoryWriteOpSetPreference,
+			Key:     "reply_language",
+			Content: "Use Chinese by default.",
+		}},
+	})
+	scheduler.SetMemorySearchURL(apiServer.URL + "/internal/memory/search")
 	if !scheduler.RunOnce(ctx) {
 		t.Fatal("scheduler RunOnce = false, want true")
 	}
+	memoryWorker := executor.NewMemoryWriteWorker(ctx, coreStore)
+	if !memoryWorker.RunOnce(ctx) {
+		t.Fatal("memory worker RunOnce = false, want true")
+	}
+
+	token, err := coreStore.CreateMemoryCapabilityToken(ctx, core.AgentRun{
+		AgentSessionID:       roomResp.AgentSession.ID,
+		RoomID:               roomResp.Room.ID,
+		AgentKey:             core.DefaultAgentKey,
+		SourceMessageAfterID: 0,
+		SourceMessageUntilID: triggerResp.Message.ID,
+	}, time.Minute)
+	if err != nil {
+		t.Fatalf("create memory token: %v", err)
+	}
+	memoryItems := searchMemoryE2E(t, api, token, "Chinese", true)
+	if len(memoryItems) != 1 {
+		t.Fatalf("memory item count = %d, want 1", len(memoryItems))
+	}
+	if memoryItems[0].RoomID != roomResp.Room.ID || memoryItems[0].Type != core.MemoryTypePreference || memoryItems[0].Key != "reply_language" {
+		t.Fatalf("memory item = %+v, want room preference", memoryItems[0])
+	}
+	if memoryItems[0].SourceMessageUntilID != triggerResp.Message.ID {
+		t.Fatalf("memory source until = %d, want %d", memoryItems[0].SourceMessageUntilID, triggerResp.Message.ID)
+	}
+
+	secondTriggerResp := postMessageE2E(t, api, roomResp.Room.ID, "msg-3", "@agent use memory")
+	if !secondTriggerResp.Triggered {
+		t.Fatalf("second trigger response did not update agent session: %+v", secondTriggerResp)
+	}
+	memoryRunner := &memorySearchingRunner{t: t}
+	memoryScheduler := executor.NewScheduler(ctx, coreStore, memoryRunner)
+	memoryScheduler.SetMemorySearchURL(apiServer.URL + "/internal/memory/search")
+	if !memoryScheduler.RunOnce(ctx) {
+		t.Fatal("memory scheduler RunOnce = false, want true")
+	}
+	if memoryRunner.seenContent != "Use Chinese by default." {
+		t.Fatalf("runner memory content = %q, want stored preference", memoryRunner.seenContent)
+	}
 
 	deliveries := listDeliveriesE2E(t, api, "wecom", 0)
-	if len(deliveries.Deliveries) != 1 {
-		t.Fatalf("deliveries len = %d, want 1", len(deliveries.Deliveries))
+	if len(deliveries.Deliveries) != 2 {
+		t.Fatalf("deliveries len = %d, want 2", len(deliveries.Deliveries))
 	}
 	delivery := deliveries.Deliveries[0]
 	if delivery.AgentSessionID != roomResp.AgentSession.ID {
@@ -123,6 +173,71 @@ func TestCoreModelE2E(t *testing.T) {
 	if acked.Status != core.DeliveryStatusAcked {
 		t.Fatalf("acked status = %d, want %d", acked.Status, core.DeliveryStatusAcked)
 	}
+}
+
+type memorySearchingRunner struct {
+	t           *testing.T
+	seenContent string
+}
+
+func (r *memorySearchingRunner) RunAgent(ctx context.Context, run executor.AgentRunRequest) (core.AgentRunResult, error) {
+	r.t.Helper()
+	if run.MemorySearchURL == "" {
+		r.t.Fatal("memory search URL is empty")
+	}
+	if run.MemorySearchToken == "" {
+		r.t.Fatal("memory search token is empty")
+	}
+	body := []byte(`{"query":"Chinese","types":["preference"],"limit":5}`)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, run.MemorySearchURL, bytes.NewReader(body))
+	if err != nil {
+		r.t.Fatalf("create memory search request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+run.MemorySearchToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		r.t.Fatalf("call memory search: %v", err)
+	}
+	defer resp.Body.Close()
+	var payload struct {
+		Items []core.MemoryItem `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		r.t.Fatalf("decode memory search: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		r.t.Fatalf("memory search status = %d payload=%+v", resp.StatusCode, payload)
+	}
+	if len(payload.Items) != 1 {
+		r.t.Fatalf("memory search returned %d items, want 1", len(payload.Items))
+	}
+	r.seenContent = payload.Items[0].Content
+	return core.AgentRunResult{FinalOutput: "remembered"}, nil
+}
+
+func searchMemoryE2E(t *testing.T, api http.Handler, token string, query string, includeInactive bool) []core.MemoryItem {
+	t.Helper()
+	body := fmt.Sprintf(`{
+		"room_id":999,
+		"query":%q,
+		"types":["preference"],
+		"include_inactive":%t
+	}`, query, includeInactive)
+	req := httptest.NewRequest(http.MethodPost, "/internal/memory/search", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	api.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("memory search status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		Items []core.MemoryItem `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode memory search response: %v", err)
+	}
+	return payload.Items
 }
 
 func postRoomE2E(t *testing.T, api http.Handler, roomName string) coreE2ERoomResponse {
