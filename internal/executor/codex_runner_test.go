@@ -53,11 +53,24 @@ func TestBuildCodexPromptIncludesContextMessages(t *testing.T) {
 func TestCodexRunnerUsesResponsesAPI(t *testing.T) {
 	t.Setenv("TEST_CODEX_KEY", "test-key")
 	var gotAuth string
+	var gotBody struct {
+		Text struct {
+			Format struct {
+				Type   string          `json:"type"`
+				Name   string          `json:"name"`
+				Schema json.RawMessage `json:"schema"`
+				Strict bool            `json:"strict"`
+			} `json:"format"`
+		} `json:"text"`
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/responses" {
 			t.Fatalf("path = %q, want /v1/responses", r.URL.Path)
 		}
 		gotAuth = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
 		_, _ = fmt.Fprint(w, `{"output":[{"content":[{"type":"output_text","text":"api answer"}]}]}`)
 	}))
 	defer server.Close()
@@ -77,6 +90,9 @@ func TestCodexRunnerUsesResponsesAPI(t *testing.T) {
 	}
 	if gotAuth != "Bearer test-key" {
 		t.Fatalf("Authorization = %q, want bearer key", gotAuth)
+	}
+	if gotBody.Text.Format.Type != "json_schema" || gotBody.Text.Format.Name != "tinyclaw_agent_run_result" || !gotBody.Text.Format.Strict || len(gotBody.Text.Format.Schema) == 0 {
+		t.Fatalf("text format = %+v, want strict agent run result json schema", gotBody.Text.Format)
 	}
 	if result.FinalOutput != "api answer" {
 		t.Fatalf("output = %q, want api answer", result.FinalOutput)

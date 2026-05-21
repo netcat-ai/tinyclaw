@@ -207,6 +207,14 @@ func (r *CodexRunner) runResponsesAPI(ctx context.Context, run AgentRunRequest) 
 		"model":  model,
 		"input":  BuildCodexPrompt(run),
 		"stream": false,
+		"text": map[string]any{
+			"format": map[string]any{
+				"type":   "json_schema",
+				"name":   "tinyclaw_agent_run_result",
+				"schema": json.RawMessage(agentRunResultSchema),
+				"strict": true,
+			},
+		},
 	})
 	if err != nil {
 		return core.AgentRunResult{}, fmt.Errorf("encode codex responses request: %w", err)
