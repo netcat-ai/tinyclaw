@@ -7,6 +7,7 @@
 - 旧 sandbox runtime、gRPC bridge、`messages/jobs/wecom_app_clients` 链路已经从当前代码中移除。
 - 当前最小闭环是 `registered room -> message -> agent session run -> delivery -> ack`。
 - `AGENT_RUNNER=codex` 已可用；2026-05-20 已用 MobileClaw 真机跑通企业微信发送链路。
+- Codex runner 复用同一 Agent Session 的 Codex CLI thread，continuation id 保存在 `agent_sessions.codex_session_id`。
 - Room Memory 第一条纵切已接入：Codex run 可获得 run-bound Memory Search capability，Agent Run Result 可携带 Memory Write Proposals，后台 worker 异步应用 Memory Write Jobs。
 
 ## 当前优先级
@@ -34,7 +35,7 @@
 ## PostgreSQL 当前范围
 
 - `rooms`：TinyClaw room，与外部 channel room 映射。
-- `agent_sessions`：一个 Room 内的 agent 配置、trigger 边界和已处理消息边界。
+- `agent_sessions`：一个 Room 内的 agent 配置、trigger 边界、已处理消息边界和 Codex CLI continuation id。
 - `messages`：room 内 append-only 入站消息事实，`skipped` 标记是否排除出 agent 上下文。
 - `deliveries`：agent run 产生的外发消息，并记录 source message window。
 - `memory_items`：Room-owned durable memory，第一版类型为 fact / preference / todo。
@@ -52,3 +53,4 @@
 6. Agent Run Result 可以创建 Memory Write Jobs，后台 worker 应用后下一轮可被 Memory Search 召回。
 7. 主服务启动不需要任何 provider-specific 配置。
 8. Codex runner 可以在运行中先请求 Memory Search，再用召回的 Memory Items 生成最终输出。
+9. 同一 Agent Session 的第二次及后续 Codex run 会使用已保存的 `codex_session_id` 继续同一个 Codex CLI thread。

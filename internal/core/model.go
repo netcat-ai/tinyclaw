@@ -56,6 +56,7 @@ type AgentSession struct {
 	TriggerPolicy          json.RawMessage
 	TriggerMessageID       int64
 	LastProcessedMessageID int64
+	CodexSessionID         string
 	LockOwner              string
 	LockExpiresAt          time.Time
 	CreatedAt              time.Time
@@ -173,15 +174,17 @@ type CreateMessageResult struct {
 }
 
 type AgentRunResult struct {
-	FinalOutput           string                `json:"final_output"`
-	MemorySearchRequests  []MemorySearchInput   `json:"memory_search_requests,omitempty"`
-	MemoryWriteProposals  []MemoryWriteProposal `json:"memory_write_proposals,omitempty"`
+	FinalOutput          string                `json:"final_output"`
+	MemorySearchRequests []MemorySearchInput   `json:"memory_search_requests,omitempty"`
+	MemoryWriteProposals []MemoryWriteProposal `json:"memory_write_proposals,omitempty"`
+	CodexSessionID       string                `json:"-"`
 }
 
 type AgentRun struct {
 	AgentSessionID       int64
 	RoomID               int64
 	AgentKey             string
+	CodexSessionID       string
 	SourceMessageAfterID int64
 	SourceMessageUntilID int64
 	LockOwner            string

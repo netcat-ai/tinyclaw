@@ -141,6 +141,9 @@ func (s *CoreStore) ListAgentRunMessages(ctx context.Context, run core.AgentRun)
 }
 
 func (s *CoreStore) CompleteAgentRun(ctx context.Context, run core.AgentRun, result core.AgentRunResult) (*core.Delivery, error) {
+	if strings.TrimSpace(result.CodexSessionID) != "" {
+		run.CodexSessionID = strings.TrimSpace(result.CodexSessionID)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin complete agent run tx: %w", err)

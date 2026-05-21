@@ -20,8 +20,6 @@ type Config struct {
 	CodexModel         string
 	CodexSandbox       string
 	CodexRunnerTimeout time.Duration
-	CodexBaseURL       string
-	CodexAPIKeyEnv     string
 
 	WeComEnabled       bool
 	WeComCorpID        string
@@ -72,8 +70,6 @@ func LoadConfig() (Config, error) {
 		CodexModel:         os.Getenv("CODEX_MODEL"),
 		CodexSandbox:       envOrDefault("CODEX_SANDBOX", "workspace-write"),
 		CodexRunnerTimeout: timeout,
-		CodexBaseURL:       os.Getenv("CODEX_BASE_URL"),
-		CodexAPIKeyEnv:     envOrDefault("CODEX_API_KEY_ENV", "OPENAI_API_KEY"),
 
 		WeComEnabled:       parseBoolEnv("WECOM_ENABLED"),
 		WeComCorpID:        os.Getenv("WECOM_CORP_ID"),

@@ -116,13 +116,11 @@ func buildAgentRunner(cfg Config) executor.Runner {
 	switch strings.ToLower(strings.TrimSpace(cfg.AgentRunner)) {
 	case "codex":
 		return executor.NewCodexRunner(executor.CodexRunnerConfig{
-			Bin:       cfg.CodexBin,
-			WorkDir:   executor.AbsoluteCodexWorkDir(cfg.CodexWorkDir),
-			Model:     cfg.CodexModel,
-			Sandbox:   cfg.CodexSandbox,
-			Timeout:   cfg.CodexRunnerTimeout,
-			BaseURL:   cfg.CodexBaseURL,
-			APIKeyEnv: cfg.CodexAPIKeyEnv,
+			Bin:     cfg.CodexBin,
+			WorkDir: executor.AbsoluteCodexWorkDir(cfg.CodexWorkDir),
+			Model:   cfg.CodexModel,
+			Sandbox: cfg.CodexSandbox,
+			Timeout: cfg.CodexRunnerTimeout,
 		})
 	default:
 		return executor.UnconfiguredRunner{}

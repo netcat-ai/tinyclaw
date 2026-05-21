@@ -107,6 +107,7 @@ enabled boolean not null
 trigger_policy jsonb null
 trigger_message_id bigint null references messages(id)
 last_processed_message_id bigint not null
+codex_session_id text null
 lock_owner text null
 lock_expires_at timestamptz null
 created_at timestamptz not null
@@ -118,6 +119,8 @@ unique(room_id, agent_key)
 `trigger_message_id` 是该 Agent Session 当前需要处理的最新触发消息。入站 Message 命中该 Agent Session 的 Trigger Policy 时，更新该字段。
 
 `last_processed_message_id` 是该 Agent Session 已成功处理到的 Room Message 边界。不同 Agent Session 可以独立处理同一个 Room 的消息流。
+
+`codex_session_id` 是当前 Codex CLI runner 的 continuation id。当前实现只有 Codex CLI runner，所以该 id 直接归属于 Agent Session，不引入通用 provider/session 表。该字段不是 Room Memory；它只用于让下一次 Agent Run 通过 `codex exec resume` 复用同一个 Codex CLI thread。
 
 `trigger_message_id` 同时是触发信号和本次处理窗口右边界。Agent run 读取 `id > agent_sessions.last_processed_message_id AND id <= agent_sessions.trigger_message_id` 且 `skipped = false` 的 messages。
 
@@ -279,6 +282,10 @@ Message 入库后不再改所属关系。未触发消息仍保留在 room messag
 Agent run 由 clawman 进程内 execution loop 启动，不设计外部 claim API。execution loop 抢占 Agent Session lock，读取 `last_processed_message_id < id <= trigger_message_id` 的初始上下文，并调用 agent runner。
 
 当前实现提供 `CodexRunner`：设置 `AGENT_RUNNER=codex` 后，execution module 会调用本机 `codex exec`，并把 runner 输出解析成 Agent Run Result。
+
+第一次运行时，CodexRunner 使用 fresh `codex exec`，从 `thread.started.thread_id` 事件中提取 Codex CLI thread id 并保存到 `agent_sessions.codex_session_id`。同一 Agent Session 的后续运行使用 `codex exec resume <codex_session_id> -` 继续该 Codex CLI thread。若保存的 thread id 已失效，runner 会丢弃该 id 并 fresh 启动一次。
+
+Fresh run 使用 `--output-schema` 约束 Agent Run Result。`codex exec resume` 当前不支持 `--output-schema`，因此 runner prompt 必须自描述 Agent Run Result JSON 形状。
 
 Agent Run Result 包含：
 

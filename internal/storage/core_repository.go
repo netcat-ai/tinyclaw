@@ -89,6 +89,7 @@ func upsertAgentSessionTx(ctx context.Context, tx *sql.Tx, roomID int64, input c
 	var session core.AgentSession
 	var triggerPolicy []byte
 	var triggerMessageID sql.NullInt64
+	var codexSessionID sql.NullString
 	var lockOwner sql.NullString
 	var lockExpiresAt sql.NullTime
 	err := tx.QueryRowContext(ctx, `
@@ -103,7 +104,7 @@ func upsertAgentSessionTx(ctx context.Context, tx *sql.Tx, roomID int64, input c
 		SET enabled = EXCLUDED.enabled,
 		    trigger_policy = EXCLUDED.trigger_policy,
 		    updated_at = NOW()
-		RETURNING id, room_id, agent_key, enabled, trigger_policy, trigger_message_id, last_processed_message_id, lock_owner, lock_expires_at, created_at, updated_at
+		RETURNING id, room_id, agent_key, enabled, trigger_policy, trigger_message_id, last_processed_message_id, codex_session_id, lock_owner, lock_expires_at, created_at, updated_at
 	`, roomID, agentKey, input.AgentEnabled, nullJSON(input.TriggerPolicy)).Scan(
 		&session.ID,
 		&session.RoomID,
@@ -112,6 +113,7 @@ func upsertAgentSessionTx(ctx context.Context, tx *sql.Tx, roomID int64, input c
 		&triggerPolicy,
 		&triggerMessageID,
 		&session.LastProcessedMessageID,
+		&codexSessionID,
 		&lockOwner,
 		&lockExpiresAt,
 		&session.CreatedAt,
@@ -125,6 +127,9 @@ func upsertAgentSessionTx(ctx context.Context, tx *sql.Tx, roomID int64, input c
 	}
 	if triggerMessageID.Valid {
 		session.TriggerMessageID = triggerMessageID.Int64
+	}
+	if codexSessionID.Valid {
+		session.CodexSessionID = codexSessionID.String
 	}
 	if lockOwner.Valid {
 		session.LockOwner = lockOwner.String
@@ -200,7 +205,7 @@ func getCoreMessageBySourceTx(ctx context.Context, tx *sql.Tx, roomID int64, sou
 
 func listEnabledAgentSessionsForRoomTx(ctx context.Context, tx *sql.Tx, roomID int64) ([]core.AgentSession, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, room_id, agent_key, enabled, trigger_policy, trigger_message_id, last_processed_message_id, lock_owner, lock_expires_at, created_at, updated_at
+		SELECT id, room_id, agent_key, enabled, trigger_policy, trigger_message_id, last_processed_message_id, codex_session_id, lock_owner, lock_expires_at, created_at, updated_at
 		FROM agent_sessions
 		WHERE room_id = $1
 		  AND enabled = TRUE
@@ -260,12 +265,14 @@ func claimNextAgentRunTx(ctx context.Context, tx *sql.Tx, owner string, ttl time
 		    updated_at = NOW()
 		FROM candidate
 		WHERE s.id = candidate.id
-		RETURNING s.id, s.room_id, s.agent_key, s.last_processed_message_id, s.trigger_message_id, s.lock_owner
+		RETURNING s.id, s.room_id, s.agent_key, s.codex_session_id, s.last_processed_message_id, s.trigger_message_id, s.lock_owner
 	`, owner, expiresAt)
+	var codexSessionID sql.NullString
 	err := row.Scan(
 		&run.AgentSessionID,
 		&run.RoomID,
 		&run.AgentKey,
+		&codexSessionID,
 		&run.SourceMessageAfterID,
 		&run.SourceMessageUntilID,
 		&run.LockOwner,
@@ -275,6 +282,9 @@ func claimNextAgentRunTx(ctx context.Context, tx *sql.Tx, owner string, ttl time
 			return core.AgentRun{}, false, nil
 		}
 		return core.AgentRun{}, false, fmt.Errorf("claim agent run: %w", err)
+	}
+	if codexSessionID.Valid {
+		run.CodexSessionID = codexSessionID.String
 	}
 	return run, true, nil
 }
@@ -300,12 +310,13 @@ func finishAgentRunTx(ctx context.Context, tx *sql.Tx, run core.AgentRun, payloa
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE agent_sessions
 		SET last_processed_message_id = $2,
+		    codex_session_id = COALESCE(NULLIF($4, ''), codex_session_id),
 		    lock_owner = NULL,
 		    lock_expires_at = NULL,
 		    updated_at = NOW()
 		WHERE id = $1
 		  AND lock_owner = $3
-	`, run.AgentSessionID, run.SourceMessageUntilID, run.LockOwner); err != nil {
+	`, run.AgentSessionID, run.SourceMessageUntilID, run.LockOwner, run.CodexSessionID); err != nil {
 		return nil, fmt.Errorf("finish agent run: %w", err)
 	}
 	if len(payload) == 0 {
@@ -421,6 +432,7 @@ func scanAgentSession(row scanner) (core.AgentSession, error) {
 	var session core.AgentSession
 	var triggerPolicy []byte
 	var triggerMessageID sql.NullInt64
+	var codexSessionID sql.NullString
 	var lockOwner sql.NullString
 	var lockExpiresAt sql.NullTime
 	if err := row.Scan(
@@ -431,6 +443,7 @@ func scanAgentSession(row scanner) (core.AgentSession, error) {
 		&triggerPolicy,
 		&triggerMessageID,
 		&session.LastProcessedMessageID,
+		&codexSessionID,
 		&lockOwner,
 		&lockExpiresAt,
 		&session.CreatedAt,
@@ -443,6 +456,9 @@ func scanAgentSession(row scanner) (core.AgentSession, error) {
 	}
 	if triggerMessageID.Valid {
 		session.TriggerMessageID = triggerMessageID.Int64
+	}
+	if codexSessionID.Valid {
+		session.CodexSessionID = codexSessionID.String
 	}
 	if lockOwner.Valid {
 		session.LockOwner = lockOwner.String

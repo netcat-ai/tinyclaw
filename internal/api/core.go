@@ -86,6 +86,7 @@ type coreAgentSessionResponse struct {
 	TriggerPolicy          json.RawMessage `json:"trigger_policy,omitempty"`
 	TriggerMessageID       int64           `json:"trigger_message_id,omitempty"`
 	LastProcessedMessageID int64           `json:"last_processed_message_id"`
+	CodexSessionID         string          `json:"codex_session_id,omitempty"`
 }
 
 type coreMessageResponse struct {
@@ -343,6 +344,7 @@ func agentSessionToResponse(session core.AgentSession) coreAgentSessionResponse 
 		TriggerPolicy:          session.TriggerPolicy,
 		TriggerMessageID:       session.TriggerMessageID,
 		LastProcessedMessageID: session.LastProcessedMessageID,
+		CodexSessionID:         session.CodexSessionID,
 	}
 }
 

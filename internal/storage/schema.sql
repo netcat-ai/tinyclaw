@@ -32,12 +32,16 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
 	trigger_policy JSONB,
 	trigger_message_id BIGINT REFERENCES messages(id),
 	last_processed_message_id BIGINT NOT NULL DEFAULT 0,
+	codex_session_id TEXT,
 	lock_owner TEXT,
 	lock_expires_at TIMESTAMPTZ,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	UNIQUE (room_id, agent_key)
 );
+
+ALTER TABLE agent_sessions
+	ADD COLUMN IF NOT EXISTS codex_session_id TEXT;
 
 CREATE TABLE IF NOT EXISTS deliveries (
 	id BIGSERIAL PRIMARY KEY,

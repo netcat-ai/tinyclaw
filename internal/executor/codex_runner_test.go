@@ -37,7 +37,7 @@ func TestBuildCodexPromptIncludesContextMessages(t *testing.T) {
 		"Agent Session ID: 100",
 		"Room ID: 10",
 		"Message Window: (0, 2]",
-		"Return an Agent Run Result matching the provided output schema.",
+		"Return only one JSON object matching Agent Run Result",
 		"Room Memory Search:",
 		"memory_search_requests",
 		"Do not include room_id",
@@ -50,60 +50,13 @@ func TestBuildCodexPromptIncludesContextMessages(t *testing.T) {
 	}
 }
 
-func TestCodexRunnerUsesResponsesAPI(t *testing.T) {
-	t.Setenv("TEST_CODEX_KEY", "test-key")
-	var gotAuth string
-	var gotBody struct {
-		Text struct {
-			Format struct {
-				Type   string          `json:"type"`
-				Name   string          `json:"name"`
-				Schema json.RawMessage `json:"schema"`
-				Strict bool            `json:"strict"`
-			} `json:"format"`
-		} `json:"text"`
-	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/responses" {
-			t.Fatalf("path = %q, want /v1/responses", r.URL.Path)
-		}
-		gotAuth = r.Header.Get("Authorization")
-		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
-			t.Fatalf("decode request: %v", err)
-		}
-		_, _ = fmt.Fprint(w, `{"output":[{"content":[{"type":"output_text","text":"api answer"}]}]}`)
-	}))
-	defer server.Close()
-
-	runner := NewCodexRunner(CodexRunnerConfig{
-		BaseURL:   server.URL,
-		APIKeyEnv: "TEST_CODEX_KEY",
-		Model:     "gpt-5.5",
-		Timeout:   time.Second,
-	})
-
-	result, err := runner.RunAgent(context.Background(), AgentRunRequest{
-		AgentRun: testAgentRun,
-	})
-	if err != nil {
-		t.Fatalf("RunAgent error: %v", err)
-	}
-	if gotAuth != "Bearer test-key" {
-		t.Fatalf("Authorization = %q, want bearer key", gotAuth)
-	}
-	if gotBody.Text.Format.Type != "json_schema" || gotBody.Text.Format.Name != "tinyclaw_agent_run_result" || !gotBody.Text.Format.Strict || len(gotBody.Text.Format.Schema) == 0 {
-		t.Fatalf("text format = %+v, want strict agent run result json schema", gotBody.Text.Format)
-	}
-	if result.FinalOutput != "api answer" {
-		t.Fatalf("output = %q, want api answer", result.FinalOutput)
-	}
-}
-
 func TestCodexRunnerUsesOutputLastMessage(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "codex")
+	argsPath := filepath.Join(dir, "args")
 	script := `#!/bin/sh
 output=""
+printf '%s\n' "$@" > "` + argsPath + `"
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "--output-last-message" ]; then
     shift
@@ -112,6 +65,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 cat >/dev/null
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
 printf "fake codex answer" > "$output"
 `
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
@@ -131,6 +85,107 @@ printf "fake codex answer" > "$output"
 	}
 	if result.FinalOutput != "fake codex answer" {
 		t.Fatalf("output = %q, want fake codex answer", result.FinalOutput)
+	}
+	if result.CodexSessionID != "thread-1" {
+		t.Fatalf("codex session id = %q, want thread-1", result.CodexSessionID)
+	}
+	argsData, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	args := string(argsData)
+	for _, want := range []string{"exec\n", "--json\n", "--output-schema\n"} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("args missing %q:\n%s", want, args)
+		}
+	}
+	if strings.Contains(args, "--ephemeral\n") {
+		t.Fatalf("args include --ephemeral:\n%s", args)
+	}
+}
+
+func TestCodexRunnerResumesCodexSession(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "codex")
+	argsPath := filepath.Join(dir, "args")
+	script := `#!/bin/sh
+output=""
+printf '%s\n' "$@" > "` + argsPath + `"
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-last-message" ]; then
+    shift
+    output="$1"
+  fi
+  shift
+done
+cat >/dev/null
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-existing"}'
+printf "resumed answer" > "$output"
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	runner := NewCodexRunner(CodexRunnerConfig{
+		Bin:     bin,
+		WorkDir: dir,
+		Timeout: 5 * time.Second,
+	})
+
+	result, err := runner.RunAgent(context.Background(), AgentRunRequest{
+		AgentRun: core.AgentRun{
+			AgentSessionID:       100,
+			RoomID:               10,
+			CodexSessionID:       "thread-existing",
+			SourceMessageAfterID: 0,
+			SourceMessageUntilID: 2,
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgent error: %v", err)
+	}
+	if result.FinalOutput != "resumed answer" {
+		t.Fatalf("output = %q, want resumed answer", result.FinalOutput)
+	}
+	if result.CodexSessionID != "thread-existing" {
+		t.Fatalf("codex session id = %q, want thread-existing", result.CodexSessionID)
+	}
+	argsData, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	args := string(argsData)
+	for _, want := range []string{"exec\n", "resume\n", "thread-existing\n"} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("args missing %q:\n%s", want, args)
+		}
+	}
+	if strings.Contains(args, "--output-schema\n") {
+		t.Fatalf("resume args include unsupported output schema:\n%s", args)
+	}
+}
+
+func TestCodexRunnerFailsOnCodexErrorEvent(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "codex")
+	script := `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
+printf '%s\n' '{"type":"turn.failed","error":{"message":"bad schema"}}'
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	runner := NewCodexRunner(CodexRunnerConfig{
+		Bin:     bin,
+		WorkDir: dir,
+		Timeout: 5 * time.Second,
+	})
+
+	_, err := runner.RunAgent(context.Background(), AgentRunRequest{
+		AgentRun: testAgentRun,
+	})
+	if err == nil || !strings.Contains(err.Error(), "bad schema") {
+		t.Fatalf("RunAgent error = %v, want bad schema", err)
 	}
 }
 

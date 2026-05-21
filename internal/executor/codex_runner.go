@@ -1,13 +1,13 @@
 package executor
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,13 +21,11 @@ const defaultCodexRunnerTimeout = 5 * time.Minute
 const maxMemorySearchRounds = 2
 
 type CodexRunnerConfig struct {
-	Bin       string
-	WorkDir   string
-	Model     string
-	Sandbox   string
-	Timeout   time.Duration
-	BaseURL   string
-	APIKeyEnv string
+	Bin     string
+	WorkDir string
+	Model   string
+	Sandbox string
+	Timeout time.Duration
 }
 
 type CodexRunner struct {
@@ -47,9 +45,6 @@ func NewCodexRunner(config CodexRunnerConfig) *CodexRunner {
 	if config.Timeout <= 0 {
 		config.Timeout = defaultCodexRunnerTimeout
 	}
-	if strings.TrimSpace(config.APIKeyEnv) == "" {
-		config.APIKeyEnv = "OPENAI_API_KEY"
-	}
 	return &CodexRunner{config: config}
 }
 
@@ -63,13 +58,12 @@ func (r *CodexRunner) RunAgent(ctx context.Context, run AgentRunRequest) (core.A
 	var result core.AgentRunResult
 	for round := 0; round <= maxMemorySearchRounds; round++ {
 		var err error
-		if strings.TrimSpace(r.config.BaseURL) != "" {
-			result, err = r.runResponsesAPI(runCtx, run)
-		} else {
-			result, err = r.runCodexExec(runCtx, run)
-		}
+		result, err = r.runCodexExec(runCtx, run)
 		if err != nil {
 			return core.AgentRunResult{}, err
+		}
+		if strings.TrimSpace(result.CodexSessionID) != "" {
+			run.AgentRun.CodexSessionID = strings.TrimSpace(result.CodexSessionID)
 		}
 		if len(result.MemorySearchRequests) == 0 {
 			return result, nil
@@ -96,7 +90,7 @@ func (r *CodexRunner) runCodexExec(ctx context.Context, run AgentRunRequest) (co
 	}
 	outputPath := outputFile.Name()
 	_ = outputFile.Close()
-	defer os.Remove(outputPath)
+	defer func() { _ = os.Remove(outputPath) }()
 
 	schemaPath, cleanupSchema, err := writeAgentRunResultSchema()
 	if err != nil {
@@ -104,23 +98,8 @@ func (r *CodexRunner) runCodexExec(ctx context.Context, run AgentRunRequest) (co
 	}
 	defer cleanupSchema()
 
-	args := []string{
-		"-a", "never",
-	}
-	args = append(args,
-		"exec",
-		"--skip-git-repo-check",
-		"--ephemeral",
-		"--cd", r.config.WorkDir,
-		"--sandbox", r.config.Sandbox,
-		"--output-schema", schemaPath,
-		"--output-last-message", outputPath,
-		"-",
-	)
-	if strings.TrimSpace(r.config.Model) != "" {
-		args = append([]string{"-a", "never", "exec", "--model", r.config.Model}, args[3:]...)
-	}
-
+	codexSessionID := strings.TrimSpace(run.AgentRun.CodexSessionID)
+	args := r.codexExecArgs(schemaPath, outputPath, codexSessionID)
 	cmd := exec.CommandContext(ctx, r.config.Bin, args...)
 	cmd.Dir = r.config.WorkDir
 	cmd.Stdin = strings.NewReader(BuildCodexPrompt(run))
@@ -133,7 +112,19 @@ func (r *CodexRunner) runCodexExec(ctx context.Context, run AgentRunRequest) (co
 		if detail == "" {
 			detail = err.Error()
 		}
+		if codexSessionID != "" && isCodexResumeStale(detail) {
+			run.AgentRun.CodexSessionID = ""
+			return r.runCodexExec(ctx, run)
+		}
 		return core.AgentRunResult{}, fmt.Errorf("codex exec failed: %s", detail)
+	}
+	eventErr := codexErrorFromEvents(combined.String())
+	if eventErr != "" {
+		if codexSessionID != "" && isCodexResumeStale(eventErr) {
+			run.AgentRun.CodexSessionID = ""
+			return r.runCodexExec(ctx, run)
+		}
+		return core.AgentRunResult{}, fmt.Errorf("codex exec failed: %s", eventErr)
 	}
 	data, err := os.ReadFile(outputPath)
 	if err != nil {
@@ -143,7 +134,94 @@ func (r *CodexRunner) runCodexExec(ctx context.Context, run AgentRunRequest) (co
 	if text == "" {
 		text = strings.TrimSpace(combined.String())
 	}
-	return ParseAgentRunResult(text)
+	result, err := ParseAgentRunResult(text)
+	if err != nil {
+		return core.AgentRunResult{}, err
+	}
+	result.CodexSessionID = codexSessionIDFromEvents(combined.String())
+	if result.CodexSessionID == "" {
+		result.CodexSessionID = codexSessionID
+	}
+	return result, nil
+}
+
+func (r *CodexRunner) codexExecArgs(schemaPath string, outputPath string, codexSessionID string) []string {
+	args := []string{
+		"-a", "never",
+		"exec",
+		"--skip-git-repo-check",
+		"--json",
+		"--cd", r.config.WorkDir,
+		"--sandbox", r.config.Sandbox,
+		"--output-last-message", outputPath,
+	}
+	if strings.TrimSpace(r.config.Model) != "" {
+		args = append(args, "--model", r.config.Model)
+	}
+	if strings.TrimSpace(codexSessionID) != "" {
+		return append(args, "resume", codexSessionID, "-")
+	}
+	return append(args, "--output-schema", schemaPath, "-")
+}
+
+func codexSessionIDFromEvents(output string) string {
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var event struct {
+			Type     string `json:"type"`
+			ThreadID string `json:"thread_id"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+		if event.Type == "thread.started" && strings.TrimSpace(event.ThreadID) != "" {
+			return strings.TrimSpace(event.ThreadID)
+		}
+	}
+	return ""
+}
+
+func codexErrorFromEvents(output string) string {
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var event struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+			Error   struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+		if event.Type != "error" && event.Type != "turn.failed" {
+			continue
+		}
+		if strings.TrimSpace(event.Message) != "" {
+			return strings.TrimSpace(event.Message)
+		}
+		if strings.TrimSpace(event.Error.Message) != "" {
+			return strings.TrimSpace(event.Error.Message)
+		}
+		return event.Type
+	}
+	return ""
+}
+
+func isCodexResumeStale(detail string) bool {
+	detail = strings.ToLower(detail)
+	return strings.Contains(detail, "no conversation found") ||
+		strings.Contains(detail, "session not found") ||
+		strings.Contains(detail, "not found") ||
+		strings.Contains(detail, "no such file")
 }
 
 func runMemorySearchRequests(ctx context.Context, run AgentRunRequest, requests []core.MemorySearchInput) ([]core.MemorySearchResult, error) {
@@ -189,108 +267,9 @@ func runMemorySearchRequests(ctx context.Context, run AgentRunRequest, requests 
 	return results, nil
 }
 
-func (r *CodexRunner) runResponsesAPI(ctx context.Context, run AgentRunRequest) (core.AgentRunResult, error) {
-	endpoint, err := responsesEndpoint(r.config.BaseURL)
-	if err != nil {
-		return core.AgentRunResult{}, err
-	}
-	apiKey := strings.TrimSpace(os.Getenv(r.config.APIKeyEnv))
-	if apiKey == "" {
-		return core.AgentRunResult{}, fmt.Errorf("%s is required for CODEX_BASE_URL", r.config.APIKeyEnv)
-	}
-	model := strings.TrimSpace(r.config.Model)
-	if model == "" {
-		model = "gpt-5.5"
-	}
-
-	body, err := json.Marshal(map[string]any{
-		"model":  model,
-		"input":  BuildCodexPrompt(run),
-		"stream": false,
-		"text": map[string]any{
-			"format": map[string]any{
-				"type":   "json_schema",
-				"name":   "tinyclaw_agent_run_result",
-				"schema": json.RawMessage(agentRunResultSchema),
-				"strict": true,
-			},
-		},
-	})
-	if err != nil {
-		return core.AgentRunResult{}, fmt.Errorf("encode codex responses request: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return core.AgentRunResult{}, fmt.Errorf("create codex responses request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return core.AgentRunResult{}, fmt.Errorf("call codex responses api: %w", err)
-	}
-	defer resp.Body.Close()
-
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return core.AgentRunResult{}, fmt.Errorf("read codex responses api: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return core.AgentRunResult{}, fmt.Errorf("codex responses api status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
-	}
-
-	text, err := extractResponsesText(data)
-	if err != nil {
-		return core.AgentRunResult{}, err
-	}
-	return ParseAgentRunResult(text)
-}
-
-func responsesEndpoint(baseURL string) (string, error) {
-	parsed, err := url.Parse(strings.TrimSpace(baseURL))
-	if err != nil {
-		return "", fmt.Errorf("parse CODEX_BASE_URL: %w", err)
-	}
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return "", fmt.Errorf("CODEX_BASE_URL must be an absolute URL")
-	}
-	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/v1/responses"
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	return parsed.String(), nil
-}
-
-func extractResponsesText(data []byte) (string, error) {
-	var parsed struct {
-		Output []struct {
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"output"`
-	}
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		return "", fmt.Errorf("decode codex responses api: %w", err)
-	}
-	var parts []string
-	for _, output := range parsed.Output {
-		for _, content := range output.Content {
-			if content.Type == "output_text" && strings.TrimSpace(content.Text) != "" {
-				parts = append(parts, strings.TrimSpace(content.Text))
-			}
-		}
-	}
-	text := strings.TrimSpace(strings.Join(parts, "\n"))
-	if text == "" {
-		return "", fmt.Errorf("codex responses api returned empty output")
-	}
-	return text, nil
-}
-
 func BuildCodexPrompt(run AgentRunRequest) string {
 	var builder strings.Builder
-	builder.WriteString("Return an Agent Run Result matching the provided output schema. ")
+	builder.WriteString("Return only one JSON object matching Agent Run Result: {\"final_output\":\"...\",\"memory_write_proposals\":[],\"memory_search_requests\":[]}. ")
 	builder.WriteString("Put the user-visible reply in final_output and durable Room Memory proposals in memory_write_proposals. ")
 	builder.WriteString("If you need durable Room Memory before answering, put requests in memory_search_requests and leave final_output empty. ")
 	builder.WriteString("Each proposal must include op, type, key, and content; use an empty string for unused content. ")
@@ -309,11 +288,11 @@ func BuildCodexPrompt(run AgentRunRequest) string {
 		builder.WriteString("\n\n")
 	}
 	builder.WriteString("Agent Session ID: ")
-	builder.WriteString(fmt.Sprintf("%d", run.AgentRun.AgentSessionID))
+	fmt.Fprintf(&builder, "%d", run.AgentRun.AgentSessionID)
 	builder.WriteString("\nRoom ID: ")
-	builder.WriteString(fmt.Sprintf("%d", run.AgentRun.RoomID))
+	fmt.Fprintf(&builder, "%d", run.AgentRun.RoomID)
 	builder.WriteString("\nMessage Window: ")
-	builder.WriteString(fmt.Sprintf("(%d, %d]", run.AgentRun.SourceMessageAfterID, run.AgentRun.SourceMessageUntilID))
+	fmt.Fprintf(&builder, "(%d, %d]", run.AgentRun.SourceMessageAfterID, run.AgentRun.SourceMessageUntilID)
 	builder.WriteString("\n\nConversation messages:\n")
 	if len(run.ContextMessages) == 0 {
 		builder.WriteString("(empty)\n")
