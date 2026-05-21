@@ -1,10 +1,9 @@
-FROM ghcr.io/netcat-ai/tinyclaw:latest
+FROM node:22-bookworm-slim
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    nodejs \
-    npm \
+    ca-certificates \
     && npm install -g @openai/codex@0.131.0 \
     && rm -rf /var/lib/apt/lists/*
 
