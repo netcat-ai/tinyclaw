@@ -67,3 +67,24 @@ func TestMemoryWriteJobFromProposalIsIdempotentForSameWindow(t *testing.T) {
 		t.Fatalf("operation keys differ: %s != %s", first.OperationKey, second.OperationKey)
 	}
 }
+
+func TestMemoryQueryTermsSplitsMultiKeyRequests(t *testing.T) {
+	got := memoryQueryTerms(" drink_preference、project_codename, reply_language ")
+	want := []string{"drink_preference", "project_codename", "reply_language"}
+	if len(got) != len(want) {
+		t.Fatalf("terms = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("terms = %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestMemoryQueryTermsKeepsDottedKeys(t *testing.T) {
+	got := memoryQueryTerms("project.identity project.identity")
+	want := []string{"project.identity"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("terms = %#v, want %#v", got, want)
+	}
+}

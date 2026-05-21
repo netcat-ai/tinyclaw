@@ -89,9 +89,13 @@ func (s *CoreStore) SearchRoomMemory(ctx context.Context, input core.MemorySearc
 		}
 		conditions = append(conditions, "type IN ("+strings.Join(placeholders, ", ")+")")
 	}
-	if input.Query != "" {
-		args = append(args, "%"+input.Query+"%")
-		conditions = append(conditions, fmt.Sprintf("(key ILIKE $%d OR content ILIKE $%d)", len(args), len(args)))
+	if terms := memoryQueryTerms(input.Query); len(terms) > 0 {
+		queryConditions := make([]string, 0, len(terms))
+		for _, term := range terms {
+			args = append(args, "%"+term+"%")
+			queryConditions = append(queryConditions, fmt.Sprintf("(key ILIKE $%d OR content ILIKE $%d)", len(args), len(args)))
+		}
+		conditions = append(conditions, "("+strings.Join(queryConditions, " OR ")+")")
 	}
 	args = append(args, limit)
 
@@ -106,6 +110,31 @@ func (s *CoreStore) SearchRoomMemory(ctx context.Context, input core.MemorySearc
 	}
 	defer rows.Close()
 	return scanMemoryItems(rows)
+}
+
+func memoryQueryTerms(query string) []string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil
+	}
+	fields := strings.FieldsFunc(query, func(r rune) bool {
+		return strings.ContainsRune(" \t\r\n,，、;；|/\\:：()[]{}\"'`<>", r)
+	})
+	seen := make(map[string]struct{}, len(fields))
+	terms := make([]string, 0, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		key := strings.ToLower(field)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		terms = append(terms, field)
+	}
+	return terms
 }
 
 func (s *CoreStore) agentRunForMemoryToken(ctx context.Context, token string) (core.AgentRun, error) {
