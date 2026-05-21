@@ -203,9 +203,6 @@ func extractResponsesText(data []byte) (string, error) {
 
 func BuildCodexPrompt(run AgentRunRequest) string {
 	var builder strings.Builder
-	builder.WriteString("You are Codex, running as the TinyClaw agent runner. Answer the latest user request for this room.\n")
-	builder.WriteString("Do not claim to be Kiro, Claude, ChatGPT, or any other assistant identity. If identity is relevant, say you are Codex.\n")
-	builder.WriteString("Return only the message text that should be sent back to the room.\n\n")
 	builder.WriteString("Agent Session ID: ")
 	builder.WriteString(fmt.Sprintf("%d", run.AgentRun.AgentSessionID))
 	builder.WriteString("\nRoom ID: ")

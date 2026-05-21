@@ -31,8 +31,6 @@ func TestBuildCodexPromptIncludesContextMessages(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"You are Codex",
-		"Do not claim to be Kiro",
 		"Agent Session ID: 100",
 		"Room ID: 10",
 		"Message Window: (0, 2]",
