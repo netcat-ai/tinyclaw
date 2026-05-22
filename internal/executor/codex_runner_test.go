@@ -16,10 +16,10 @@ import (
 )
 
 var testAgentRun = core.AgentRun{
-	AgentSessionID:       100,
-	RoomID:               10,
-	SourceMessageAfterID: 0,
-	SourceMessageUntilID: 2,
+	AgentSessionID:      100,
+	RoomID:              10,
+	SourceMessageFromID: 1,
+	SourceMessageToID:   2,
 }
 
 func TestBuildCodexPromptIncludesContextMessages(t *testing.T) {
@@ -36,7 +36,7 @@ func TestBuildCodexPromptIncludesContextMessages(t *testing.T) {
 	for _, want := range []string{
 		"Agent Session ID: 100",
 		"Room ID: 10",
-		"Message Window: (0, 2]",
+		"Message Window: [1, 2]",
 		"Return only one JSON object matching Agent Run Result",
 		"Room Memory Search:",
 		"memory_search_requests",
@@ -133,11 +133,11 @@ printf "resumed answer" > "$output"
 
 	result, err := runner.RunAgent(context.Background(), AgentRunRequest{
 		AgentRun: core.AgentRun{
-			AgentSessionID:       100,
-			RoomID:               10,
-			CodexSessionID:       "thread-existing",
-			SourceMessageAfterID: 0,
-			SourceMessageUntilID: 2,
+			AgentSessionID:      100,
+			RoomID:              10,
+			CodexSessionID:      "thread-existing",
+			SourceMessageFromID: 0,
+			SourceMessageToID:   2,
 		},
 	})
 	if err != nil {
@@ -268,6 +268,64 @@ fi
 	}
 }
 
+func TestCodexRunnerContinuesWhenMemorySearchFails(t *testing.T) {
+	dir := t.TempDir()
+	countPath := filepath.Join(dir, "count")
+	promptPath := filepath.Join(dir, "prompt")
+	bin := filepath.Join(dir, "codex")
+	script := fmt.Sprintf(`#!/bin/sh
+output=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-last-message" ]; then
+    shift
+    output="$1"
+  fi
+  shift
+done
+cat > %[1]q
+count=0
+if [ -f %[2]q ]; then
+  count=$(cat %[2]q)
+fi
+count=$((count + 1))
+printf "%%s" "$count" > %[2]q
+if [ "$count" -eq 1 ]; then
+  printf '%%s' '{"final_output":"","memory_search_requests":[{"query":"prior decision","types":["fact"],"limit":5,"include_inactive":false}],"memory_write_proposals":[]}' > "$output"
+else
+  if ! grep -q '"error"' %[1]q; then
+    echo "missing memory search error result" >&2
+    exit 1
+  fi
+  printf '%%s' '{"final_output":"暂时无法读取记忆，我先继续回答。","memory_search_requests":[],"memory_write_proposals":[]}' > "$output"
+fi
+`, promptPath, countPath)
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "memory backend unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	runner := NewCodexRunner(CodexRunnerConfig{
+		Bin:     bin,
+		WorkDir: dir,
+		Timeout: 5 * time.Second,
+	})
+	result, err := runner.RunAgent(context.Background(), AgentRunRequest{
+		AgentRun:          testAgentRun,
+		MemorySearchURL:   server.URL + "/internal/memory/search",
+		MemorySearchToken: "memory-token",
+	})
+	if err != nil {
+		t.Fatalf("RunAgent error: %v", err)
+	}
+	if result.FinalOutput != "暂时无法读取记忆，我先继续回答。" {
+		t.Fatalf("output = %q", result.FinalOutput)
+	}
+}
+
 func TestParseAgentRunResultWithMemoryWriteProposals(t *testing.T) {
 	result, err := ParseAgentRunResult(`<final>
 收到
@@ -333,10 +391,10 @@ func TestCodexRunnerRealMemorySearch(t *testing.T) {
 	})
 	result, err := runner.RunAgent(context.Background(), AgentRunRequest{
 		AgentRun: core.AgentRun{
-			AgentSessionID:       100,
-			RoomID:               10,
-			SourceMessageAfterID: 0,
-			SourceMessageUntilID: 1,
+			AgentSessionID:      100,
+			RoomID:              10,
+			SourceMessageFromID: 0,
+			SourceMessageToID:   1,
 		},
 		MemorySearchURL:   server.URL + "/internal/memory/search",
 		MemorySearchToken: "memory-token",

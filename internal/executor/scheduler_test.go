@@ -24,11 +24,11 @@ func (s *fakeStore) ClaimNextAgentRun(context.Context, string, time.Duration) (c
 	}
 	s.claimed = true
 	return core.AgentRun{
-		AgentSessionID:       100,
-		RoomID:               10,
-		SourceMessageAfterID: 20,
-		SourceMessageUntilID: 22,
-		LockOwner:            "test",
+		AgentSessionID:      100,
+		RoomID:              10,
+		SourceMessageFromID: 20,
+		SourceMessageToID:   22,
+		LockOwner:           "test",
 	}, true, nil
 }
 

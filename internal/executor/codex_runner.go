@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -78,10 +79,7 @@ func (r *CodexRunner) RunAgent(ctx context.Context, run AgentRunRequest) (core.A
 		if round == maxMemorySearchRounds {
 			return core.AgentRunResult{}, fmt.Errorf("agent exceeded memory search round limit")
 		}
-		searchResults, err := runMemorySearchRequests(runCtx, run, result.MemorySearchRequests)
-		if err != nil {
-			return core.AgentRunResult{}, err
-		}
+		searchResults := runMemorySearchRequests(runCtx, run, result.MemorySearchRequests)
 		run.MemorySearchResults = append(run.MemorySearchResults, searchResults...)
 	}
 	return result, nil
@@ -237,47 +235,63 @@ func isCodexResumeStale(detail string) bool {
 		strings.Contains(detail, "no such file")
 }
 
-func runMemorySearchRequests(ctx context.Context, run AgentRunRequest, requests []core.MemorySearchInput) ([]core.MemorySearchResult, error) {
+func runMemorySearchRequests(ctx context.Context, run AgentRunRequest, requests []core.MemorySearchInput) []core.MemorySearchResult {
 	results := make([]core.MemorySearchResult, 0, len(requests))
 	for _, search := range requests {
 		search.RoomID = 0
 		body, err := json.Marshal(search)
 		if err != nil {
-			return nil, fmt.Errorf("encode memory search request: %w", err)
+			results = append(results, memorySearchErrorResult(search, fmt.Errorf("encode memory search request: %w", err)))
+			continue
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, run.MemorySearchURL, bytes.NewReader(body))
 		if err != nil {
-			return nil, fmt.Errorf("create memory search request: %w", err)
+			results = append(results, memorySearchErrorResult(search, fmt.Errorf("create memory search request: %w", err)))
+			continue
 		}
 		req.Header.Set("Authorization", "Bearer "+run.MemorySearchToken)
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("call memory search: %w", err)
+			results = append(results, memorySearchErrorResult(search, fmt.Errorf("call memory search: %w", err)))
+			continue
 		}
 		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		closeErr := resp.Body.Close()
 		if readErr != nil {
-			return nil, fmt.Errorf("read memory search response: %w", readErr)
+			results = append(results, memorySearchErrorResult(search, fmt.Errorf("read memory search response: %w", readErr)))
+			continue
 		}
 		if closeErr != nil {
-			return nil, fmt.Errorf("close memory search response: %w", closeErr)
+			results = append(results, memorySearchErrorResult(search, fmt.Errorf("close memory search response: %w", closeErr)))
+			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil, fmt.Errorf("memory search status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+			results = append(results, memorySearchErrorResult(search, fmt.Errorf("memory search status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))))
+			continue
 		}
 		var parsed struct {
 			Items []core.MemoryItem `json:"items"`
 		}
 		if err := json.Unmarshal(data, &parsed); err != nil {
-			return nil, fmt.Errorf("decode memory search response: %w", err)
+			results = append(results, memorySearchErrorResult(search, fmt.Errorf("decode memory search response: %w", err)))
+			continue
 		}
 		results = append(results, core.MemorySearchResult{
 			Request: search,
 			Items:   parsed.Items,
 		})
 	}
-	return results, nil
+	return results
+}
+
+func memorySearchErrorResult(search core.MemorySearchInput, err error) core.MemorySearchResult {
+	slog.Warn("memory search failed; continuing agent run", "query", search.Query, "err", err)
+	return core.MemorySearchResult{
+		Request: search,
+		Items:   []core.MemoryItem{},
+		Error:   err.Error(),
+	}
 }
 
 func BuildCodexPrompt(run AgentRunRequest) string {
@@ -305,7 +319,7 @@ func BuildCodexPrompt(run AgentRunRequest) string {
 	builder.WriteString("\nRoom ID: ")
 	fmt.Fprintf(&builder, "%d", run.AgentRun.RoomID)
 	builder.WriteString("\nMessage Window: ")
-	fmt.Fprintf(&builder, "(%d, %d]", run.AgentRun.SourceMessageAfterID, run.AgentRun.SourceMessageUntilID)
+	fmt.Fprintf(&builder, "[%d, %d]", run.AgentRun.SourceMessageFromID, run.AgentRun.SourceMessageToID)
 	builder.WriteString("\n\nConversation messages:\n")
 	if len(run.ContextMessages) == 0 {
 		builder.WriteString("(empty)\n")

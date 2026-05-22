@@ -8,11 +8,11 @@ import (
 
 func TestMemoryWriteJobFromProposalNormalizesType(t *testing.T) {
 	run := core.AgentRun{
-		AgentSessionID:       100,
-		RoomID:               10,
-		AgentKey:             core.DefaultAgentKey,
-		SourceMessageAfterID: 20,
-		SourceMessageUntilID: 22,
+		AgentSessionID:      100,
+		RoomID:              10,
+		AgentKey:            core.DefaultAgentKey,
+		SourceMessageFromID: 20,
+		SourceMessageToID:   22,
 	}
 	job, err := memoryWriteJobFromProposal(run, core.MemoryWriteProposal{
 		Op:      core.MemoryWriteOpSetPreference,
@@ -45,10 +45,10 @@ func TestMemoryWriteJobFromProposalRequiresMarkStaleType(t *testing.T) {
 
 func TestMemoryWriteJobFromProposalIsIdempotentForSameWindow(t *testing.T) {
 	run := core.AgentRun{
-		AgentSessionID:       100,
-		RoomID:               10,
-		SourceMessageAfterID: 20,
-		SourceMessageUntilID: 22,
+		AgentSessionID:      100,
+		RoomID:              10,
+		SourceMessageFromID: 20,
+		SourceMessageToID:   22,
 	}
 	proposal := core.MemoryWriteProposal{
 		Op:      core.MemoryWriteOpUpsertFact,

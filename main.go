@@ -15,6 +15,7 @@ import (
 
 	"tinyclaw/channel/wecom"
 	httpapi "tinyclaw/internal/api"
+	"tinyclaw/internal/command"
 	"tinyclaw/internal/executor"
 	"tinyclaw/internal/storage"
 )
@@ -52,7 +53,8 @@ func main() {
 	agentScheduler := executor.NewScheduler(runCtx, coreStore, buildAgentRunner(cfg))
 	agentScheduler.SetMemorySearchURL(memorySearchEndpoint(cfg.ControlAPIAddr))
 	memoryWriteWorker := executor.NewMemoryWriteWorker(runCtx, coreStore)
-	coreAPI := httpapi.NewServer(coreStore, cfg.ClawmanAPIToken)
+	commandHandler := buildCommandHandler(cfg, coreStore)
+	coreAPI := httpapi.NewServerWithCommandHandler(coreStore, commandHandler, cfg.ClawmanAPIToken)
 
 	// Start metrics server
 	go agentScheduler.RunLoop()
@@ -66,6 +68,42 @@ func main() {
 	<-runCtx.Done()
 
 	slog.Info("clawman stopped")
+}
+
+func buildCommandHandler(cfg Config, coreStore *storage.CoreStore) *command.Handler {
+	var image command.ImageGenerator
+	if strings.TrimSpace(cfg.ImageProviderAPIKey) != "" {
+		image = command.OpenAIImageClient{
+			BaseURL: cfg.ImageProviderBaseURL,
+			APIKey:  cfg.ImageProviderAPIKey,
+			Model:   cfg.ImageProviderModel,
+		}
+	}
+	var media command.MediaStore
+	if strings.TrimSpace(cfg.GeneratedMediaS3Endpoint) != "" ||
+		strings.TrimSpace(cfg.GeneratedMediaS3Bucket) != "" ||
+		strings.TrimSpace(cfg.GeneratedMediaS3AccessKeyID) != "" ||
+		strings.TrimSpace(cfg.GeneratedMediaS3SecretAccessKey) != "" {
+		store, err := command.NewS3MediaStore(command.S3MediaStoreConfig{
+			Endpoint:        cfg.GeneratedMediaS3Endpoint,
+			Bucket:          cfg.GeneratedMediaS3Bucket,
+			Region:          cfg.GeneratedMediaS3Region,
+			AccessKeyID:     cfg.GeneratedMediaS3AccessKeyID,
+			SecretAccessKey: cfg.GeneratedMediaS3SecretAccessKey,
+			ForcePathStyle:  cfg.GeneratedMediaS3ForcePathStyle,
+			URLTTL:          cfg.GeneratedMediaURLTTL,
+		})
+		if err != nil {
+			slog.Warn("generated media s3 store disabled", "err", err)
+		} else {
+			media = store
+		}
+	}
+	handler := command.NewHandler(coreStore, image, media)
+	handler.Enabled = cfg.DrawCommandEnabled
+	handler.ImageSize = cfg.DrawImageSize
+	handler.MediaURLTTL = cfg.GeneratedMediaURLTTL
+	return handler
 }
 
 func memorySearchEndpoint(addr string) string {

@@ -47,8 +47,8 @@ CREATE TABLE IF NOT EXISTS deliveries (
 	id BIGSERIAL PRIMARY KEY,
 	room_id BIGINT NOT NULL REFERENCES rooms(id),
 	agent_session_id BIGINT REFERENCES agent_sessions(id),
-	source_message_after_id BIGINT NOT NULL DEFAULT 0,
-	source_message_until_id BIGINT NOT NULL DEFAULT 0,
+	source_message_from_id BIGINT NOT NULL DEFAULT 0,
+	source_message_to_id BIGINT NOT NULL DEFAULT 0,
 	payload JSONB NOT NULL,
 	status SMALLINT NOT NULL,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -62,8 +62,8 @@ CREATE TABLE IF NOT EXISTS memory_items (
 	key TEXT NOT NULL,
 	content TEXT NOT NULL,
 	status TEXT NOT NULL,
-	source_message_after_id BIGINT NOT NULL DEFAULT 0,
-	source_message_until_id BIGINT NOT NULL DEFAULT 0,
+	source_message_from_id BIGINT NOT NULL DEFAULT 0,
+	source_message_to_id BIGINT NOT NULL DEFAULT 0,
 	created_by_agent_session_id BIGINT REFERENCES agent_sessions(id),
 	updated_by_agent_session_id BIGINT REFERENCES agent_sessions(id),
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -76,8 +76,8 @@ CREATE TABLE IF NOT EXISTS memory_write_jobs (
 	room_id BIGINT NOT NULL REFERENCES rooms(id),
 	agent_session_id BIGINT NOT NULL REFERENCES agent_sessions(id),
 	agent_key TEXT NOT NULL,
-	source_message_after_id BIGINT NOT NULL,
-	source_message_until_id BIGINT NOT NULL,
+	source_message_from_id BIGINT NOT NULL,
+	source_message_to_id BIGINT NOT NULL,
 	operation_key TEXT NOT NULL UNIQUE,
 	op TEXT NOT NULL,
 	type TEXT NOT NULL,
@@ -106,8 +106,47 @@ CREATE TABLE IF NOT EXISTS memory_capability_tokens (
 	room_id BIGINT NOT NULL REFERENCES rooms(id),
 	agent_session_id BIGINT NOT NULL REFERENCES agent_sessions(id),
 	agent_key TEXT NOT NULL,
-	source_message_after_id BIGINT NOT NULL,
-	source_message_until_id BIGINT NOT NULL,
+	source_message_from_id BIGINT NOT NULL,
+	source_message_to_id BIGINT NOT NULL,
 	expires_at TIMESTAMPTZ NOT NULL,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+DO $$
+BEGIN
+	IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'deliveries' AND column_name = 'source_message_after_id')
+	   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'deliveries' AND column_name = 'source_message_from_id') THEN
+		ALTER TABLE deliveries RENAME COLUMN source_message_after_id TO source_message_from_id;
+	END IF;
+	IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'deliveries' AND column_name = 'source_message_until_id')
+	   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'deliveries' AND column_name = 'source_message_to_id') THEN
+		ALTER TABLE deliveries RENAME COLUMN source_message_until_id TO source_message_to_id;
+	END IF;
+
+	IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_items' AND column_name = 'source_message_after_id')
+	   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_items' AND column_name = 'source_message_from_id') THEN
+		ALTER TABLE memory_items RENAME COLUMN source_message_after_id TO source_message_from_id;
+	END IF;
+	IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_items' AND column_name = 'source_message_until_id')
+	   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_items' AND column_name = 'source_message_to_id') THEN
+		ALTER TABLE memory_items RENAME COLUMN source_message_until_id TO source_message_to_id;
+	END IF;
+
+	IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_write_jobs' AND column_name = 'source_message_after_id')
+	   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_write_jobs' AND column_name = 'source_message_from_id') THEN
+		ALTER TABLE memory_write_jobs RENAME COLUMN source_message_after_id TO source_message_from_id;
+	END IF;
+	IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_write_jobs' AND column_name = 'source_message_until_id')
+	   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_write_jobs' AND column_name = 'source_message_to_id') THEN
+		ALTER TABLE memory_write_jobs RENAME COLUMN source_message_until_id TO source_message_to_id;
+	END IF;
+
+	IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_capability_tokens' AND column_name = 'source_message_after_id')
+	   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_capability_tokens' AND column_name = 'source_message_from_id') THEN
+		ALTER TABLE memory_capability_tokens RENAME COLUMN source_message_after_id TO source_message_from_id;
+	END IF;
+	IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_capability_tokens' AND column_name = 'source_message_until_id')
+	   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_capability_tokens' AND column_name = 'source_message_to_id') THEN
+		ALTER TABLE memory_capability_tokens RENAME COLUMN source_message_until_id TO source_message_to_id;
+	END IF;
+END $$;

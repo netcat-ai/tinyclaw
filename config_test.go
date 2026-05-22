@@ -32,6 +32,18 @@ func TestLoadConfigUsesServiceDefaults(t *testing.T) {
 	if cfg.CodexRunnerTimeout.String() != "5m0s" {
 		t.Fatalf("CodexRunnerTimeout = %s, want 5m0s", cfg.CodexRunnerTimeout)
 	}
+	if !cfg.DrawCommandEnabled {
+		t.Fatal("DrawCommandEnabled = false, want true")
+	}
+	if cfg.ImageProviderBaseURL != "https://code.v4.chat" || cfg.ImageProviderModel != "gpt-image-2" {
+		t.Fatalf("image provider defaults = %q/%q", cfg.ImageProviderBaseURL, cfg.ImageProviderModel)
+	}
+	if cfg.DrawImageSize != "1024x1024" {
+		t.Fatalf("DrawImageSize = %q, want 1024x1024", cfg.DrawImageSize)
+	}
+	if cfg.GeneratedMediaURLTTL.String() != "24h0m0s" {
+		t.Fatalf("GeneratedMediaURLTTL = %s, want 24h0m0s", cfg.GeneratedMediaURLTTL)
+	}
 }
 
 func TestLoadConfigAllowsDisablingNoCodexFeatures(t *testing.T) {
@@ -52,5 +64,20 @@ func TestMemorySearchEndpointFromControlAPIAddr(t *testing.T) {
 	want := "http://127.0.0.1:8081/internal/memory/search"
 	if got != want {
 		t.Fatalf("endpoint = %q, want %q", got, want)
+	}
+}
+
+func TestLoadConfigReadsImageProviderKeyFromCodexAuthJSON(t *testing.T) {
+	t.Setenv("IMAGE_PROVIDER_API_KEY", "")
+	t.Setenv("CODEX_AUTH_JSON", `{"OPENAI_API_KEY":"gateway-key"}`)
+	t.Setenv("CODEX_RUNNER_TIMEOUT", "")
+	t.Setenv("GENERATED_MEDIA_URL_TTL", "")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+	if cfg.ImageProviderAPIKey != "gateway-key" {
+		t.Fatalf("ImageProviderAPIKey = %q, want gateway-key", cfg.ImageProviderAPIKey)
 	}
 }

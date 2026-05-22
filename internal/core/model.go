@@ -76,15 +76,15 @@ type Message struct {
 }
 
 type Delivery struct {
-	ID                   int64
-	RoomID               int64
-	AgentSessionID       int64
-	SourceMessageAfterID int64
-	SourceMessageUntilID int64
-	Payload              json.RawMessage
-	Status               int16
-	CreatedAt            time.Time
-	AckedAt              time.Time
+	ID                  int64
+	RoomID              int64
+	AgentSessionID      int64
+	SourceMessageFromID int64
+	SourceMessageToID   int64
+	Payload             json.RawMessage
+	Status              int16
+	CreatedAt           time.Time
+	AckedAt             time.Time
 }
 
 type MemoryItem struct {
@@ -94,8 +94,8 @@ type MemoryItem struct {
 	Key                   string    `json:"key"`
 	Content               string    `json:"content"`
 	Status                string    `json:"status"`
-	SourceMessageAfterID  int64     `json:"source_message_after_id"`
-	SourceMessageUntilID  int64     `json:"source_message_until_id"`
+	SourceMessageFromID   int64     `json:"source_message_from_id"`
+	SourceMessageToID     int64     `json:"source_message_to_id"`
 	CreatedByAgentSession int64     `json:"created_by_agent_session_id"`
 	UpdatedByAgentSession int64     `json:"updated_by_agent_session_id"`
 	CreatedAt             time.Time `json:"created_at"`
@@ -113,6 +113,7 @@ type MemorySearchInput struct {
 type MemorySearchResult struct {
 	Request MemorySearchInput `json:"request"`
 	Items   []MemoryItem      `json:"items"`
+	Error   string            `json:"error,omitempty"`
 }
 
 type MemoryWriteProposal struct {
@@ -123,22 +124,22 @@ type MemoryWriteProposal struct {
 }
 
 type MemoryWriteJob struct {
-	ID                   int64
-	RoomID               int64
-	AgentSessionID       int64
-	AgentKey             string
-	SourceMessageAfterID int64
-	SourceMessageUntilID int64
-	OperationKey         string
-	Op                   string
-	Type                 string
-	Key                  string
-	Content              string
-	Status               string
-	Attempts             int
-	LastError            string
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
+	ID                  int64
+	RoomID              int64
+	AgentSessionID      int64
+	AgentKey            string
+	SourceMessageFromID int64
+	SourceMessageToID   int64
+	OperationKey        string
+	Op                  string
+	Type                string
+	Key                 string
+	Content             string
+	Status              string
+	Attempts            int
+	LastError           string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 type RegisterRoomInput struct {
@@ -158,13 +159,14 @@ type RegisterRoomResult struct {
 }
 
 type CreateMessageInput struct {
-	RoomID          int64           `json:"room_id"`
-	SourceMessageID string          `json:"source_message_id"`
-	SenderID        string          `json:"sender_id"`
-	SenderName      string          `json:"sender_name"`
-	MessageTime     time.Time       `json:"message_time"`
-	Payload         json.RawMessage `json:"payload"`
-	Skipped         bool            `json:"skipped"`
+	RoomID               int64           `json:"room_id"`
+	SourceMessageID      string          `json:"source_message_id"`
+	SenderID             string          `json:"sender_id"`
+	SenderName           string          `json:"sender_name"`
+	MessageTime          time.Time       `json:"message_time"`
+	Payload              json.RawMessage `json:"payload"`
+	Skipped              bool            `json:"skipped"`
+	SuppressAgentTrigger bool            `json:"-"`
 }
 
 type CreateMessageResult struct {
@@ -181,11 +183,11 @@ type AgentRunResult struct {
 }
 
 type AgentRun struct {
-	AgentSessionID       int64
-	RoomID               int64
-	AgentKey             string
-	CodexSessionID       string
-	SourceMessageAfterID int64
-	SourceMessageUntilID int64
-	LockOwner            string
+	AgentSessionID      int64
+	RoomID              int64
+	AgentKey            string
+	CodexSessionID      string
+	SourceMessageFromID int64
+	SourceMessageToID   int64
+	LockOwner           string
 }

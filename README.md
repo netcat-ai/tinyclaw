@@ -7,6 +7,7 @@ TinyClaw is a room-scoped agent runtime control plane. The current implementatio
 - **Message**: inbound fact for exactly one Room.
 - **Room Memory**: durable Room-owned knowledge searched by Agent Sessions during Agent Runs.
 - **Delivery**: outbound item produced by an agent run.
+- **Command**: explicit Room message handled by Clawman without ordinary agent conversation.
 
 ## Current State
 
@@ -23,9 +24,11 @@ Set `AGENT_RUNNER=codex` to run triggered Agent Sessions through `codex exec`. O
 - `CODEX_DISABLED_FEATURES`: comma-separated Codex CLI features disabled for headless runs, defaults to `apps,tool_suggest,plugins`; set to `none` to disable no features.
 - `CODEX_RUNNER_TIMEOUT`: execution timeout, defaults to `5m`.
 
-Codex runs receive a short-lived Room Memory Search capability. The capability calls Clawman's internal memory endpoint with a run-bound token; it does not accept `room_id` from the agent. Runner output is parsed as an Agent Run Result with user-visible final output and optional Memory Write Proposals. Memory writes are persisted as background jobs and do not block Delivery creation.
+Codex runs receive a short-lived Room Memory Search capability. The capability calls Clawman's internal memory endpoint with a run-bound token; it does not accept `room_id` from the agent. Runner output is parsed as an Agent Run Result with user-visible final output and optional Memory Write Proposals. Memory Search failures are returned to Codex as error results so the run can continue; memory writes are persisted as background jobs and do not block Delivery creation.
 
 The Codex runner reuses one Codex CLI thread per Agent Session. Clawman stores the Codex `thread_id` on `agent_sessions.codex_session_id`; subsequent runs call `codex exec resume <codex_session_id> -`. If the saved thread is stale, the runner falls back to a fresh Codex thread and stores the new id.
+
+First-version `/draw <prompt>` is designed as a Clawman-owned Command rather than ordinary Codex conversation. It saves the Message, does not trigger the ordinary Agent Session, starts an in-process background draw task for new non-duplicate Messages, calls `gpt-image-2`, uploads the PNG to S3-compatible object storage, and emits command Deliveries. The image Delivery carries a 24h presigned S3 URL instead of embedding image bytes.
 
 Kubernetes deployment pins `api.openai.com` and `chatgpt.com` through `hostAliases` because the current cluster DNS resolves those domains incorrectly. Refresh those IPs if Codex CLI connectivity starts timing out before `thread.started`.
 
@@ -85,6 +88,21 @@ Main service:
 - `CLAWMAN_API_TOKEN`
 - `CONTROL_API_ADDR` default `:8081`
 - `METRICS_ADDR` default `:9090`
+
+Draw command and generated media:
+
+- `DRAW_COMMAND_ENABLED`: enable `/draw`, defaults to true.
+- `IMAGE_PROVIDER_BASE_URL`: image provider endpoint, defaults to `https://code.v4.chat`.
+- `IMAGE_PROVIDER_MODEL`: image model, defaults to `gpt-image-2`.
+- `IMAGE_PROVIDER_API_KEY`: optional image provider key; when empty, first-version `/draw` may read `CODEX_AUTH_JSON.OPENAI_API_KEY`.
+- `DRAW_IMAGE_SIZE`: image size sent to the provider, defaults to `1024x1024`.
+- `GENERATED_MEDIA_S3_ENDPOINT`
+- `GENERATED_MEDIA_S3_BUCKET`
+- `GENERATED_MEDIA_S3_REGION`
+- `GENERATED_MEDIA_S3_ACCESS_KEY_ID`
+- `GENERATED_MEDIA_S3_SECRET_ACCESS_KEY`
+- `GENERATED_MEDIA_S3_FORCE_PATH_STYLE`: set for S3-compatible providers that require path-style addressing.
+- `GENERATED_MEDIA_URL_TTL`: presigned URL lifetime, defaults to `24h`.
 
 Channel adapters own provider-specific configuration. The current deployable binary can run the WeCom archive adapter in-process as a deployment bridge by setting `WECOM_ENABLED=true`. This keeps the Core Model API stable while avoiding a second service until the adapter is split out.
 

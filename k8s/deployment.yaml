@@ -60,6 +60,10 @@ spec:
               mountPath: /root/.codex/auth.json
               subPath: auth.json
               readOnly: true
+            - name: codex-config
+              mountPath: /root/.codex/config.toml
+              subPath: config.toml
+              readOnly: true
           resources:
             requests:
               cpu: 100m
@@ -74,3 +78,9 @@ spec:
             items:
               - key: CODEX_AUTH_JSON
                 path: auth.json
+        - name: codex-config
+          secret:
+            secretName: tinyclaw-secret
+            items:
+              - key: CODEX_CONFIG_TOML
+                path: config.toml

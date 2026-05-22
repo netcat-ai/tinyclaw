@@ -108,6 +108,10 @@ _Avoid_: Core protocol, runtime logic
 A TinyClaw-owned inbound fact associated with exactly one **Room**.
 _Avoid_: Channel cursor, WeCom seq
 
+**Command**:
+A user-authored **Message** that requests a specific Clawman-owned action instead of ordinary agent conversation.
+_Avoid_: Agent prompt, channel command, tool call
+
 **Source Message ID**:
 The idempotency key assigned by a **Channel Adapter** to one external inbound message.
 _Avoid_: Message id, cursor
@@ -120,8 +124,20 @@ _Avoid_: Message, task, scheduler job
 The structured result of an **Agent Run**, including user-visible output and optional **Memory Write Proposals**.
 _Avoid_: Raw runner text, Delivery
 
+**Generated Media**:
+A user-visible media item produced for delivery to the current **Room**.
+_Avoid_: Room Memory, Artifact, attachment cache
+
+**Generated Media ID**:
+A user-visible identifier for one **Generated Media** item.
+_Avoid_: Database id, download token, artifact name
+
+**Draw Command**:
+A user-authored command message that requests **Generated Media** for the current **Room**.
+_Avoid_: Agent prompt, Memory Todo, scheduled task
+
 **Delivery**:
-A channel-bound outbound item produced from an **Agent Run**.
+A channel-bound outbound item produced from an **Agent Run** or **Command**.
 _Avoid_: Job, reply row
 
 **Trigger Policy**:
@@ -175,11 +191,20 @@ _Avoid_: Clawman state, Message id, processing seq
 - A **Send-Ready Room** has enough outbound targeting information for a **Channel Adapter** to send a **Delivery**.
 - An **Agent-Enabled Session** may be auto-registered by a **Channel Adapter** when the adapter can provide a **Channel Room Display Name** and **Outbound Target Alias**.
 - A **Message** belongs to exactly one **Room**.
+- A **Command** is a **Message**.
+- A **Draw Command** is a **Command**.
+- A **Command** may produce **Deliveries** without triggering ordinary agent conversation.
+- A **Command** remains part of the **Room** message history even when it does not trigger ordinary agent conversation.
 - A **Source Message ID** is unique within one tenant, channel, and **Channel Room**.
 - An **Agent Run** belongs to exactly one **Agent Session**.
 - An **Agent Run** produces one **Agent Run Result**.
+- An **Agent Run Result** may include **Generated Media** for the current **Room**.
+- A **Draw Command** may produce **Generated Media** without a general-purpose **Agent Run Result**.
+- **Generated Media** has one **Generated Media ID** for user-visible reference.
 - An **Agent Run** may produce zero or more **Deliveries**.
 - An **Agent Run Result** may produce zero or more **Deliveries**.
+- **Generated Media** is delivered to the current **Room** and is not a reusable long-term artifact in the first version.
+- A **Delivery** may reference **Generated Media** without embedding the media bytes in the delivery list.
 - A **Delivery** targets exactly one external channel destination.
 - A **Trigger Policy** belongs to an **Agent Session**; when absent, `clawman` uses the channel default.
 - A **Schedule** belongs to exactly one **Agent Session**.
@@ -233,3 +258,8 @@ _Avoid_: Clawman state, Message id, processing seq
 - "scheduled task" was also used to mean the durable recurring plan; resolved: use **Schedule** for the managed plan that produces **Scheduled Messages**.
 - A **Schedule** was considered as a direct wake signal for an **Agent Session**; resolved: a due **Schedule** first produces a **Scheduled Message**, and that message participates in normal trigger processing.
 - Cross-room schedule creation was considered; resolved: a **Schedule** created during an agent interaction belongs to the current **Agent Session** only.
+- Generated images were considered as reusable long-term artifacts; resolved: first-version **Generated Media** is delivered directly to the current **Room**.
+- Generated image bytes were considered for embedding in **Delivery** payloads; resolved: **Deliveries** reference **Generated Media** instead of carrying media bytes in the delivery list.
+- Generated images were considered as free-form agent output; resolved: first-version image generation starts from an explicit **Draw Command**.
+- Generated Media IDs were considered as reusable artifact handles; resolved: first-version **Generated Media IDs** are for user-visible reference and troubleshooting, not for `/show` or `/resend` commands.
+- Commands were considered for `skipped` messages; resolved: a **Command** is a valid **Room** message history item, but it does not trigger ordinary agent conversation when consumed by a command handler.

@@ -40,6 +40,17 @@ func (f fakeCoreStore) SearchRoomMemoryByToken(ctx context.Context, token string
 	return f.memoryFn(ctx, token, input)
 }
 
+type fakeCommandHandler struct {
+	calls   int
+	message core.Message
+}
+
+func (h *fakeCommandHandler) HandleMessage(_ context.Context, message core.Message) bool {
+	h.calls++
+	h.message = message
+	return true
+}
+
 func TestHealthz(t *testing.T) {
 	api := NewServer(nil, "api-secret")
 
@@ -52,6 +63,90 @@ func TestHealthz(t *testing.T) {
 	}
 	if rec.Body.String() != `{"status":"ok"}` {
 		t.Fatalf("body = %q, want health payload", rec.Body.String())
+	}
+}
+
+func TestHandleMessagesSuppressesAgentTriggerForDrawCommand(t *testing.T) {
+	commands := &fakeCommandHandler{}
+	api := NewServerWithCommandHandler(fakeCoreStore{
+		messageFn: func(_ context.Context, input core.CreateMessageInput) (core.CreateMessageResult, error) {
+			if !input.SuppressAgentTrigger {
+				t.Fatal("SuppressAgentTrigger = false, want true")
+			}
+			if input.Skipped {
+				t.Fatal("Skipped = true, want false")
+			}
+			return core.CreateMessageResult{
+				Message: core.Message{
+					ID:              20,
+					RoomID:          input.RoomID,
+					SourceMessageID: input.SourceMessageID,
+					SenderID:        input.SenderID,
+					Payload:         input.Payload,
+				},
+			}, nil
+		},
+	}, commands, "api-secret")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/messages", strings.NewReader(`{
+		"room_id":10,
+		"source_message_id":"msg-1",
+		"sender_id":"alice",
+		"payload":{"type":"text","text":"/draw 一朵花"}
+	}`))
+	req.Header.Set("Authorization", "Bearer api-secret")
+	rec := httptest.NewRecorder()
+
+	api.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload createMessageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Triggered {
+		t.Fatal("triggered = true, want false")
+	}
+	if commands.calls != 1 || commands.message.ID != 20 {
+		t.Fatalf("command calls=%d message=%+v, want one call for message 20", commands.calls, commands.message)
+	}
+}
+
+func TestHandleMessagesDoesNotHandleDuplicateDrawCommand(t *testing.T) {
+	commands := &fakeCommandHandler{}
+	api := NewServerWithCommandHandler(fakeCoreStore{
+		messageFn: func(_ context.Context, input core.CreateMessageInput) (core.CreateMessageResult, error) {
+			return core.CreateMessageResult{
+				Message: core.Message{
+					ID:              20,
+					RoomID:          input.RoomID,
+					SourceMessageID: input.SourceMessageID,
+					SenderID:        input.SenderID,
+					Payload:         input.Payload,
+				},
+				Duplicate: true,
+			}, nil
+		},
+	}, commands, "api-secret")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/messages", strings.NewReader(`{
+		"room_id":10,
+		"source_message_id":"msg-1",
+		"sender_id":"alice",
+		"payload":{"type":"text","text":"/draw 一朵花"}
+	}`))
+	req.Header.Set("Authorization", "Bearer api-secret")
+	rec := httptest.NewRecorder()
+
+	api.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if commands.calls != 0 {
+		t.Fatalf("command calls = %d, want 0", commands.calls)
 	}
 }
 

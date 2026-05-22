@@ -86,7 +86,7 @@ func (s *CoreStore) CreateMessage(ctx context.Context, input core.CreateMessageI
 		Message:   message,
 		Duplicate: !inserted,
 	}
-	if !inserted || input.Skipped {
+	if !inserted || input.Skipped || input.SuppressAgentTrigger {
 		if err := tx.Commit(); err != nil {
 			return core.CreateMessageResult{}, fmt.Errorf("commit create message: %w", err)
 		}
@@ -202,7 +202,7 @@ func (s *CoreStore) ListCoreDeliveries(ctx context.Context, channel string, afte
 		return nil, fmt.Errorf("channel is required")
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT d.id, d.room_id, d.agent_session_id, d.source_message_after_id, d.source_message_until_id, d.payload, d.status, d.created_at, d.acked_at
+		SELECT d.id, d.room_id, d.agent_session_id, d.source_message_from_id, d.source_message_to_id, d.payload, d.status, d.created_at, d.acked_at
 		FROM deliveries d
 		JOIN rooms r ON r.id = d.room_id
 		WHERE r.channel = $1
@@ -233,6 +233,42 @@ func (s *CoreStore) AckCoreDelivery(ctx context.Context, id int64) (core.Deliver
 	return ackCoreDelivery(ctx, s.db, id)
 }
 
+func (s *CoreStore) CreateCommandDelivery(ctx context.Context, message core.Message, payload json.RawMessage) (*core.Delivery, error) {
+	if message.RoomID <= 0 {
+		return nil, fmt.Errorf("message room_id is required")
+	}
+	if message.ID <= 0 {
+		return nil, fmt.Errorf("message id is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin create command delivery tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	room, err := getCoreRoomByIDTx(ctx, tx, message.RoomID)
+	if err != nil {
+		return nil, err
+	}
+	payload, err = deliveryPayloadWithRoute(room, payload)
+	if err != nil {
+		return nil, err
+	}
+	run := core.AgentRun{
+		RoomID:              message.RoomID,
+		SourceMessageFromID: message.ID,
+		SourceMessageToID:   message.ID,
+	}
+	delivery, err := createCoreDeliveryTx(ctx, tx, run, payload)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit create command delivery: %w", err)
+	}
+	return &delivery, nil
+}
+
 func mustJSON(value any) json.RawMessage {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -242,6 +278,22 @@ func mustJSON(value any) json.RawMessage {
 }
 
 func deliveryTextPayload(room core.Room, kind string, text string) json.RawMessage {
+	return mustJSON(deliveryRoutePayload(room, map[string]any{
+		"kind": kind,
+		"type": "text",
+		"text": text,
+	}))
+}
+
+func deliveryPayloadWithRoute(room core.Room, payload json.RawMessage) (json.RawMessage, error) {
+	var values map[string]any
+	if err := json.Unmarshal(payload, &values); err != nil {
+		return nil, fmt.Errorf("decode delivery payload: %w", err)
+	}
+	return mustJSON(deliveryRoutePayload(room, values)), nil
+}
+
+func deliveryRoutePayload(room core.Room, values map[string]any) map[string]any {
 	recipientAlias := room.ChannelRoomID
 	if room.DisplayName != "" {
 		recipientAlias = room.DisplayName
@@ -249,13 +301,9 @@ func deliveryTextPayload(room core.Room, kind string, text string) json.RawMessa
 	if room.OutboundAlias != "" {
 		recipientAlias = room.OutboundAlias
 	}
-	return mustJSON(map[string]any{
-		"kind":            kind,
-		"type":            "text",
-		"text":            text,
-		"app":             room.Channel,
-		"channel":         room.Channel,
-		"channel_room_id": room.ChannelRoomID,
-		"recipient_alias": recipientAlias,
-	})
+	values["app"] = room.Channel
+	values["channel"] = room.Channel
+	values["channel_room_id"] = room.ChannelRoomID
+	values["recipient_alias"] = recipientAlias
+	return values
 }

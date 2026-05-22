@@ -265,7 +265,20 @@ func claimNextAgentRunTx(ctx context.Context, tx *sql.Tx, owner string, ttl time
 		    updated_at = NOW()
 		FROM candidate
 		WHERE s.id = candidate.id
-		RETURNING s.id, s.room_id, s.agent_key, s.codex_session_id, s.last_processed_message_id, s.trigger_message_id, s.lock_owner
+		RETURNING s.id,
+		          s.room_id,
+		          s.agent_key,
+		          s.codex_session_id,
+		          COALESCE((
+		              SELECT MIN(m.id)
+		              FROM messages m
+		              WHERE m.room_id = s.room_id
+		                AND m.id > s.last_processed_message_id
+		                AND m.id <= s.trigger_message_id
+		                AND m.skipped = FALSE
+		          ), s.trigger_message_id),
+		          s.trigger_message_id,
+		          s.lock_owner
 	`, owner, expiresAt)
 	var codexSessionID sql.NullString
 	err := row.Scan(
@@ -273,8 +286,8 @@ func claimNextAgentRunTx(ctx context.Context, tx *sql.Tx, owner string, ttl time
 		&run.RoomID,
 		&run.AgentKey,
 		&codexSessionID,
-		&run.SourceMessageAfterID,
-		&run.SourceMessageUntilID,
+		&run.SourceMessageFromID,
+		&run.SourceMessageToID,
 		&run.LockOwner,
 	)
 	if err != nil {
@@ -294,11 +307,11 @@ func listAgentRunMessages(ctx context.Context, db *sql.DB, run core.AgentRun) ([
 		SELECT id, room_id, source_message_id, sender_id, sender_name, payload, message_time, skipped, created_at
 		FROM messages
 		WHERE room_id = $1
-		  AND id > $2
+		  AND id >= $2
 		  AND id <= $3
 		  AND skipped = FALSE
 		ORDER BY id ASC
-	`, run.RoomID, run.SourceMessageAfterID, run.SourceMessageUntilID)
+	`, run.RoomID, run.SourceMessageFromID, run.SourceMessageToID)
 	if err != nil {
 		return nil, fmt.Errorf("list agent run messages: %w", err)
 	}
@@ -316,7 +329,7 @@ func finishAgentRunTx(ctx context.Context, tx *sql.Tx, run core.AgentRun, payloa
 		    updated_at = NOW()
 		WHERE id = $1
 		  AND lock_owner = $3
-	`, run.AgentSessionID, run.SourceMessageUntilID, run.LockOwner, run.CodexSessionID); err != nil {
+	`, run.AgentSessionID, run.SourceMessageToID, run.LockOwner, run.CodexSessionID); err != nil {
 		return nil, fmt.Errorf("finish agent run: %w", err)
 	}
 	if len(payload) == 0 {
@@ -334,14 +347,14 @@ func createCoreDeliveryTx(ctx context.Context, tx *sql.Tx, run core.AgentRun, pa
 		INSERT INTO deliveries (
 			room_id,
 			agent_session_id,
-			source_message_after_id,
-			source_message_until_id,
+			source_message_from_id,
+			source_message_to_id,
 			payload,
 			status
 		)
 		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, room_id, agent_session_id, source_message_after_id, source_message_until_id, payload, status, created_at, acked_at
-	`, run.RoomID, run.AgentSessionID, run.SourceMessageAfterID, run.SourceMessageUntilID, payload, core.DeliveryStatusPending)
+		RETURNING id, room_id, agent_session_id, source_message_from_id, source_message_to_id, payload, status, created_at, acked_at
+	`, run.RoomID, nullInt64IfZero(run.AgentSessionID), run.SourceMessageFromID, run.SourceMessageToID, payload, core.DeliveryStatusPending)
 	delivery, err := scanCoreDelivery(row)
 	if err != nil {
 		return core.Delivery{}, fmt.Errorf("create delivery: %w", err)
@@ -356,7 +369,7 @@ func ackCoreDelivery(ctx context.Context, db *sql.DB, id int64) (core.Delivery, 
 		    acked_at = NOW()
 		WHERE id = $1
 		  AND status = $3
-		RETURNING id, room_id, agent_session_id, source_message_after_id, source_message_until_id, payload, status, created_at, acked_at
+		RETURNING id, room_id, agent_session_id, source_message_from_id, source_message_to_id, payload, status, created_at, acked_at
 	`, id, core.DeliveryStatusAcked, core.DeliveryStatusPending)
 	delivery, err := scanCoreDelivery(row)
 	if err != nil {
@@ -471,13 +484,14 @@ func scanAgentSession(row scanner) (core.AgentSession, error) {
 
 func scanCoreDelivery(row scanner) (core.Delivery, error) {
 	var delivery core.Delivery
+	var agentSessionID sql.NullInt64
 	var ackedAt sql.NullTime
 	if err := row.Scan(
 		&delivery.ID,
 		&delivery.RoomID,
-		&delivery.AgentSessionID,
-		&delivery.SourceMessageAfterID,
-		&delivery.SourceMessageUntilID,
+		&agentSessionID,
+		&delivery.SourceMessageFromID,
+		&delivery.SourceMessageToID,
 		&delivery.Payload,
 		&delivery.Status,
 		&delivery.CreatedAt,
@@ -487,6 +501,9 @@ func scanCoreDelivery(row scanner) (core.Delivery, error) {
 	}
 	if ackedAt.Valid {
 		delivery.AckedAt = ackedAt.Time
+	}
+	if agentSessionID.Valid {
+		delivery.AgentSessionID = agentSessionID.Int64
 	}
 	return delivery, nil
 }
@@ -503,4 +520,8 @@ func nullJSON(value json.RawMessage) any {
 		return nil
 	}
 	return value
+}
+
+func nullInt64IfZero(value int64) sql.NullInt64 {
+	return sql.NullInt64{Int64: value, Valid: value != 0}
 }

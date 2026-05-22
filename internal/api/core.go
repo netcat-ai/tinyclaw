@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"tinyclaw/internal/command"
 	"tinyclaw/internal/core"
 )
 
@@ -22,15 +23,25 @@ type MemorySearchStore interface {
 	SearchRoomMemoryByToken(ctx context.Context, token string, input core.MemorySearchInput) ([]core.MemoryItem, error)
 }
 
+type CommandHandler interface {
+	HandleMessage(ctx context.Context, message core.Message) bool
+}
+
 type Server struct {
 	core     CoreStore
+	commands CommandHandler
 	apiToken string
 	mux      *http.ServeMux
 }
 
 func NewServer(core CoreStore, apiToken string) *Server {
+	return NewServerWithCommandHandler(core, nil, apiToken)
+}
+
+func NewServerWithCommandHandler(core CoreStore, commands CommandHandler, apiToken string) *Server {
 	server := &Server{
 		core:     core,
+		commands: commands,
 		apiToken: strings.TrimSpace(apiToken),
 		mux:      http.NewServeMux(),
 	}
@@ -100,13 +111,13 @@ type coreMessageResponse struct {
 }
 
 type coreDeliveryResponse struct {
-	ID                   int64           `json:"id"`
-	RoomID               int64           `json:"room_id"`
-	AgentSessionID       int64           `json:"agent_session_id"`
-	SourceMessageAfterID int64           `json:"source_message_after_id"`
-	SourceMessageUntilID int64           `json:"source_message_until_id"`
-	Payload              json.RawMessage `json:"payload"`
-	Status               int16           `json:"status"`
+	ID                  int64           `json:"id"`
+	RoomID              int64           `json:"room_id"`
+	AgentSessionID      int64           `json:"agent_session_id"`
+	SourceMessageFromID int64           `json:"source_message_from_id"`
+	SourceMessageToID   int64           `json:"source_message_to_id"`
+	Payload             json.RawMessage `json:"payload"`
+	Status              int16           `json:"status"`
 }
 
 type deliveriesPageResponse struct {
@@ -167,6 +178,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	if command.IsDrawPayload(input.Payload) {
+		input.SuppressAgentTrigger = true
+	}
 	result, err := s.core.CreateMessage(r.Context(), input)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
@@ -175,6 +189,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
+	}
+	if !result.Duplicate && s.commands != nil {
+		s.commands.HandleMessage(context.Background(), result.Message)
 	}
 	writeAPIJSON(w, http.StatusOK, createMessageResponse{
 		Message:   messageToResponse(result.Message),
@@ -362,12 +379,12 @@ func messageToResponse(message core.Message) coreMessageResponse {
 
 func deliveryToResponse(delivery core.Delivery) coreDeliveryResponse {
 	return coreDeliveryResponse{
-		ID:                   delivery.ID,
-		RoomID:               delivery.RoomID,
-		AgentSessionID:       delivery.AgentSessionID,
-		SourceMessageAfterID: delivery.SourceMessageAfterID,
-		SourceMessageUntilID: delivery.SourceMessageUntilID,
-		Payload:              delivery.Payload,
-		Status:               delivery.Status,
+		ID:                  delivery.ID,
+		RoomID:              delivery.RoomID,
+		AgentSessionID:      delivery.AgentSessionID,
+		SourceMessageFromID: delivery.SourceMessageFromID,
+		SourceMessageToID:   delivery.SourceMessageToID,
+		Payload:             delivery.Payload,
+		Status:              delivery.Status,
 	}
 }

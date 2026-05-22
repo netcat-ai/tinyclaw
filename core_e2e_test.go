@@ -13,6 +13,7 @@ import (
 	"time"
 
 	httpapi "tinyclaw/internal/api"
+	"tinyclaw/internal/command"
 	"tinyclaw/internal/core"
 	"tinyclaw/internal/executor"
 	"tinyclaw/internal/storage"
@@ -37,12 +38,92 @@ type coreE2EMessageResponse struct {
 }
 
 type coreE2EDeliveryResponse struct {
-	ID                   int64           `json:"id"`
-	AgentSessionID       int64           `json:"agent_session_id"`
-	SourceMessageAfterID int64           `json:"source_message_after_id"`
-	SourceMessageUntilID int64           `json:"source_message_until_id"`
-	Payload              json.RawMessage `json:"payload"`
-	Status               int16           `json:"status"`
+	ID                  int64           `json:"id"`
+	AgentSessionID      int64           `json:"agent_session_id"`
+	SourceMessageFromID int64           `json:"source_message_from_id"`
+	SourceMessageToID   int64           `json:"source_message_to_id"`
+	Payload             json.RawMessage `json:"payload"`
+	Status              int16           `json:"status"`
+}
+
+func TestCoreE2EDrawCommandCreatesCommandDeliveries(t *testing.T) {
+	dsn := os.Getenv("CORE_E2E_DATABASE_URL")
+	if dsn == "" {
+		dsn = os.Getenv("DATABASE_URL")
+	}
+	if dsn == "" {
+		t.Skip("CORE_E2E_DATABASE_URL or DATABASE_URL is not set")
+	}
+
+	ctx := context.Background()
+	store, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if err := store.InitSchema(ctx); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	coreStore := storage.NewCoreStore(store.DB())
+	image := &drawE2EImage{}
+	media := &drawE2EMedia{}
+	handler := command.NewHandler(coreStore, image, media)
+	handler.Async = false
+	api := httpapi.NewServerWithCommandHandler(coreStore, handler, "e2e-token")
+
+	roomName := fmt.Sprintf("draw-e2e-room-%d", time.Now().UnixNano())
+	roomResp := postRoomE2E(t, api, roomName)
+	drawResp := postMessageE2E(t, api, roomResp.Room.ID, "draw-msg-1", "/draw 一朵花")
+	if drawResp.Triggered {
+		t.Fatalf("draw triggered = true, want false")
+	}
+	if drawResp.Message.Skipped {
+		t.Fatal("draw skipped = true, want false")
+	}
+	if image.calls != 1 || image.prompt != "一朵花" {
+		t.Fatalf("image calls=%d prompt=%q, want one draw prompt", image.calls, image.prompt)
+	}
+	if media.calls != 1 || media.mediaID == "" {
+		t.Fatalf("media calls=%d mediaID=%q, want one stored media", media.calls, media.mediaID)
+	}
+
+	duplicateResp := postMessageE2E(t, api, roomResp.Room.ID, "draw-msg-1", "/draw 一朵花")
+	if !duplicateResp.Duplicate {
+		t.Fatal("draw duplicate = false, want true")
+	}
+	if image.calls != 1 || media.calls != 1 {
+		t.Fatalf("duplicate draw side effects image=%d media=%d, want unchanged", image.calls, media.calls)
+	}
+
+	deliveries := listDeliveriesE2E(t, api, "wecom", 0)
+	if len(deliveries.Deliveries) != 3 {
+		t.Fatalf("deliveries len = %d, want 3", len(deliveries.Deliveries))
+	}
+	var progress, complete, imagePayload map[string]any
+	if err := json.Unmarshal(deliveries.Deliveries[0].Payload, &progress); err != nil {
+		t.Fatalf("decode progress: %v", err)
+	}
+	if err := json.Unmarshal(deliveries.Deliveries[1].Payload, &complete); err != nil {
+		t.Fatalf("decode complete: %v", err)
+	}
+	if err := json.Unmarshal(deliveries.Deliveries[2].Payload, &imagePayload); err != nil {
+		t.Fatalf("decode image: %v", err)
+	}
+	if progress["kind"] != command.KindCommandProgress || progress["text"] != "正在画图..." {
+		t.Fatalf("progress = %+v", progress)
+	}
+	if complete["kind"] != command.KindCommandOutput || !strings.Contains(fmt.Sprint(complete["text"]), media.mediaID) {
+		t.Fatalf("complete = %+v mediaID=%s", complete, media.mediaID)
+	}
+	if imagePayload["kind"] != command.KindCommandOutput || imagePayload["type"] != "image" || imagePayload["media_url_kind"] != "presigned_s3" {
+		t.Fatalf("image payload = %+v", imagePayload)
+	}
+	for _, delivery := range deliveries.Deliveries {
+		if delivery.SourceMessageFromID != drawResp.Message.ID || delivery.SourceMessageToID != drawResp.Message.ID {
+			t.Fatalf("delivery source = [%d,%d], want draw message %d", delivery.SourceMessageFromID, delivery.SourceMessageToID, drawResp.Message.ID)
+		}
+	}
 }
 
 type coreE2EDeliveriesPageResponse struct {
@@ -109,11 +190,11 @@ func TestCoreModelE2E(t *testing.T) {
 	}
 
 	token, err := coreStore.CreateMemoryCapabilityToken(ctx, core.AgentRun{
-		AgentSessionID:       roomResp.AgentSession.ID,
-		RoomID:               roomResp.Room.ID,
-		AgentKey:             core.DefaultAgentKey,
-		SourceMessageAfterID: 0,
-		SourceMessageUntilID: triggerResp.Message.ID,
+		AgentSessionID:      roomResp.AgentSession.ID,
+		RoomID:              roomResp.Room.ID,
+		AgentKey:            core.DefaultAgentKey,
+		SourceMessageFromID: contextResp.Message.ID,
+		SourceMessageToID:   triggerResp.Message.ID,
 	}, time.Minute)
 	if err != nil {
 		t.Fatalf("create memory token: %v", err)
@@ -125,8 +206,8 @@ func TestCoreModelE2E(t *testing.T) {
 	if memoryItems[0].RoomID != roomResp.Room.ID || memoryItems[0].Type != core.MemoryTypePreference || memoryItems[0].Key != "reply_language" {
 		t.Fatalf("memory item = %+v, want room preference", memoryItems[0])
 	}
-	if memoryItems[0].SourceMessageUntilID != triggerResp.Message.ID {
-		t.Fatalf("memory source until = %d, want %d", memoryItems[0].SourceMessageUntilID, triggerResp.Message.ID)
+	if memoryItems[0].SourceMessageToID != triggerResp.Message.ID {
+		t.Fatalf("memory source to = %d, want %d", memoryItems[0].SourceMessageToID, triggerResp.Message.ID)
 	}
 
 	secondTriggerResp := postMessageE2E(t, api, roomResp.Room.ID, "msg-3", "@agent use memory")
@@ -151,8 +232,8 @@ func TestCoreModelE2E(t *testing.T) {
 	if delivery.AgentSessionID != roomResp.AgentSession.ID {
 		t.Fatalf("delivery agent session id = %d, want %d", delivery.AgentSessionID, roomResp.AgentSession.ID)
 	}
-	if delivery.SourceMessageAfterID != 0 || delivery.SourceMessageUntilID != triggerResp.Message.ID {
-		t.Fatalf("delivery source window = (%d,%d], want (0,%d]", delivery.SourceMessageAfterID, delivery.SourceMessageUntilID, triggerResp.Message.ID)
+	if delivery.SourceMessageFromID != contextResp.Message.ID || delivery.SourceMessageToID != triggerResp.Message.ID {
+		t.Fatalf("delivery source window = [%d,%d], want [%d,%d]", delivery.SourceMessageFromID, delivery.SourceMessageToID, contextResp.Message.ID, triggerResp.Message.ID)
 	}
 	var deliveryPayload struct {
 		Kind           string `json:"kind"`
@@ -178,6 +259,32 @@ func TestCoreModelE2E(t *testing.T) {
 type memorySearchingRunner struct {
 	t           *testing.T
 	seenContent string
+}
+
+type drawE2EImage struct {
+	calls  int
+	prompt string
+}
+
+func (i *drawE2EImage) GenerateImage(_ context.Context, input command.ImageGenerationInput) (command.GeneratedImage, error) {
+	i.calls++
+	i.prompt = input.Prompt
+	return command.GeneratedImage{Bytes: []byte{0x89, 'P', 'N', 'G'}, MIMEType: "image/png"}, nil
+}
+
+type drawE2EMedia struct {
+	calls   int
+	mediaID string
+}
+
+func (m *drawE2EMedia) StoreGeneratedMedia(_ context.Context, input command.StoreMediaInput) (command.StoredMedia, error) {
+	m.calls++
+	m.mediaID = input.MediaID
+	return command.StoredMedia{
+		URL:       "https://s3.example/" + input.MediaID + ".png",
+		URLKind:   "presigned_s3",
+		ExpiresAt: time.Date(2026, 5, 23, 0, 0, 0, 0, time.UTC),
+	}, nil
 }
 
 func (r *memorySearchingRunner) RunAgent(ctx context.Context, run executor.AgentRunRequest) (core.AgentRunResult, error) {

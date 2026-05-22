@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +24,20 @@ type Config struct {
 	CodexSandbox          string
 	CodexDisabledFeatures []string
 	CodexRunnerTimeout    time.Duration
+
+	DrawCommandEnabled   bool
+	ImageProviderBaseURL string
+	ImageProviderModel   string
+	ImageProviderAPIKey  string
+	DrawImageSize        string
+
+	GeneratedMediaS3Endpoint        string
+	GeneratedMediaS3Bucket          string
+	GeneratedMediaS3Region          string
+	GeneratedMediaS3AccessKeyID     string
+	GeneratedMediaS3SecretAccessKey string
+	GeneratedMediaS3ForcePathStyle  bool
+	GeneratedMediaURLTTL            time.Duration
 
 	WeComEnabled       bool
 	WeComCorpID        string
@@ -58,6 +74,14 @@ func LoadConfig() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	generatedMediaURLTTL, err := time.ParseDuration(envOrDefault("GENERATED_MEDIA_URL_TTL", "24h"))
+	if err != nil {
+		return Config{}, err
+	}
+	imageProviderAPIKey := os.Getenv("IMAGE_PROVIDER_API_KEY")
+	if strings.TrimSpace(imageProviderAPIKey) == "" {
+		imageProviderAPIKey = codexAuthOpenAIAPIKey()
+	}
 	cfg := Config{
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 
@@ -77,6 +101,20 @@ func LoadConfig() (Config, error) {
 			"plugins",
 		}),
 		CodexRunnerTimeout: timeout,
+
+		DrawCommandEnabled:   parseBoolEnvDefault("DRAW_COMMAND_ENABLED", true),
+		ImageProviderBaseURL: envOrDefault("IMAGE_PROVIDER_BASE_URL", "https://code.v4.chat"),
+		ImageProviderModel:   envOrDefault("IMAGE_PROVIDER_MODEL", "gpt-image-2"),
+		ImageProviderAPIKey:  imageProviderAPIKey,
+		DrawImageSize:        envOrDefault("DRAW_IMAGE_SIZE", "1024x1024"),
+
+		GeneratedMediaS3Endpoint:        os.Getenv("GENERATED_MEDIA_S3_ENDPOINT"),
+		GeneratedMediaS3Bucket:          os.Getenv("GENERATED_MEDIA_S3_BUCKET"),
+		GeneratedMediaS3Region:          os.Getenv("GENERATED_MEDIA_S3_REGION"),
+		GeneratedMediaS3AccessKeyID:     os.Getenv("GENERATED_MEDIA_S3_ACCESS_KEY_ID"),
+		GeneratedMediaS3SecretAccessKey: os.Getenv("GENERATED_MEDIA_S3_SECRET_ACCESS_KEY"),
+		GeneratedMediaS3ForcePathStyle:  parseBoolEnv("GENERATED_MEDIA_S3_FORCE_PATH_STYLE"),
+		GeneratedMediaURLTTL:            generatedMediaURLTTL,
 
 		WeComEnabled:       parseBoolEnv("WECOM_ENABLED"),
 		WeComCorpID:        os.Getenv("WECOM_CORP_ID"),
@@ -105,6 +143,18 @@ func envOrDefault(key, def string) string {
 func parseBoolEnv(key string) bool {
 	v, err := strconv.ParseBool(os.Getenv(key))
 	return err == nil && v
+}
+
+func parseBoolEnvDefault(key string, def bool) bool {
+	raw := os.Getenv(key)
+	if strings.TrimSpace(raw) == "" {
+		return def
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return def
+	}
+	return v
 }
 
 func parseCSVEnv(key string, def []string) []string {
@@ -140,4 +190,36 @@ func parseInt64Env(key string, def int64) (int64, error) {
 		return def, nil
 	}
 	return strconv.ParseInt(raw, 10, 64)
+}
+
+func codexAuthOpenAIAPIKey() string {
+	for _, raw := range []string{os.Getenv("CODEX_AUTH_JSON"), readCodexAuthFile()} {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		var parsed struct {
+			OpenAIAPIKey string `json:"OPENAI_API_KEY"`
+		}
+		if err := json.Unmarshal([]byte(raw), &parsed); err == nil && strings.TrimSpace(parsed.OpenAIAPIKey) != "" {
+			return strings.TrimSpace(parsed.OpenAIAPIKey)
+		}
+	}
+	return ""
+}
+
+func readCodexAuthFile() string {
+	path := strings.TrimSpace(os.Getenv("CODEX_AUTH_PATH"))
+	if path == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		path = filepath.Join(home, ".codex", "auth.json")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }

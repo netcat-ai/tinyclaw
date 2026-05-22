@@ -14,6 +14,10 @@ Prefer updating an existing document over creating overlapping files.
 - `rg -n "TODO|FIXME" *.md`: find open doc edits.
 - `git diff -- *.md`: review markdown-only changes.
 - `git status --short`: confirm the final change set.
+- Deployments must use GitHub Actions workflows, not local Docker build/push.
+- Use `.github/workflows/build.yml` to build and publish images.
+- Use `.github/workflows/deploy.yml` to deploy `clawman`; pass an explicit image tag when needed.
+- Do not run local `docker buildx --push` or manually patch the deployment image unless the user explicitly requests an emergency hotfix.
 - Use concise technical writing and stable terminology.
 - Keep headings clear and task-oriented.
 - Keep examples explicit and executable.
