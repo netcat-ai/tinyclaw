@@ -230,6 +230,8 @@ func codexErrorFromEvents(output string) string {
 func isCodexResumeStale(detail string) bool {
 	detail = strings.ToLower(detail)
 	return strings.Contains(detail, "no conversation found") ||
+		strings.Contains(detail, "thread/resume failed") ||
+		strings.Contains(detail, "no rollout found for thread id") ||
 		strings.Contains(detail, "session not found") ||
 		strings.Contains(detail, "not found") ||
 		strings.Contains(detail, "no such file")

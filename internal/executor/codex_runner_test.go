@@ -164,6 +164,75 @@ printf "resumed answer" > "$output"
 	}
 }
 
+func TestCodexRunnerFallsBackWhenResumeRolloutIsMissing(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "codex")
+	countPath := filepath.Join(dir, "count")
+	argsPath := filepath.Join(dir, "args")
+	script := fmt.Sprintf(`#!/bin/sh
+output=""
+printf '%%s\n' '---' "$@" >> %[1]q
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-last-message" ]; then
+    shift
+    output="$1"
+  fi
+  shift
+done
+cat >/dev/null
+count=0
+if [ -f %[2]q ]; then
+  count=$(cat %[2]q)
+fi
+count=$((count + 1))
+printf "%%s" "$count" > %[2]q
+if [ "$count" -eq 1 ]; then
+  echo 'Error: thread/resume: thread/resume failed: no rollout found for thread id thread-stale (code -32600)' >&2
+  exit 1
+fi
+printf '%%s\n' '{"type":"thread.started","thread_id":"thread-fresh"}'
+printf "fresh answer" > "$output"
+`, argsPath, countPath)
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	runner := NewCodexRunner(CodexRunnerConfig{
+		Bin:     bin,
+		WorkDir: dir,
+		Timeout: 5 * time.Second,
+	})
+
+	result, err := runner.RunAgent(context.Background(), AgentRunRequest{
+		AgentRun: core.AgentRun{
+			AgentSessionID:      100,
+			RoomID:              10,
+			CodexSessionID:      "thread-stale",
+			SourceMessageFromID: 0,
+			SourceMessageToID:   2,
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgent error: %v", err)
+	}
+	if result.FinalOutput != "fresh answer" {
+		t.Fatalf("output = %q, want fresh answer", result.FinalOutput)
+	}
+	if result.CodexSessionID != "thread-fresh" {
+		t.Fatalf("codex session id = %q, want thread-fresh", result.CodexSessionID)
+	}
+	argsData, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	args := string(argsData)
+	if !strings.Contains(args, "resume\nthread-stale\n") {
+		t.Fatalf("args missing initial stale resume:\n%s", args)
+	}
+	if !strings.Contains(args, "--output-schema\n") {
+		t.Fatalf("args missing fresh output schema retry:\n%s", args)
+	}
+}
+
 func TestCodexRunnerFailsOnCodexErrorEvent(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "codex")
