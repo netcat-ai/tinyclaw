@@ -72,9 +72,21 @@ jobs:
           CODEX_MODEL: ${{ vars.CODEX_MODEL }}
           CODEX_SANDBOX: ${{ vars.CODEX_SANDBOX }}
           CODEX_DISABLED_FEATURES: ${{ vars.CODEX_DISABLED_FEATURES }}
+          DRAW_COMMAND_ENABLED: ${{ vars.DRAW_COMMAND_ENABLED }}
+          IMAGE_PROVIDER_BASE_URL: ${{ vars.IMAGE_PROVIDER_BASE_URL }}
+          IMAGE_PROVIDER_MODEL: ${{ vars.IMAGE_PROVIDER_MODEL }}
+          DRAW_IMAGE_SIZE: ${{ vars.DRAW_IMAGE_SIZE }}
+          GENERATED_MEDIA_S3_ENDPOINT: ${{ vars.GENERATED_MEDIA_S3_ENDPOINT }}
+          GENERATED_MEDIA_S3_BUCKET: ${{ vars.GENERATED_MEDIA_S3_BUCKET }}
+          GENERATED_MEDIA_S3_REGION: ${{ vars.GENERATED_MEDIA_S3_REGION }}
+          GENERATED_MEDIA_S3_FORCE_PATH_STYLE: ${{ vars.GENERATED_MEDIA_S3_FORCE_PATH_STYLE }}
+          GENERATED_MEDIA_URL_TTL: ${{ vars.GENERATED_MEDIA_URL_TTL }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           CLAWMAN_API_TOKEN: ${{ secrets.CLAWMAN_API_TOKEN }}
           CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          IMAGE_PROVIDER_API_KEY: ${{ secrets.IMAGE_PROVIDER_API_KEY }}
+          GENERATED_MEDIA_S3_ACCESS_KEY_ID: ${{ secrets.GENERATED_MEDIA_S3_ACCESS_KEY_ID }}
+          GENERATED_MEDIA_S3_SECRET_ACCESS_KEY: ${{ secrets.GENERATED_MEDIA_S3_SECRET_ACCESS_KEY }}
           WECOM_CORP_SECRET: ${{ secrets.WECOM_CORP_SECRET }}
           WECOM_RSA_PRIVATE_KEY: ${{ secrets.WECOM_RSA_PRIVATE_KEY }}
           WECOM_CONTACT_SECRET: ${{ secrets.WECOM_CONTACT_SECRET }}
@@ -87,6 +99,15 @@ jobs:
           : "${CODEX_MODEL:=gpt-5.5}"
           : "${CODEX_SANDBOX:=read-only}"
           : "${CODEX_DISABLED_FEATURES:=apps,tool_suggest,plugins}"
+          : "${DRAW_COMMAND_ENABLED:=true}"
+          : "${IMAGE_PROVIDER_BASE_URL:=https://code.v4.chat}"
+          : "${IMAGE_PROVIDER_MODEL:=gpt-image-2}"
+          : "${DRAW_IMAGE_SIZE:=1024x1024}"
+          : "${GENERATED_MEDIA_S3_ENDPOINT:=https://cos.ap-guangzhou.myqcloud.com}"
+          : "${GENERATED_MEDIA_S3_BUCKET:=claw-1371598192}"
+          : "${GENERATED_MEDIA_S3_REGION:=ap-guangzhou}"
+          : "${GENERATED_MEDIA_S3_FORCE_PATH_STYLE:=false}"
+          : "${GENERATED_MEDIA_URL_TTL:=24h}"
           : "${WECOM_ENABLED:=true}"
           : "${WECOM_POLL_INTERVAL:=3s}"
           : "${WECOM_POLL_LIMIT:=100}"
@@ -107,11 +128,23 @@ jobs:
             --from-literal=CODEX_MODEL="${CODEX_MODEL}" \
             --from-literal=CODEX_SANDBOX="${CODEX_SANDBOX}" \
             --from-literal=CODEX_DISABLED_FEATURES="${CODEX_DISABLED_FEATURES}" \
+            --from-literal=DRAW_COMMAND_ENABLED="${DRAW_COMMAND_ENABLED}" \
+            --from-literal=IMAGE_PROVIDER_BASE_URL="${IMAGE_PROVIDER_BASE_URL}" \
+            --from-literal=IMAGE_PROVIDER_MODEL="${IMAGE_PROVIDER_MODEL}" \
+            --from-literal=DRAW_IMAGE_SIZE="${DRAW_IMAGE_SIZE}" \
+            --from-literal=GENERATED_MEDIA_S3_ENDPOINT="${GENERATED_MEDIA_S3_ENDPOINT}" \
+            --from-literal=GENERATED_MEDIA_S3_BUCKET="${GENERATED_MEDIA_S3_BUCKET}" \
+            --from-literal=GENERATED_MEDIA_S3_REGION="${GENERATED_MEDIA_S3_REGION}" \
+            --from-literal=GENERATED_MEDIA_S3_FORCE_PATH_STYLE="${GENERATED_MEDIA_S3_FORCE_PATH_STYLE}" \
+            --from-literal=GENERATED_MEDIA_URL_TTL="${GENERATED_MEDIA_URL_TTL}" \
             --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n claw create secret generic tinyclaw-secret \
             --from-literal=DATABASE_URL="${DATABASE_URL}" \
             --from-literal=CLAWMAN_API_TOKEN="${CLAWMAN_API_TOKEN}" \
             --from-literal=CODEX_AUTH_JSON="${CODEX_AUTH_JSON}" \
+            --from-literal=IMAGE_PROVIDER_API_KEY="${IMAGE_PROVIDER_API_KEY}" \
+            --from-literal=GENERATED_MEDIA_S3_ACCESS_KEY_ID="${GENERATED_MEDIA_S3_ACCESS_KEY_ID}" \
+            --from-literal=GENERATED_MEDIA_S3_SECRET_ACCESS_KEY="${GENERATED_MEDIA_S3_SECRET_ACCESS_KEY}" \
             --from-literal=WECOM_CORP_SECRET="${WECOM_CORP_SECRET}" \
             --from-literal=WECOM_RSA_PRIVATE_KEY="${WECOM_RSA_PRIVATE_KEY}" \
             --from-literal=WECOM_CONTACT_SECRET="${WECOM_CONTACT_SECRET}" \
