@@ -20,11 +20,14 @@ Set `AGENT_RUNNER=codex` to run triggered Agent Sessions through `codex exec`. O
 - `CODEX_WORKDIR`: working directory passed to Codex, defaults to `.`.
 - `CODEX_MODEL`: optional model override.
 - `CODEX_SANDBOX`: Codex sandbox mode, defaults to `workspace-write`.
+- `CODEX_DISABLED_FEATURES`: comma-separated Codex CLI features disabled for headless runs, defaults to `apps,tool_suggest,plugins`; set to `none` to disable no features.
 - `CODEX_RUNNER_TIMEOUT`: execution timeout, defaults to `5m`.
 
 Codex runs receive a short-lived Room Memory Search capability. The capability calls Clawman's internal memory endpoint with a run-bound token; it does not accept `room_id` from the agent. Runner output is parsed as an Agent Run Result with user-visible final output and optional Memory Write Proposals. Memory writes are persisted as background jobs and do not block Delivery creation.
 
 The Codex runner reuses one Codex CLI thread per Agent Session. Clawman stores the Codex `thread_id` on `agent_sessions.codex_session_id`; subsequent runs call `codex exec resume <codex_session_id> -`. If the saved thread is stale, the runner falls back to a fresh Codex thread and stores the new id.
+
+Kubernetes deployment pins `api.openai.com` and `chatgpt.com` through `hostAliases` because the current cluster DNS resolves those domains incorrectly. Refresh those IPs if Codex CLI connectivity starts timing out before `thread.started`.
 
 `clawman` now exposes the Core Model HTTP interface:
 

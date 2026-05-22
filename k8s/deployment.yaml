@@ -28,6 +28,12 @@ spec:
         - ip: "183.47.100.66"
           hostnames:
             - qyapi.weixin.qq.com
+        - ip: "172.66.0.243"
+          hostnames:
+            - api.openai.com
+        - ip: "104.18.32.47"
+          hostnames:
+            - chatgpt.com
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:

@@ -21,11 +21,12 @@ const defaultCodexRunnerTimeout = 5 * time.Minute
 const maxMemorySearchRounds = 2
 
 type CodexRunnerConfig struct {
-	Bin     string
-	WorkDir string
-	Model   string
-	Sandbox string
-	Timeout time.Duration
+	Bin              string
+	WorkDir          string
+	Model            string
+	Sandbox          string
+	DisabledFeatures []string
+	Timeout          time.Duration
 }
 
 type CodexRunner struct {
@@ -44,6 +45,9 @@ func NewCodexRunner(config CodexRunnerConfig) *CodexRunner {
 	}
 	if config.Timeout <= 0 {
 		config.Timeout = defaultCodexRunnerTimeout
+	}
+	if config.DisabledFeatures == nil {
+		config.DisabledFeatures = []string{"apps", "tool_suggest", "plugins"}
 	}
 	return &CodexRunner{config: config}
 }
@@ -148,13 +152,22 @@ func (r *CodexRunner) runCodexExec(ctx context.Context, run AgentRunRequest) (co
 func (r *CodexRunner) codexExecArgs(schemaPath string, outputPath string, codexSessionID string) []string {
 	args := []string{
 		"-a", "never",
+	}
+	for _, feature := range r.config.DisabledFeatures {
+		feature = strings.TrimSpace(feature)
+		if feature == "" {
+			continue
+		}
+		args = append(args, "--disable", feature)
+	}
+	args = append(args,
 		"exec",
 		"--skip-git-repo-check",
 		"--json",
 		"--cd", r.config.WorkDir,
 		"--sandbox", r.config.Sandbox,
 		"--output-last-message", outputPath,
-	}
+	)
 	if strings.TrimSpace(r.config.Model) != "" {
 		args = append(args, "--model", r.config.Model)
 	}

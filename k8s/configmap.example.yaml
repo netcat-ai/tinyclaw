@@ -12,6 +12,7 @@ data:
   CODEX_WORKDIR: "/tmp"
   CODEX_MODEL: "gpt-5.5"
   CODEX_SANDBOX: "read-only"
+  CODEX_DISABLED_FEATURES: "apps,tool_suggest,plugins"
   WECOM_ENABLED: "true"
   WECOM_POLL_INTERVAL: "3s"
   WECOM_POLL_LIMIT: "100"

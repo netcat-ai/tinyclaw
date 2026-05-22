@@ -94,7 +94,7 @@ printf "fake codex answer" > "$output"
 		t.Fatalf("read args: %v", err)
 	}
 	args := string(argsData)
-	for _, want := range []string{"exec\n", "--json\n", "--output-schema\n"} {
+	for _, want := range []string{"--disable\napps\n", "--disable\ntool_suggest\n", "--disable\nplugins\n", "exec\n", "--json\n", "--output-schema\n"} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("args missing %q:\n%s", want, args)
 		}

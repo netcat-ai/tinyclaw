@@ -20,8 +20,30 @@ func TestLoadConfigUsesServiceDefaults(t *testing.T) {
 	if cfg.CodexBin != "codex" {
 		t.Fatalf("CodexBin = %q, want codex", cfg.CodexBin)
 	}
+	wantDisabled := []string{"apps", "tool_suggest", "plugins"}
+	if len(cfg.CodexDisabledFeatures) != len(wantDisabled) {
+		t.Fatalf("CodexDisabledFeatures = %v, want %v", cfg.CodexDisabledFeatures, wantDisabled)
+	}
+	for i, want := range wantDisabled {
+		if cfg.CodexDisabledFeatures[i] != want {
+			t.Fatalf("CodexDisabledFeatures = %v, want %v", cfg.CodexDisabledFeatures, wantDisabled)
+		}
+	}
 	if cfg.CodexRunnerTimeout.String() != "5m0s" {
 		t.Fatalf("CodexRunnerTimeout = %s, want 5m0s", cfg.CodexRunnerTimeout)
+	}
+}
+
+func TestLoadConfigAllowsDisablingNoCodexFeatures(t *testing.T) {
+	t.Setenv("CODEX_DISABLED_FEATURES", "none")
+	t.Setenv("CODEX_RUNNER_TIMEOUT", "")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+	if len(cfg.CodexDisabledFeatures) != 0 {
+		t.Fatalf("CodexDisabledFeatures = %v, want empty", cfg.CodexDisabledFeatures)
 	}
 }
 

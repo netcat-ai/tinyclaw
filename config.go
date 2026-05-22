@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -14,12 +15,13 @@ type Config struct {
 
 	MetricsAddr string
 
-	AgentRunner        string
-	CodexBin           string
-	CodexWorkDir       string
-	CodexModel         string
-	CodexSandbox       string
-	CodexRunnerTimeout time.Duration
+	AgentRunner           string
+	CodexBin              string
+	CodexWorkDir          string
+	CodexModel            string
+	CodexSandbox          string
+	CodexDisabledFeatures []string
+	CodexRunnerTimeout    time.Duration
 
 	WeComEnabled       bool
 	WeComCorpID        string
@@ -64,11 +66,16 @@ func LoadConfig() (Config, error) {
 
 		MetricsAddr: envOrDefault("METRICS_ADDR", ":9090"),
 
-		AgentRunner:        os.Getenv("AGENT_RUNNER"),
-		CodexBin:           envOrDefault("CODEX_BIN", "codex"),
-		CodexWorkDir:       envOrDefault("CODEX_WORKDIR", "."),
-		CodexModel:         os.Getenv("CODEX_MODEL"),
-		CodexSandbox:       envOrDefault("CODEX_SANDBOX", "workspace-write"),
+		AgentRunner:  os.Getenv("AGENT_RUNNER"),
+		CodexBin:     envOrDefault("CODEX_BIN", "codex"),
+		CodexWorkDir: envOrDefault("CODEX_WORKDIR", "."),
+		CodexModel:   os.Getenv("CODEX_MODEL"),
+		CodexSandbox: envOrDefault("CODEX_SANDBOX", "workspace-write"),
+		CodexDisabledFeatures: parseCSVEnv("CODEX_DISABLED_FEATURES", []string{
+			"apps",
+			"tool_suggest",
+			"plugins",
+		}),
 		CodexRunnerTimeout: timeout,
 
 		WeComEnabled:       parseBoolEnv("WECOM_ENABLED"),
@@ -98,6 +105,25 @@ func envOrDefault(key, def string) string {
 func parseBoolEnv(key string) bool {
 	v, err := strconv.ParseBool(os.Getenv(key))
 	return err == nil && v
+}
+
+func parseCSVEnv(key string, def []string) []string {
+	raw, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return append([]string(nil), def...)
+	}
+	if strings.EqualFold(strings.TrimSpace(raw), "none") {
+		return []string{}
+	}
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
 }
 
 func parseIntEnv(key string, def int) (int, error) {

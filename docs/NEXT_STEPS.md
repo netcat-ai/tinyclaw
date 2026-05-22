@@ -8,6 +8,7 @@
 - 当前最小闭环是 `registered room -> message -> agent session run -> delivery -> ack`。
 - `AGENT_RUNNER=codex` 已可用；2026-05-20 已用 MobileClaw 真机跑通企业微信发送链路。
 - Codex runner 复用同一 Agent Session 的 Codex CLI thread，continuation id 保存在 `agent_sessions.codex_session_id`。
+- 生产 Codex runner 默认关闭 `apps,tool_suggest,plugins` 三个 Codex CLI feature；当前 K8s 部署用 `hostAliases` 修正 `api.openai.com` 与 `chatgpt.com` 的集群 DNS 污染。
 - Room Memory 第一条纵切已接入：Codex run 可获得 run-bound Memory Search capability，Agent Run Result 可携带 Memory Write Proposals，后台 worker 异步应用 Memory Write Jobs。
 
 ## 当前优先级

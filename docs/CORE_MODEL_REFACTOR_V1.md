@@ -287,6 +287,8 @@ Agent run 由 clawman 进程内 execution loop 启动，不设计外部 claim AP
 
 Fresh run 使用 `--output-schema` 约束 Agent Run Result。`codex exec resume` 当前不支持 `--output-schema`，因此 runner prompt 必须自描述 Agent Run Result JSON 形状。
 
+Headless runner 默认通过 `CODEX_DISABLED_FEATURES=apps,tool_suggest,plugins` 关闭 Codex CLI 的交互式 app/plugin 发现路径，避免生产 pod 在不需要这些能力时阻塞在外部 connector 刷新上。当前 K8s 部署还通过 `hostAliases` 固定 `api.openai.com` 与 `chatgpt.com`，因为现有集群 DNS 会把这两个域名解析到错误 IP。
+
 Agent Run Result 包含：
 
 - user-visible final output
