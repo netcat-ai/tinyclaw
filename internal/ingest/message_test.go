@@ -56,6 +56,15 @@ func TestMessageIngestorSuppressesAgentTriggerAndHandlesDrawCommand(t *testing.T
 	if !store.input.SuppressAgentTrigger {
 		t.Fatal("SuppressAgentTrigger = false, want true")
 	}
+	var payload struct {
+		CommandKind string `json:"command_kind"`
+	}
+	if err := json.Unmarshal(store.input.Payload, &payload); err != nil {
+		t.Fatalf("decode stored payload: %v", err)
+	}
+	if payload.CommandKind != "draw" {
+		t.Fatalf("command kind = %q, want draw", payload.CommandKind)
+	}
 	if result.Triggered {
 		t.Fatal("Triggered = true, want false")
 	}

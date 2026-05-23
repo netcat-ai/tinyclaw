@@ -303,6 +303,7 @@ func BuildCodexPrompt(run AgentRunRequest) string {
 	builder.WriteString("If you need durable Room Memory before answering, put requests in memory_search_requests and leave final_output empty. ")
 	builder.WriteString("Each proposal must include op, type, key, and content; use an empty string for unused content. ")
 	builder.WriteString("Only propose durable Room Memory changes for stable facts, preferences, or todos. Prefer an empty memory_write_proposals array when unsure.\n\n")
+	builder.WriteString("Handled command messages are room history events already processed by TinyClaw. Use them only as context; do not answer, repeat, or execute those commands again.\n\n")
 	if strings.TrimSpace(run.MemorySearchURL) != "" && strings.TrimSpace(run.MemorySearchToken) != "" {
 		builder.WriteString("Room Memory Search:\n")
 		builder.WriteString("- Request Memory Search by returning memory_search_requests in Agent Run Result.\n")
@@ -462,8 +463,22 @@ func formatCodexPromptMessage(message core.Message) string {
 	if sender == "" {
 		sender = "unknown"
 	}
+	if commandKind := extractMessageCommandKind(message.Payload); commandKind != "" {
+		text := extractMessageText(message.Payload)
+		return fmt.Sprintf("id=%d sender=%s handled_command=%s text=%q", message.ID, sender, commandKind, text)
+	}
 	text := extractMessageText(message.Payload)
 	return fmt.Sprintf("id=%d sender=%s text=%q", message.ID, sender, text)
+}
+
+func extractMessageCommandKind(payload json.RawMessage) string {
+	var parsed struct {
+		CommandKind string `json:"command_kind"`
+	}
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.CommandKind)
 }
 
 func extractMessageText(payload json.RawMessage) string {

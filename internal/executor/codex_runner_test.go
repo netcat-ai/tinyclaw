@@ -50,6 +50,26 @@ func TestBuildCodexPromptIncludesContextMessages(t *testing.T) {
 	}
 }
 
+func TestBuildCodexPromptMarksHandledCommandMessages(t *testing.T) {
+	prompt := BuildCodexPrompt(AgentRunRequest{
+		AgentRun: testAgentRun,
+		ContextMessages: []core.Message{
+			{ID: 1, SenderName: "Alice", Payload: []byte(`{"type":"text","text":"/draw 一朵花","command_kind":"draw"}`)},
+			{ID: 2, SenderID: "bob", Payload: []byte(`{"type":"text","text":"@agent 后续问题"}`)},
+		},
+	})
+
+	for _, want := range []string{
+		"Handled command messages are room history events already processed by TinyClaw.",
+		"id=1 sender=Alice handled_command=draw text=\"/draw 一朵花\"",
+		"id=2 sender=bob text=\"@agent 后续问题\"",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestCodexRunnerUsesOutputLastMessage(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "codex")
