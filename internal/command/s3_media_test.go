@@ -3,6 +3,8 @@ package command
 import (
 	"testing"
 	"time"
+
+	"github.com/minio/minio-go/v7"
 )
 
 func TestGeneratedMediaObjectKeyUsesDateAndMediaID(t *testing.T) {
@@ -30,5 +32,27 @@ func TestParseS3Endpoint(t *testing.T) {
 		if gotEndpoint != test.endpoint || gotSecure != test.secure {
 			t.Fatalf("parseS3Endpoint(%q) = %q,%v want %q,%v", test.raw, gotEndpoint, gotSecure, test.endpoint, test.secure)
 		}
+	}
+}
+
+func TestS3ClientOptionsUseVirtualHostedStyleByDefault(t *testing.T) {
+	options := newS3ClientOptions(S3MediaStoreConfig{
+		AccessKeyID:     "id",
+		SecretAccessKey: "secret",
+		Region:          "ap-guangzhou",
+	}, true)
+	if options.BucketLookup != minio.BucketLookupDNS {
+		t.Fatalf("bucket lookup = %v, want DNS", options.BucketLookup)
+	}
+}
+
+func TestS3ClientOptionsCanForcePathStyle(t *testing.T) {
+	options := newS3ClientOptions(S3MediaStoreConfig{
+		AccessKeyID:     "id",
+		SecretAccessKey: "secret",
+		ForcePathStyle:  true,
+	}, true)
+	if options.BucketLookup != minio.BucketLookupPath {
+		t.Fatalf("bucket lookup = %v, want path", options.BucketLookup)
 	}
 }

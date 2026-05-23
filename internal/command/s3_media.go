@@ -43,14 +43,7 @@ func NewS3MediaStore(config S3MediaStoreConfig) (*S3MediaStore, error) {
 	if strings.TrimSpace(config.SecretAccessKey) == "" {
 		return nil, fmt.Errorf("generated media s3 secret access key is required")
 	}
-	options := &minio.Options{
-		Creds:  credentials.NewStaticV4(config.AccessKeyID, config.SecretAccessKey, ""),
-		Secure: secure,
-		Region: strings.TrimSpace(config.Region),
-	}
-	if config.ForcePathStyle {
-		options.BucketLookup = minio.BucketLookupPath
-	}
+	options := newS3ClientOptions(config, secure)
 	client, err := minio.New(endpoint, options)
 	if err != nil {
 		return nil, fmt.Errorf("create s3 client: %w", err)
@@ -60,6 +53,20 @@ func NewS3MediaStore(config S3MediaStoreConfig) (*S3MediaStore, error) {
 		ttl = defaultMediaURLTTL
 	}
 	return &S3MediaStore{client: client, bucket: bucket, ttl: ttl}, nil
+}
+
+func newS3ClientOptions(config S3MediaStoreConfig, secure bool) *minio.Options {
+	options := &minio.Options{
+		Creds:  credentials.NewStaticV4(config.AccessKeyID, config.SecretAccessKey, ""),
+		Secure: secure,
+		Region: strings.TrimSpace(config.Region),
+	}
+	if config.ForcePathStyle {
+		options.BucketLookup = minio.BucketLookupPath
+	} else {
+		options.BucketLookup = minio.BucketLookupDNS
+	}
+	return options
 }
 
 func (s *S3MediaStore) StoreGeneratedMedia(ctx context.Context, input StoreMediaInput) (StoredMedia, error) {
