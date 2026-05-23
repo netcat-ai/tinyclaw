@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"tinyclaw/internal/command"
 	"tinyclaw/internal/core"
+	"tinyclaw/internal/ingest"
 )
 
 type CoreStore interface {
@@ -27,9 +27,13 @@ type CommandHandler interface {
 	HandleMessage(ctx context.Context, message core.Message) bool
 }
 
+type MessageIngestor interface {
+	IngestMessage(ctx context.Context, input core.CreateMessageInput) (core.CreateMessageResult, error)
+}
+
 type Server struct {
 	core     CoreStore
-	commands CommandHandler
+	messages MessageIngestor
 	apiToken string
 	mux      *http.ServeMux
 }
@@ -41,7 +45,7 @@ func NewServer(core CoreStore, apiToken string) *Server {
 func NewServerWithCommandHandler(core CoreStore, commands CommandHandler, apiToken string) *Server {
 	server := &Server{
 		core:     core,
-		commands: commands,
+		messages: ingest.NewMessageIngestor(core, commands),
 		apiToken: strings.TrimSpace(apiToken),
 		mux:      http.NewServeMux(),
 	}
@@ -178,10 +182,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	if command.IsDrawPayload(input.Payload) {
-		input.SuppressAgentTrigger = true
-	}
-	result, err := s.core.CreateMessage(r.Context(), input)
+	result, err := s.messages.IngestMessage(r.Context(), input)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			writeAPIError(w, http.StatusNotFound, "room_not_found", err.Error())
@@ -189,9 +190,6 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
-	}
-	if !result.Duplicate && s.commands != nil {
-		s.commands.HandleMessage(context.Background(), result.Message)
 	}
 	writeAPIJSON(w, http.StatusOK, createMessageResponse{
 		Message:   messageToResponse(result.Message),

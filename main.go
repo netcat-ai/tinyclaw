@@ -17,6 +17,7 @@ import (
 	httpapi "tinyclaw/internal/api"
 	"tinyclaw/internal/command"
 	"tinyclaw/internal/executor"
+	"tinyclaw/internal/ingest"
 	"tinyclaw/internal/storage"
 )
 
@@ -54,6 +55,7 @@ func main() {
 	agentScheduler.SetMemorySearchURL(memorySearchEndpoint(cfg.ControlAPIAddr))
 	memoryWriteWorker := executor.NewMemoryWriteWorker(runCtx, coreStore)
 	commandHandler := buildCommandHandler(cfg, coreStore)
+	messageIngestor := ingest.NewMessageIngestor(coreStore, commandHandler)
 	coreAPI := httpapi.NewServerWithCommandHandler(coreStore, commandHandler, cfg.ClawmanAPIToken)
 
 	// Start metrics server
@@ -62,7 +64,7 @@ func main() {
 	go serveMetrics(runCtx, cfg.MetricsAddr)
 	go serveCoreAPI(runCtx, cfg.ControlAPIAddr, coreAPI)
 	if cfg.WeComEnabled {
-		go serveWeComArchiveAdapter(runCtx, store, coreStore, cfg)
+		go serveWeComArchiveAdapter(runCtx, store, coreStore, messageIngestor, cfg)
 	}
 
 	<-runCtx.Done()
@@ -131,7 +133,7 @@ func memorySearchEndpoint(addr string) string {
 	return "http://" + net.JoinHostPort(host, port) + "/internal/memory/search"
 }
 
-func serveWeComArchiveAdapter(ctx context.Context, store *Store, coreStore *storage.CoreStore, cfg Config) {
+func serveWeComArchiveAdapter(ctx context.Context, store *Store, coreStore *storage.CoreStore, messageIngestor *ingest.MessageIngestor, cfg Config) {
 	adapter := wecom.NewArchiveAdapter(store.DB(), coreStore, wecom.ArchiveConfig{
 		CorpID:        cfg.WeComCorpID,
 		CorpSecret:    cfg.WeComCorpSecret,
@@ -145,6 +147,7 @@ func serveWeComArchiveAdapter(ctx context.Context, store *Store, coreStore *stor
 		SDKTimeout:    cfg.WeComSDKTimeout,
 		StartSeq:      cfg.WeComStartSeq,
 	})
+	adapter.SetMessageIngestor(messageIngestor)
 	if err := adapter.Run(ctx); err != nil {
 		slog.Error("wecom archive adapter stopped", "err", err)
 	}

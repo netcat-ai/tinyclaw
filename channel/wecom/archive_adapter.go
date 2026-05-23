@@ -37,12 +37,25 @@ type InboundStore interface {
 	CreateMessage(ctx context.Context, input core.CreateMessageInput) (core.CreateMessageResult, error)
 }
 
+type MessageIngestor interface {
+	IngestMessage(ctx context.Context, input core.CreateMessageInput) (core.CreateMessageResult, error)
+}
+
 type ArchiveAdapter struct {
 	db            *sql.DB
 	store         InboundStore
+	messages      MessageIngestor
 	cfg           ArchiveConfig
 	archiveClient *Client
 	contactClient *Client
+}
+
+type directMessageIngestor struct {
+	store InboundStore
+}
+
+func (i directMessageIngestor) IngestMessage(ctx context.Context, input core.CreateMessageInput) (core.CreateMessageResult, error) {
+	return i.store.CreateMessage(ctx, input)
 }
 
 type archiveMessage struct {
@@ -67,10 +80,15 @@ func NewArchiveAdapter(db *sql.DB, store InboundStore, cfg ArchiveConfig) *Archi
 	return &ArchiveAdapter{
 		db:            db,
 		store:         store,
+		messages:      directMessageIngestor{store: store},
 		cfg:           cfg,
 		archiveClient: NewClient(cfg.CorpID, cfg.CorpSecret),
 		contactClient: NewClient(cfg.CorpID, contactSecret),
 	}
+}
+
+func (a *ArchiveAdapter) SetMessageIngestor(messages MessageIngestor) {
+	a.messages = messages
 }
 
 func (c ArchiveConfig) withDefaults() ArchiveConfig {
@@ -169,18 +187,23 @@ func (a *ArchiveAdapter) ingestChatData(ctx context.Context, sdk *finance.SDK, i
 	if err := json.Unmarshal(plain, &msg); err != nil {
 		return fmt.Errorf("decode wecom message seq %d: %w", item.Seq, err)
 	}
+	return a.ingestArchiveMessage(ctx, item.Seq, msg, plain)
+}
+
+func (a *ArchiveAdapter) ingestArchiveMessage(ctx context.Context, seq int64, msg archiveMessage, plain json.RawMessage) error {
 	roomInput, ok := a.toRegisterRoomInput(ctx, msg)
 	if !ok {
-		slog.Warn("skip wecom message because room profile is unresolved", "seq", item.Seq, "msgid", msg.MsgID)
+		slog.Warn("skip wecom message because room profile is unresolved", "seq", seq, "msgid", msg.MsgID)
 		return nil
 	}
 	roomResult, err := a.store.RegisterRoom(ctx, roomInput)
 	if err != nil {
-		return fmt.Errorf("register wecom room seq %d: %w", item.Seq, err)
+		return fmt.Errorf("register wecom room seq %d: %w", seq, err)
 	}
-	messageInput := a.toCreateMessageInput(ctx, item.Seq, msg, plain, roomResult.Room.ID)
-	if _, err := a.store.CreateMessage(ctx, messageInput); err != nil {
-		return fmt.Errorf("create wecom message seq %d: %w", item.Seq, err)
+	messageInput := a.toCreateMessageInput(ctx, seq, msg, plain, roomResult.Room.ID)
+	_, err = a.messages.IngestMessage(ctx, messageInput)
+	if err != nil {
+		return fmt.Errorf("create wecom message seq %d: %w", seq, err)
 	}
 	return nil
 }
