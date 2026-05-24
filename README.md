@@ -125,6 +125,7 @@ Mobile delivery uses `rooms.outbound_alias` as `recipient_alias`, falling back t
 
 ## Design Docs
 
+- [QA](./docs/QA.md)
 - [Core Model Refactor V1](./docs/CORE_MODEL_REFACTOR_V1.md)
 - [Next Steps](./docs/NEXT_STEPS.md)
 - [Append-Only Room Messages ADR](./docs/adr/0001-append-only-room-messages.md)
