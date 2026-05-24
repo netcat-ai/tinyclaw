@@ -111,58 +111,47 @@ func (r *CodexRunner) runCodexExec(ctx context.Context, run AgentRunRequest) (co
 
 	cmdErr := cmd.Run()
 	combinedText := combined.String()
+	events := summarizeCodexEvents(combinedText)
 	if cmdErr != nil {
 		detail := strings.TrimSpace(combinedText)
 		if detail == "" {
 			detail = cmdErr.Error()
 		}
-		if codexSessionID != "" && isCodexResumeStale(detail) {
-			run.AgentRun.CodexSessionID = ""
-			return r.runCodexExec(ctx, run)
+		if events.TurnFailure != "" {
+			return r.failCodexExec(ctx, run, codexSessionID, events.TurnFailure)
 		}
-		turnErr := codexTurnFailureFromEvents(combinedText)
-		if turnErr != "" {
-			if codexSessionID != "" && isCodexResumeStale(turnErr) {
-				run.AgentRun.CodexSessionID = ""
-				return r.runCodexExec(ctx, run)
-			}
-			return core.AgentRunResult{}, fmt.Errorf("codex exec failed: %s", turnErr)
+		result, source, parseErr := readCodexRunResult(outputPath, events, combinedText, false)
+		if parseErr == nil && source != "" && hasAgentRunResultContent(result) && (source == codexResultSourceOutputFile || events.TurnCompleted) {
+			return attachCodexSessionID(result, events, codexSessionID), nil
 		}
-		result, source, parseErr := readCodexRunResult(outputPath, combinedText, false)
-		if parseErr == nil && source != "" && hasAgentRunResultContent(result) && (source == codexResultSourceOutputFile || codexTurnCompleted(combinedText)) {
-			return attachCodexSessionID(result, combinedText, codexSessionID), nil
+		if events.LastError != "" {
+			return r.failCodexExec(ctx, run, codexSessionID, events.LastError)
 		}
-		eventErr := codexErrorFromEvents(combinedText)
-		if eventErr != "" {
-			if codexSessionID != "" && isCodexResumeStale(eventErr) {
-				run.AgentRun.CodexSessionID = ""
-				return r.runCodexExec(ctx, run)
-			}
-			return core.AgentRunResult{}, fmt.Errorf("codex exec failed: %s", eventErr)
-		}
-		return core.AgentRunResult{}, fmt.Errorf("codex exec failed: %s", detail)
+		return r.failCodexExec(ctx, run, codexSessionID, detail)
 	}
-	turnErr := codexTurnFailureFromEvents(combinedText)
-	if turnErr != "" {
-		if codexSessionID != "" && isCodexResumeStale(turnErr) {
-			run.AgentRun.CodexSessionID = ""
-			return r.runCodexExec(ctx, run)
-		}
-		return core.AgentRunResult{}, fmt.Errorf("codex exec failed: %s", turnErr)
+	if events.TurnFailure != "" {
+		return r.failCodexExec(ctx, run, codexSessionID, events.TurnFailure)
 	}
-	result, _, err := readCodexRunResult(outputPath, combinedText, true)
+	result, _, err := readCodexRunResult(outputPath, events, combinedText, true)
 	if err != nil {
-		eventErr := codexErrorFromEvents(combinedText)
-		if eventErr != "" {
-			if codexSessionID != "" && isCodexResumeStale(eventErr) {
-				run.AgentRun.CodexSessionID = ""
-				return r.runCodexExec(ctx, run)
-			}
-			return core.AgentRunResult{}, fmt.Errorf("codex exec failed: %s", eventErr)
+		if events.LastError != "" {
+			return r.failCodexExec(ctx, run, codexSessionID, events.LastError)
 		}
 		return core.AgentRunResult{}, err
 	}
-	return attachCodexSessionID(result, combinedText, codexSessionID), nil
+	return attachCodexSessionID(result, events, codexSessionID), nil
+}
+
+func (r *CodexRunner) failCodexExec(ctx context.Context, run AgentRunRequest, codexSessionID string, detail string) (core.AgentRunResult, error) {
+	if strings.TrimSpace(codexSessionID) != "" && isCodexResumeStale(detail) {
+		run.AgentRun.CodexSessionID = ""
+		return r.runCodexExec(ctx, run)
+	}
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		detail = "unknown error"
+	}
+	return core.AgentRunResult{}, fmt.Errorf("codex exec failed: %s", detail)
 }
 
 const (
@@ -171,7 +160,7 @@ const (
 	codexResultSourceRawEventFallback = "raw_events"
 )
 
-func readCodexRunResult(outputPath string, eventOutput string, allowRawEventFallback bool) (core.AgentRunResult, string, error) {
+func readCodexRunResult(outputPath string, events codexEventSummary, eventOutput string, allowRawEventFallback bool) (core.AgentRunResult, string, error) {
 	data, err := os.ReadFile(outputPath)
 	if err != nil {
 		return core.AgentRunResult{}, "", fmt.Errorf("read codex output: %w", err)
@@ -180,12 +169,12 @@ func readCodexRunResult(outputPath string, eventOutput string, allowRawEventFall
 	source := codexResultSourceOutputFile
 	if text == "" {
 		source = ""
-		text = codexAgentMessageFromEvents(eventOutput)
+		text = events.LastAgentMessage
 		if text != "" {
 			source = codexResultSourceAgentMessage
 		}
 	}
-	if text == "" && allowRawEventFallback && !codexHasJSONEvents(eventOutput) {
+	if text == "" && allowRawEventFallback && !events.HasEvents {
 		text = strings.TrimSpace(eventOutput)
 		if text != "" {
 			source = codexResultSourceRawEventFallback
@@ -201,8 +190,8 @@ func readCodexRunResult(outputPath string, eventOutput string, allowRawEventFall
 	return result, source, nil
 }
 
-func attachCodexSessionID(result core.AgentRunResult, eventOutput string, fallback string) core.AgentRunResult {
-	result.CodexSessionID = codexSessionIDFromEvents(eventOutput)
+func attachCodexSessionID(result core.AgentRunResult, events codexEventSummary, fallback string) core.AgentRunResult {
+	result.CodexSessionID = events.ThreadID
 	if result.CodexSessionID == "" {
 		result.CodexSessionID = fallback
 	}
@@ -243,8 +232,19 @@ func (r *CodexRunner) codexExecArgs(schemaPath string, outputPath string, codexS
 	return append(args, "--output-schema", schemaPath, "-")
 }
 
-func codexSessionIDFromEvents(output string) string {
+type codexEventSummary struct {
+	ThreadID         string
+	LastAgentMessage string
+	LastError        string
+	TurnFailure      string
+	HasEvents        bool
+	TurnCompleted    bool
+}
+
+func summarizeCodexEvents(output string) codexEventSummary {
+	var summary codexEventSummary
 	scanner := bufio.NewScanner(strings.NewReader(output))
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if !strings.HasPrefix(line, "{") {
@@ -253,47 +253,10 @@ func codexSessionIDFromEvents(output string) string {
 		var event struct {
 			Type     string `json:"type"`
 			ThreadID string `json:"thread_id"`
-		}
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			continue
-		}
-		if event.Type == "thread.started" && strings.TrimSpace(event.ThreadID) != "" {
-			return strings.TrimSpace(event.ThreadID)
-		}
-	}
-	return ""
-}
-
-func codexHasJSONEvents(output string) bool {
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "{") {
-			continue
-		}
-		var event struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			continue
-		}
-		if strings.TrimSpace(event.Type) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func codexAgentMessageFromEvents(output string) string {
-	var last string
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "{") {
-			continue
-		}
-		var event struct {
-			Type string `json:"type"`
+			Message  string `json:"message"`
+			Error    struct {
+				Message string `json:"message"`
+			} `json:"error"`
 			Item struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
@@ -302,96 +265,41 @@ func codexAgentMessageFromEvents(output string) string {
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			continue
 		}
-		if event.Type != "item.completed" || event.Item.Type != "agent_message" {
+		if strings.TrimSpace(event.Type) == "" {
 			continue
 		}
-		if text := strings.TrimSpace(event.Item.Text); text != "" {
-			last = text
+		summary.HasEvents = true
+		switch event.Type {
+		case "thread.started":
+			if strings.TrimSpace(event.ThreadID) != "" {
+				summary.ThreadID = strings.TrimSpace(event.ThreadID)
+			}
+		case "item.completed":
+			if event.Item.Type == "agent_message" {
+				if text := strings.TrimSpace(event.Item.Text); text != "" {
+					summary.LastAgentMessage = text
+				}
+			}
+		case "turn.completed":
+			summary.TurnCompleted = true
+		case "turn.failed":
+			summary.TurnFailure = codexEventMessage(event.Message, event.Error.Message, event.Type)
+			summary.LastError = summary.TurnFailure
+		case "error":
+			summary.LastError = codexEventMessage(event.Message, event.Error.Message, event.Type)
 		}
 	}
-	return last
+	return summary
 }
 
-func codexTurnCompleted(output string) bool {
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "{") {
-			continue
-		}
-		var event struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			continue
-		}
-		if event.Type == "turn.completed" {
-			return true
-		}
+func codexEventMessage(message string, errorMessage string, fallback string) string {
+	if strings.TrimSpace(message) != "" {
+		return strings.TrimSpace(message)
 	}
-	return false
-}
-
-func codexTurnFailureFromEvents(output string) string {
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "{") {
-			continue
-		}
-		var event struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-			Error   struct {
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			continue
-		}
-		if event.Type != "turn.failed" {
-			continue
-		}
-		if strings.TrimSpace(event.Message) != "" {
-			return strings.TrimSpace(event.Message)
-		}
-		if strings.TrimSpace(event.Error.Message) != "" {
-			return strings.TrimSpace(event.Error.Message)
-		}
-		return event.Type
+	if strings.TrimSpace(errorMessage) != "" {
+		return strings.TrimSpace(errorMessage)
 	}
-	return ""
-}
-
-func codexErrorFromEvents(output string) string {
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "{") {
-			continue
-		}
-		var event struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-			Error   struct {
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			continue
-		}
-		if event.Type != "error" && event.Type != "turn.failed" {
-			continue
-		}
-		if strings.TrimSpace(event.Message) != "" {
-			return strings.TrimSpace(event.Message)
-		}
-		if strings.TrimSpace(event.Error.Message) != "" {
-			return strings.TrimSpace(event.Error.Message)
-		}
-		return event.Type
-	}
-	return ""
+	return fallback
 }
 
 func isCodexResumeStale(detail string) bool {
