@@ -312,6 +312,63 @@ exit 1
 	}
 }
 
+func TestCodexRunnerAcceptsResultAfterTransientErrorEvent(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "codex")
+	script := `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
+printf '%s\n' '{"type":"turn.started"}'
+printf '%s\n' '{"type":"error","message":"Reconnecting... 1/5 (unexpected status 502 Bad Gateway)"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"final_output\":\"E2E_OK\",\"memory_write_proposals\":[],\"memory_search_requests\":[]}"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	runner := NewCodexRunner(CodexRunnerConfig{
+		Bin:     bin,
+		WorkDir: dir,
+		Timeout: 5 * time.Second,
+	})
+
+	result, err := runner.RunAgent(context.Background(), AgentRunRequest{
+		AgentRun: testAgentRun,
+	})
+	if err != nil {
+		t.Fatalf("RunAgent error: %v", err)
+	}
+	if result.FinalOutput != "E2E_OK" {
+		t.Fatalf("output = %q, want E2E_OK", result.FinalOutput)
+	}
+}
+
+func TestCodexRunnerFailsOnEmptyCodexOutput(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "codex")
+	script := `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
+printf '%s\n' '{"type":"turn.started"}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	runner := NewCodexRunner(CodexRunnerConfig{
+		Bin:     bin,
+		WorkDir: dir,
+		Timeout: 5 * time.Second,
+	})
+
+	_, err := runner.RunAgent(context.Background(), AgentRunRequest{
+		AgentRun: testAgentRun,
+	})
+	if err == nil || !strings.Contains(err.Error(), "codex output is empty") {
+		t.Fatalf("RunAgent error = %v, want empty output error", err)
+	}
+}
+
 func TestCodexRunnerRunsMemorySearchLoop(t *testing.T) {
 	dir := t.TempDir()
 	countPath := filepath.Join(dir, "count")
