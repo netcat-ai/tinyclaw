@@ -278,6 +278,40 @@ printf '%s\n' '{"type":"turn.failed","error":{"message":"bad schema"}}'
 	}
 }
 
+func TestCodexRunnerAcceptsCompletedAgentMessageWhenExitCodeIsNonZero(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "codex")
+	script := `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
+printf '%s\n' '{"type":"turn.started"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"final_output\":\"你好呀！\",\"memory_write_proposals\":[],\"memory_search_requests\":[]}"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+exit 1
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	runner := NewCodexRunner(CodexRunnerConfig{
+		Bin:     bin,
+		WorkDir: dir,
+		Timeout: 5 * time.Second,
+	})
+
+	result, err := runner.RunAgent(context.Background(), AgentRunRequest{
+		AgentRun: testAgentRun,
+	})
+	if err != nil {
+		t.Fatalf("RunAgent error: %v", err)
+	}
+	if result.FinalOutput != "你好呀！" {
+		t.Fatalf("output = %q, want 你好呀！", result.FinalOutput)
+	}
+	if result.CodexSessionID != "thread-1" {
+		t.Fatalf("codex session id = %q, want thread-1", result.CodexSessionID)
+	}
+}
+
 func TestCodexRunnerRunsMemorySearchLoop(t *testing.T) {
 	dir := t.TempDir()
 	countPath := filepath.Join(dir, "count")
