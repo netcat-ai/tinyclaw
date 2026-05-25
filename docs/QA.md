@@ -25,9 +25,9 @@ ORDER BY d.id DESC;
 
 If pending deliveries exist, TinyClaw already produced outbound work. Continue with the phone-side delivery path:
 
-- Confirm MobileClaw polling is enabled and using the expected `baseUrl`, `channel`, and `CLAWMAN_API_TOKEN`.
-- Confirm the phone can fetch `GET /api/deliveries?channel=<channel>&id=<last_id>`.
-- Check MobileClaw local pending queue and `last_seq`; a local pending item blocks new polling until it is sent or dropped.
+- Confirm MobileClaw polling is enabled and using the expected `baseUrl`, `channels`, and `CLAWMAN_API_TOKEN`.
+- Confirm the phone can fetch `GET /api/deliveries?channels=<channels>`.
+- Check MobileClaw local pending queue; a local pending item blocks new polling until it is sent, acked, or dropped.
 - Check the accessibility send flow and whether `POST /api/deliveries/{id}/ack` succeeds after sending.
 
 2. If no pending delivery exists, check whether the inbound message created or advanced an Agent Session.

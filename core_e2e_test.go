@@ -96,7 +96,7 @@ func TestCoreE2EDrawCommandCreatesCommandDeliveries(t *testing.T) {
 		t.Fatalf("duplicate draw side effects image=%d media=%d, want unchanged", image.calls, media.calls)
 	}
 
-	deliveries := listDeliveriesE2E(t, api, "wecom", 0)
+	deliveries := listDeliveriesE2E(t, api, "wecom")
 	if len(deliveries.Deliveries) != 3 {
 		t.Fatalf("deliveries len = %d, want 3", len(deliveries.Deliveries))
 	}
@@ -126,9 +126,81 @@ func TestCoreE2EDrawCommandCreatesCommandDeliveries(t *testing.T) {
 	}
 }
 
+func TestCoreE2EWechatTextAndImageDeliveries(t *testing.T) {
+	dsn := os.Getenv("CORE_E2E_DATABASE_URL")
+	if dsn == "" {
+		dsn = os.Getenv("DATABASE_URL")
+	}
+	if dsn == "" {
+		t.Skip("CORE_E2E_DATABASE_URL or DATABASE_URL is not set")
+	}
+
+	ctx := context.Background()
+	store, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if err := store.InitSchema(ctx); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	coreStore := storage.NewCoreStore(store.DB())
+	image := &drawE2EImage{}
+	media := &drawE2EMedia{}
+	handler := command.NewHandler(coreStore, image, media)
+	handler.Async = false
+	api := httpapi.NewServerWithCommandHandler(coreStore, handler, "e2e-token")
+
+	channelRoomID := fmt.Sprintf("wechat-e2e-%d@chatroom", time.Now().UnixNano())
+	roomResp := postRoomForChannelE2E(t, api, "wechat", channelRoomID, "测试群", `{"mode":"always"}`)
+	textResp := postMessageE2E(t, api, roomResp.Room.ID, "wechat-msg-1", "虾虾，你好呀")
+	if !textResp.Triggered {
+		t.Fatal("wechat text triggered = false, want true")
+	}
+
+	scheduler := executor.NewScheduler(ctx, coreStore, executor.StaticRunner{Text: "收到：你好呀"})
+	if !scheduler.RunOnce(ctx) {
+		t.Fatal("scheduler RunOnce = false, want true")
+	}
+	deliveries := listDeliveriesE2E(t, api, "wechat")
+	if len(deliveries.Deliveries) != 1 {
+		t.Fatalf("wechat deliveries len = %d, want 1", len(deliveries.Deliveries))
+	}
+	var textPayload map[string]any
+	if err := json.Unmarshal(deliveries.Deliveries[0].Payload, &textPayload); err != nil {
+		t.Fatalf("decode text delivery: %v", err)
+	}
+	if textPayload["app"] != "wechat" || textPayload["channel"] != "wechat" || textPayload["recipient_alias"] != "测试群" || textPayload["channel_room_id"] != channelRoomID {
+		t.Fatalf("text delivery route = %+v", textPayload)
+	}
+	if textPayload["type"] != "text" || textPayload["text"] != "收到：你好呀" {
+		t.Fatalf("text delivery payload = %+v", textPayload)
+	}
+	ackDeliveryE2E(t, api, deliveries.Deliveries[0].ID)
+
+	drawResp := postMessageE2E(t, api, roomResp.Room.ID, "wechat-draw-1", "/draw 一只猫")
+	if drawResp.Triggered {
+		t.Fatal("wechat draw triggered = true, want false")
+	}
+	drawDeliveries := listDeliveriesE2E(t, api, "wechat")
+	if len(drawDeliveries.Deliveries) != 3 {
+		t.Fatalf("wechat draw deliveries len = %d, want 3", len(drawDeliveries.Deliveries))
+	}
+	var imagePayload map[string]any
+	if err := json.Unmarshal(drawDeliveries.Deliveries[2].Payload, &imagePayload); err != nil {
+		t.Fatalf("decode image delivery: %v", err)
+	}
+	if imagePayload["app"] != "wechat" || imagePayload["channel"] != "wechat" || imagePayload["recipient_alias"] != "测试群" {
+		t.Fatalf("image delivery route = %+v", imagePayload)
+	}
+	if imagePayload["type"] != "image" || imagePayload["media_url_kind"] != "presigned_s3" || imagePayload["media_url"] == "" {
+		t.Fatalf("image delivery payload = %+v", imagePayload)
+	}
+}
+
 type coreE2EDeliveriesPageResponse struct {
 	Deliveries []coreE2EDeliveryResponse `json:"deliveries"`
-	NextID     int64                     `json:"next_id"`
 }
 
 func TestCoreModelE2E(t *testing.T) {
@@ -224,7 +296,7 @@ func TestCoreModelE2E(t *testing.T) {
 		t.Fatalf("runner memory content = %q, want stored preference", memoryRunner.seenContent)
 	}
 
-	deliveries := listDeliveriesE2E(t, api, "wecom", 0)
+	deliveries := listDeliveriesE2E(t, api, "wecom")
 	if len(deliveries.Deliveries) != 2 {
 		t.Fatalf("deliveries len = %d, want 2", len(deliveries.Deliveries))
 	}
@@ -348,15 +420,24 @@ func searchMemoryE2E(t *testing.T, api http.Handler, token string, query string,
 }
 
 func postRoomE2E(t *testing.T, api http.Handler, roomName string) coreE2ERoomResponse {
+	return postRoomForChannelE2E(t, api, "wecom", roomName, roomName, "")
+}
+
+func postRoomForChannelE2E(t *testing.T, api http.Handler, channel, channelRoomID, outboundAlias, triggerPolicy string) coreE2ERoomResponse {
 	t.Helper()
+	triggerPolicyField := ""
+	if strings.TrimSpace(triggerPolicy) != "" {
+		triggerPolicyField = fmt.Sprintf(`,
+		"trigger_policy":%s`, triggerPolicy)
+	}
 	body := fmt.Sprintf(`{
-		"channel":"wecom",
+		"channel":%q,
 		"channel_room_id":%q,
 		"channel_room_type":"group",
 		"display_name":%q,
 		"outbound_alias":%q,
-		"agent_enabled":true
-	}`, roomName, roomName, roomName)
+		"agent_enabled":true%s
+	}`, channel, channelRoomID, outboundAlias, outboundAlias, triggerPolicyField)
 	req := httptest.NewRequest(http.MethodPost, "/api/rooms", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer e2e-token")
 	rec := httptest.NewRecorder()
@@ -394,9 +475,9 @@ func postMessageE2E(t *testing.T, api http.Handler, roomID int64, sourceID, text
 	return payload
 }
 
-func listDeliveriesE2E(t *testing.T, api http.Handler, channel string, id int64) coreE2EDeliveriesPageResponse {
+func listDeliveriesE2E(t *testing.T, api http.Handler, channel string) coreE2EDeliveriesPageResponse {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/deliveries?channel=%s&id=%d", channel, id), nil)
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/deliveries?channels=%s", channel), nil)
 	req.Header.Set("Authorization", "Bearer e2e-token")
 	rec := httptest.NewRecorder()
 	api.ServeHTTP(rec, req)

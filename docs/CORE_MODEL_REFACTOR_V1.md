@@ -358,16 +358,16 @@ Agent run 成功或失败后都推进 `agent_sessions.last_processed_message_id`
 
 ## 7. Delivery Pull API
 
-Adapter 轮询 clawman deliveries，并自行负责真实外发和短期重试。
+Adapter 轮询 clawman pending deliveries，并自行负责真实外发和短期重试。
 
-MobileClaw 当前按该接口轮询 `deliveries`。2026-05-20 真机验证中，`wecom` channel 已完成 `delivery -> 企业微信发送 -> ack`；`wechat` channel 因目标设备微信无障碍节点树为空，暂未完成自动发送。
+MobileClaw 当前按该接口轮询 `deliveries`，可在一次请求中同时领取多个 channel 的 pending delivery。2026-05-20 真机验证中，`wecom` channel 已完成 `delivery -> 企业微信发送 -> ack`；`wechat` channel 需要在目标设备微信无障碍节点树为空时走坐标 fallback。
 
 ```http
-GET /api/deliveries?channel=wecom&id=123
+GET /api/deliveries?channels=wecom,wechat
 Authorization: Bearer <CLAWMAN_API_TOKEN>
 ```
 
-clawman 根据 `deliveries.room_id -> rooms.channel` 过滤返回。
+clawman 根据 `deliveries.room_id -> rooms.channel` 过滤返回 pending delivery；客户端不维护本地游标。
 
 成功发送后：
 
@@ -376,7 +376,7 @@ POST /api/deliveries/{id}/ack
 Authorization: Bearer <CLAWMAN_API_TOKEN>
 ```
 
-ack 后 Delivery 保留，只更新状态。
+ack 后 Delivery 保留，只更新状态，后续 pending 轮询不再返回。
 
 第一版由 adapter 负责发送失败后的短期重试；clawman 不主动重试 failed Delivery。
 

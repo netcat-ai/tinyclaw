@@ -66,6 +66,46 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+func TestHandleListDeliveriesAcceptsMultipleChannels(t *testing.T) {
+	var calls []string
+	api := NewServer(fakeCoreStore{
+		listFn: func(_ context.Context, channel string, afterID int64) ([]core.Delivery, error) {
+			calls = append(calls, channel)
+			if afterID != 0 {
+				t.Fatalf("afterID = %d, want 0", afterID)
+			}
+			switch channel {
+			case "wecom":
+				return []core.Delivery{{ID: 12, Payload: json.RawMessage(`{"channel":"wecom"}`)}}, nil
+			case "wechat":
+				return []core.Delivery{{ID: 11, Payload: json.RawMessage(`{"channel":"wechat"}`)}}, nil
+			default:
+				t.Fatalf("unexpected channel %q", channel)
+			}
+			return nil, nil
+		},
+	}, "api-secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/deliveries?channels=wecom,wechat", nil)
+	req.Header.Set("Authorization", "Bearer api-secret")
+	rec := httptest.NewRecorder()
+	api.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if strings.Join(calls, ",") != "wecom,wechat" {
+		t.Fatalf("channels = %v, want wecom,wechat", calls)
+	}
+	var payload deliveriesPageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Deliveries) != 2 || payload.Deliveries[0].ID != 11 || payload.Deliveries[1].ID != 12 {
+		t.Fatalf("deliveries = %+v, want sorted ids 11,12", payload.Deliveries)
+	}
+}
+
 func TestHandleMessagesSuppressesAgentTriggerForDrawCommand(t *testing.T) {
 	commands := &fakeCommandHandler{}
 	api := NewServerWithCommandHandler(fakeCoreStore{

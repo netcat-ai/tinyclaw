@@ -25,7 +25,7 @@
 2. 补 Channel Adapter 契约：
    - 明确 `POST /api/rooms` 的 channel identity、display name、outbound alias、agent session 配置约定。
    - 明确 `POST /api/messages` 的 room id、source message id、payload 约定。
-   - 明确 `GET /api/deliveries?channel=<channel>&id=<last_id>` 的轮询和 ack 语义。
+   - 明确 `GET /api/deliveries?channels=<channels>` 的 pending 轮询和 ack 语义。
    - 为企业微信、微信群、斗鱼直播间分别补输入 payload 示例。
 3. 补 Room Memory 验证：
    - 继续补充真实 Codex 与真实业务 channel 的端到端联调用例。

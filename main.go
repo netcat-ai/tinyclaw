@@ -16,6 +16,7 @@ import (
 	"tinyclaw/channel/wecom"
 	httpapi "tinyclaw/internal/api"
 	"tinyclaw/internal/command"
+	"tinyclaw/internal/envfile"
 	"tinyclaw/internal/executor"
 	"tinyclaw/internal/ingest"
 	"tinyclaw/internal/storage"
@@ -25,6 +26,9 @@ const dbStartupTimeout = 10 * time.Second
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if err := envfile.Load(".env"); err != nil {
+		slog.Warn("load .env failed", "err", err)
+	}
 
 	cfg, err := LoadConfig()
 	if err != nil {

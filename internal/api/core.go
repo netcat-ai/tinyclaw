@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -126,7 +127,6 @@ type coreDeliveryResponse struct {
 
 type deliveriesPageResponse struct {
 	Deliveries []coreDeliveryResponse `json:"deliveries"`
-	NextID     int64                  `json:"next_id"`
 }
 
 type memorySearchResponse struct {
@@ -207,30 +207,42 @@ func (s *Server) handleListDeliveries(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API bearer token")
 		return
 	}
-	channel := strings.TrimSpace(r.URL.Query().Get("channel"))
-	rawID := strings.TrimSpace(r.URL.Query().Get("id"))
-	if rawID == "" {
-		rawID = "0"
-	}
-	afterID, err := strconv.ParseInt(rawID, 10, 64)
-	if err != nil || afterID < 0 {
-		writeAPIError(w, http.StatusBadRequest, "invalid_request", "id must be a non-negative integer")
+	channels := parseDeliveryChannels(r.URL.Query().Get("channels"))
+	if len(channels) == 0 {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "channels is required")
 		return
 	}
-	deliveries, err := s.core.ListCoreDeliveries(r.Context(), channel, afterID)
-	if err != nil {
-		writeAPIError(w, http.StatusBadRequest, "list_failed", err.Error())
-		return
+	var deliveries []core.Delivery
+	for _, channel := range channels {
+		channelDeliveries, err := s.core.ListCoreDeliveries(r.Context(), channel, 0)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "list_failed", err.Error())
+			return
+		}
+		deliveries = append(deliveries, channelDeliveries...)
 	}
+	sort.SliceStable(deliveries, func(i, j int) bool {
+		return deliveries[i].ID < deliveries[j].ID
+	})
 	response := make([]coreDeliveryResponse, 0, len(deliveries))
-	nextID := afterID
 	for _, delivery := range deliveries {
 		response = append(response, deliveryToResponse(delivery))
-		if delivery.ID > nextID {
-			nextID = delivery.ID
-		}
 	}
-	writeAPIJSON(w, http.StatusOK, deliveriesPageResponse{Deliveries: response, NextID: nextID})
+	writeAPIJSON(w, http.StatusOK, deliveriesPageResponse{Deliveries: response})
+}
+
+func parseDeliveryChannels(value string) []string {
+	seen := map[string]bool{}
+	var channels []string
+	for _, part := range strings.Split(value, ",") {
+		channel := strings.TrimSpace(part)
+		if channel == "" || seen[channel] {
+			continue
+		}
+		seen[channel] = true
+		channels = append(channels, channel)
+	}
+	return channels
 }
 
 func (s *Server) handleDeliveryAction(w http.ResponseWriter, r *http.Request) {
