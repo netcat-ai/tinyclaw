@@ -42,6 +42,7 @@ Kubernetes deployment pins `api.openai.com` and `chatgpt.com` through `hostAlias
 `POST /api/inbound` has been removed; adapters must register a Room first, then submit Messages with `room_id`.
 
 API requests use `Authorization: Bearer $CLAWMAN_API_TOKEN`.
+Admin API requests use HTTP Basic auth with `client_id=admin` and `client_secret=$CLAWMAN_ADMIN_SECRET`.
 
 ## Package Layout
 
@@ -86,6 +87,7 @@ Main service:
 
 - `DATABASE_URL`
 - `CLAWMAN_API_TOKEN`
+- `CLAWMAN_ADMIN_SECRET`: creates the default `admin` API client when set.
 - `CONTROL_API_ADDR` default `:8081`
 - `METRICS_ADDR` default `:9090`
 
@@ -110,22 +112,23 @@ Local WeChat adapter:
 
 - Run with `go run ./cmd/wechat-adapter`.
 - It is a local-only process because it depends on the local `wx` CLI and local WeChat data.
-- By default it tries `wx history <chat> --json` for the target test group, then falls back to filtered `wx new-messages --json`.
-- Set `WECHAT_READ_MODE=history` to require history-only reads, or `WECHAT_READ_MODE=new-messages` only when the global cursor semantics are acceptable.
+- By default it tries `wx history <chat> --json`, then falls back to filtered `wx new-messages --json`.
+- Set `WECHAT_READ_MODE=new-messages` to let wx-cli provide the local "new message" feed.
 - Do not deploy it inside the Clawman service or container.
 - It does not send WeChat messages directly; MobileClaw should poll `GET /api/deliveries?channels=wecom,wechat` and send/ack on the phone.
 - Incoming WeChat image messages are currently ingested as image metadata (`type=image`, `text=[图片]`, `wechat_local_id`) because `wx` exposes `local_id` but not the image file path through `history` or `new-messages`.
 - `CLAWMAN_API_TOKEN`: required, same bearer token used by Clawman.
 - `CLAWMAN_BASE_URL`: defaults to `http://127.0.0.1:8081`.
 - `WECHAT_WX_BIN`: defaults to `wx`.
-- `WECHAT_GROUP_ID`: target test group channel id, defaults to `50261801724@chatroom`.
-- `WECHAT_GROUP_NAME`: outbound alias/display name, defaults to `测试群`.
+- `WECHAT_TARGET_CHATS`: comma-separated allowed WeChat room ids or names. Defaults to empty. Prefer stable ids such as `wxid_...` or `...@chatroom`; display names can collide between WeChat and OpenIM/WeCom contacts.
+- `WECHAT_TARGET_MEMBERS`: comma-separated WeChat member ids such as `wxid_...`. A direct chat with that id is ingested; a group chat is ingested when `wx members <group> --json` contains that id. Group membership checks are cached in memory for the adapter process.
+- `WECHAT_GROUP_ID`: fallback chat room id for `history` mode and legacy tests, defaults to `50261801724@chatroom`.
+- `WECHAT_GROUP_NAME`: fallback chat display name for `history` mode and legacy tests, defaults to `测试群`.
 - `WECHAT_HISTORY_CHAT`: optional chat lookup override for `wx history`.
 - `WECHAT_READ_MODE`: defaults to `auto`; optional `history` or `new-messages`.
 - `WECHAT_TRIGGER_POLICY`: defaults to `{"mode":"always"}` for test-group validation.
 - `WECHAT_POLL_INTERVAL`: defaults to `3s`.
 - `WECHAT_POLL_LIMIT`: defaults to `200`.
-- `WECHAT_CURSOR_PATH`: defaults to `~/.tinyclaw/wechat-adapter-cursor.json`.
 - `WECHAT_ONCE`: set to `true` to register the Room, run one poll, submit matching Messages, and exit.
 - `WECHAT_SELF_SENDERS`: comma-separated sender display names to persist as skipped self messages, defaults to `私云虾虾`.
 
@@ -136,6 +139,8 @@ export CLAWMAN_API_TOKEN=...
 export CLAWMAN_BASE_URL=http://127.0.0.1:8081
 export WECHAT_GROUP_ID=50261801724@chatroom
 export WECHAT_GROUP_NAME=测试群
+export WECHAT_TARGET_CHATS=50261801724@chatroom
+export WECHAT_TARGET_MEMBERS=
 WECHAT_ONCE=true go run ./cmd/wechat-adapter
 curl -H "Authorization: Bearer $CLAWMAN_API_TOKEN" \
   "$CLAWMAN_BASE_URL/api/deliveries?channels=wechat"

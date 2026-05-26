@@ -6,14 +6,12 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,6 +28,7 @@ const (
 	defaultPollInterval   = 3 * time.Second
 	defaultPollLimit      = 200
 	defaultReadMode       = "auto"
+	defaultTargetChats    = ""
 )
 
 type config struct {
@@ -42,10 +41,11 @@ type config struct {
 	PollInterval   time.Duration
 	PollLimit      int
 	ReadMode       string
-	CursorPath     string
 	TriggerPolicy  json.RawMessage
 	Once           bool
 	SelfSenders    map[string]bool
+	TargetChats    map[string]bool
+	TargetMembers  map[string]bool
 }
 
 type wxMessage struct {
@@ -61,23 +61,28 @@ type wxMessage struct {
 	Username  string `json:"username"`
 }
 
+type wxMember struct {
+	Display  string `json:"display"`
+	Username string `json:"username"`
+}
+
 type roomResponse struct {
 	Room struct {
 		ID int64 `json:"id"`
 	} `json:"room"`
 }
 
-type adapter struct {
-	cfg    config
-	client *http.Client
-	roomID int64
-	cursor cursor
+type messageRoomIdentity struct {
+	ChannelRoomID   string
+	ChannelRoomType string
+	DisplayName     string
 }
 
-type cursor struct {
-	MaxTimestamp int64           `json:"max_timestamp"`
-	SeenAtMax    map[string]bool `json:"seen_at_max,omitempty"`
-	MaxLocalID   int64           `json:"max_local_id,omitempty"`
+type adapter struct {
+	cfg              config
+	client           *http.Client
+	roomIDs          map[string]int64
+	targetGroupCache map[string]bool
 }
 
 func main() {
@@ -96,16 +101,19 @@ func run(ctx context.Context) error {
 		return err
 	}
 	a := &adapter{
-		cfg:    cfg,
-		client: &http.Client{Timeout: 15 * time.Second},
+		cfg:              cfg,
+		client:           &http.Client{Timeout: 15 * time.Second},
+		roomIDs:          map[string]int64{},
+		targetGroupCache: map[string]bool{},
 	}
-	if a.cursor, err = loadCursor(cfg.CursorPath); err != nil {
-		return err
-	}
-	if err := a.registerRoom(ctx); err != nil {
-		return err
-	}
-	slog.Info("wechat adapter starting", "group_id", cfg.GroupID, "group_name", cfg.GroupName, "interval", cfg.PollInterval)
+	slog.Info(
+		"wechat adapter starting",
+		"group_id", cfg.GroupID,
+		"group_name", cfg.GroupName,
+		"interval", cfg.PollInterval,
+		"target_chats", mapKeys(cfg.TargetChats),
+		"target_members", mapKeys(cfg.TargetMembers),
+	)
 	if cfg.Once {
 		return a.pollOnce(ctx)
 	}
@@ -136,14 +144,6 @@ func loadConfig() (config, error) {
 	if !json.Valid(triggerPolicy) {
 		return config{}, fmt.Errorf("WECHAT_TRIGGER_POLICY must be valid JSON")
 	}
-	cursorPath := os.Getenv("WECHAT_CURSOR_PATH")
-	if strings.TrimSpace(cursorPath) == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return config{}, fmt.Errorf("resolve home dir: %w", err)
-		}
-		cursorPath = filepath.Join(home, ".tinyclaw", "wechat-adapter-cursor.json")
-	}
 	cfg := config{
 		ClawmanBaseURL: strings.TrimRight(envOrDefault("CLAWMAN_BASE_URL", defaultClawmanBaseURL), "/"),
 		ClawmanToken:   strings.TrimSpace(os.Getenv("CLAWMAN_API_TOKEN")),
@@ -154,10 +154,11 @@ func loadConfig() (config, error) {
 		PollInterval:   interval,
 		PollLimit:      limit,
 		ReadMode:       strings.ToLower(envOrDefault("WECHAT_READ_MODE", defaultReadMode)),
-		CursorPath:     cursorPath,
 		TriggerPolicy:  triggerPolicy,
 		Once:           parseBoolEnv("WECHAT_ONCE"),
 		SelfSenders:    parseSelfSendersEnv(),
+		TargetChats:    parseNameSetEnv("WECHAT_TARGET_CHATS", defaultTargetChats),
+		TargetMembers:  parseNameSetEnv("WECHAT_TARGET_MEMBERS", ""),
 	}
 	if cfg.ClawmanToken == "" {
 		return config{}, fmt.Errorf("CLAWMAN_API_TOKEN is required")
@@ -168,26 +169,43 @@ func loadConfig() (config, error) {
 	return cfg, nil
 }
 
-func (a *adapter) registerRoom(ctx context.Context) error {
+func (a *adapter) ensureRoom(ctx context.Context, msg wxMessage) (int64, error) {
+	identity := roomIdentity(msg)
+	if identity.ChannelRoomID == "" {
+		identity.ChannelRoomID = a.cfg.GroupID
+	}
+	if identity.DisplayName == "" {
+		identity.DisplayName = a.cfg.GroupName
+	}
+	if identity.ChannelRoomType == "" {
+		identity.ChannelRoomType = "direct"
+	}
+	key := identity.ChannelRoomID
+	if id := a.roomIDs[key]; id > 0 {
+		return id, nil
+	}
 	reqBody := map[string]any{
 		"channel":           defaultWechatChannel,
-		"channel_room_id":   a.cfg.GroupID,
-		"channel_room_type": "group",
-		"display_name":      a.cfg.GroupName,
-		"outbound_alias":    a.cfg.GroupName,
+		"channel_room_id":   identity.ChannelRoomID,
+		"channel_room_type": identity.ChannelRoomType,
+		"display_name":      identity.DisplayName,
+		"outbound_alias":    identity.DisplayName,
 		"agent_key":         "default",
 		"agent_enabled":     true,
 		"trigger_policy":    json.RawMessage(a.cfg.TriggerPolicy),
 	}
 	var resp roomResponse
 	if err := a.postJSON(ctx, "/api/rooms", reqBody, &resp); err != nil {
-		return fmt.Errorf("register wechat room: %w", err)
+		return 0, fmt.Errorf("register wechat room %s: %w", key, err)
 	}
 	if resp.Room.ID <= 0 {
-		return fmt.Errorf("register wechat room returned empty room id")
+		return 0, fmt.Errorf("register wechat room %s returned empty room id", key)
 	}
-	a.roomID = resp.Room.ID
-	return nil
+	if a.roomIDs == nil {
+		a.roomIDs = map[string]int64{}
+	}
+	a.roomIDs[key] = resp.Room.ID
+	return resp.Room.ID, nil
 }
 
 func (a *adapter) pollOnce(ctx context.Context) error {
@@ -199,33 +217,29 @@ func (a *adapter) pollOnce(ctx context.Context) error {
 		return nil
 	}
 	sortMessages(messages)
-	next := a.cursor
-	cursorChanged := false
+	seen := map[string]bool{}
 	processed := 0
 	for _, msg := range messages {
-		if !a.isTargetMessage(msg) {
+		target, err := a.isTargetMessage(ctx, msg)
+		if err != nil {
+			slog.Warn("wechat target check failed", "chat", msg.Chat, "username", msg.Username, "err", err)
 			continue
 		}
-		if !next.accepts(msg) {
-			next = next.advance(msg)
-			cursorChanged = true
+		if !target {
 			continue
 		}
+		sourceID := sourceMessageID(msg)
+		if seen[sourceID] {
+			continue
+		}
+		seen[sourceID] = true
 		if err := a.createMessage(ctx, msg); err != nil {
 			return err
 		}
 		processed++
-		next = next.advance(msg)
-		cursorChanged = true
-	}
-	if cursorChanged {
-		if err := saveCursor(a.cfg.CursorPath, next); err != nil {
-			return err
-		}
-		a.cursor = next
 	}
 	if processed > 0 {
-		slog.Info("wechat messages ingested", "count", processed, "cursor_timestamp", a.cursor.MaxTimestamp, "cursor_local_id", a.cursor.MaxLocalID)
+		slog.Info("wechat messages ingested", "count", processed)
 	}
 	return nil
 }
@@ -316,11 +330,124 @@ func (a *adapter) runWXMessages(ctx context.Context, args ...string) ([]wxMessag
 	return messages, nil
 }
 
-func (a *adapter) isTargetMessage(msg wxMessage) bool {
-	return strings.TrimSpace(msg.Username) == a.cfg.GroupID || strings.TrimSpace(msg.Chat) == a.cfg.GroupName
+func (a *adapter) runWXMembers(ctx context.Context, chat string) ([]wxMember, error) {
+	cmd := exec.CommandContext(ctx, a.cfg.WXBin, "members", chat, "--json")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	data, err := cmd.Output()
+	if err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = err.Error()
+		}
+		return nil, fmt.Errorf("run wx members %s: %s", chat, detail)
+	}
+	var members []wxMember
+	if err := json.Unmarshal(data, &members); err != nil {
+		return nil, fmt.Errorf("decode wx members %s: %w", chat, err)
+	}
+	return members, nil
+}
+
+func (a *adapter) isTargetMessage(ctx context.Context, msg wxMessage) (bool, error) {
+	if a.matchesTargetChat(msg) {
+		return true, nil
+	}
+	if len(a.cfg.TargetMembers) == 0 {
+		return false, nil
+	}
+	if !isGroupMessage(msg) {
+		return a.cfg.TargetMembers[strings.TrimSpace(msg.Username)], nil
+	}
+	return a.groupHasTargetMember(ctx, msg)
+}
+
+func (a *adapter) matchesTargetChat(msg wxMessage) bool {
+	if len(a.cfg.TargetChats) == 0 {
+		return false
+	}
+	identity := roomIdentity(msg)
+	return a.cfg.TargetChats[strings.TrimSpace(msg.Username)] ||
+		a.cfg.TargetChats[strings.TrimSpace(msg.Chat)] ||
+		a.cfg.TargetChats[identity.ChannelRoomID] ||
+		a.cfg.TargetChats[identity.DisplayName]
+}
+
+func (a *adapter) groupHasTargetMember(ctx context.Context, msg wxMessage) (bool, error) {
+	identity := roomIdentity(msg)
+	key := identity.ChannelRoomID
+	if key == "" {
+		return false, nil
+	}
+	if hit, ok := a.targetGroupCache[key]; ok {
+		return hit, nil
+	}
+	if a.targetGroupCache == nil {
+		a.targetGroupCache = map[string]bool{}
+	}
+	var lastErr error
+	for _, chat := range memberLookupChats(msg) {
+		members, err := a.runWXMembers(ctx, chat)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		for _, member := range members {
+			if a.cfg.TargetMembers[strings.TrimSpace(member.Username)] {
+				a.targetGroupCache[key] = true
+				return true, nil
+			}
+		}
+		a.targetGroupCache[key] = false
+		return false, nil
+	}
+	if lastErr != nil {
+		return false, lastErr
+	}
+	return false, nil
+}
+
+func memberLookupChats(msg wxMessage) []string {
+	seen := map[string]bool{}
+	var chats []string
+	for _, value := range []string{strings.TrimSpace(msg.Username), strings.TrimSpace(msg.Chat)} {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		chats = append(chats, value)
+	}
+	return chats
+}
+
+func roomIdentity(msg wxMessage) messageRoomIdentity {
+	username := strings.TrimSpace(msg.Username)
+	chat := strings.TrimSpace(msg.Chat)
+	sender := strings.TrimSpace(msg.Sender)
+	if isGroupMessage(msg) {
+		return messageRoomIdentity{
+			ChannelRoomID:   firstNonEmpty(username, chat, sender),
+			ChannelRoomType: "group",
+			DisplayName:     firstNonEmpty(chat, username),
+		}
+	}
+	return messageRoomIdentity{
+		ChannelRoomID:   firstNonEmpty(username, chat, sender),
+		ChannelRoomType: "direct",
+		DisplayName:     firstNonEmpty(chat, username, sender),
+	}
+}
+
+func isGroupMessage(msg wxMessage) bool {
+	chatType := strings.ToLower(strings.TrimSpace(msg.ChatType))
+	return msg.IsGroup || chatType == "group" || strings.HasSuffix(strings.TrimSpace(msg.Username), "@chatroom")
 }
 
 func (a *adapter) createMessage(ctx context.Context, msg wxMessage) error {
+	roomID, err := a.ensureRoom(ctx, msg)
+	if err != nil {
+		return err
+	}
 	messageTime := time.Unix(msg.Timestamp, 0).UTC()
 	if msg.Timestamp <= 0 {
 		parsed, err := time.ParseInLocation("2006-01-02 15:04", msg.Time, time.Local)
@@ -344,7 +471,7 @@ func (a *adapter) createMessage(ctx context.Context, msg wxMessage) error {
 		"wechat_time_label": msg.Time,
 	}
 	reqBody := map[string]any{
-		"room_id":           a.roomID,
+		"room_id":           roomID,
 		"source_message_id": sourceMessageID(msg),
 		"sender_id":         senderID(msg),
 		"sender_name":       msg.Sender,
@@ -446,36 +573,6 @@ func senderID(msg wxMessage) string {
 	return sender
 }
 
-func (c cursor) accepts(msg wxMessage) bool {
-	if msg.Timestamp > c.MaxTimestamp {
-		return true
-	}
-	if msg.Timestamp < c.MaxTimestamp {
-		return false
-	}
-	return !c.SeenAtMax[sourceMessageID(msg)]
-}
-
-func (c cursor) advance(msg wxMessage) cursor {
-	if msg.Timestamp > c.MaxTimestamp {
-		return cursor{
-			MaxTimestamp: msg.Timestamp,
-			MaxLocalID:   msg.LocalID,
-			SeenAtMax:    map[string]bool{sourceMessageID(msg): true},
-		}
-	}
-	if msg.Timestamp == c.MaxTimestamp {
-		if c.SeenAtMax == nil {
-			c.SeenAtMax = map[string]bool{}
-		}
-		c.SeenAtMax[sourceMessageID(msg)] = true
-		if msg.LocalID > c.MaxLocalID {
-			c.MaxLocalID = msg.LocalID
-		}
-	}
-	return c
-}
-
 func sortMessages(messages []wxMessage) {
 	sort.SliceStable(messages, func(i, j int) bool {
 		if messages[i].Timestamp != messages[j].Timestamp {
@@ -541,35 +638,6 @@ func sourceFingerprint(msg wxMessage) string {
 	return hex.EncodeToString(hash[:])[:16]
 }
 
-func loadCursor(path string) (cursor, error) {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return cursor{}, nil
-	}
-	if err != nil {
-		return cursor{}, fmt.Errorf("read cursor: %w", err)
-	}
-	var c cursor
-	if err := json.Unmarshal(data, &c); err != nil {
-		return cursor{}, fmt.Errorf("decode cursor: %w", err)
-	}
-	return c, nil
-}
-
-func saveCursor(path string, c cursor) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create cursor dir: %w", err)
-	}
-	data, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write cursor: %w", err)
-	}
-	return nil
-}
-
 func envOrDefault(key string, def string) string {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
@@ -589,6 +657,14 @@ func parseSelfSendersEnv() map[string]bool {
 	if strings.TrimSpace(raw) == "" {
 		raw = "私云虾虾"
 	}
+	return parseNameSet(raw)
+}
+
+func parseNameSetEnv(key string, def string) map[string]bool {
+	return parseNameSet(envOrDefault(key, def))
+}
+
+func parseNameSet(raw string) map[string]bool {
 	values := map[string]bool{}
 	for _, part := range strings.Split(raw, ",") {
 		value := strings.TrimSpace(part)
@@ -597,4 +673,22 @@ func parseSelfSendersEnv() map[string]bool {
 		}
 	}
 	return values
+}
+
+func mapKeys(values map[string]bool) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }

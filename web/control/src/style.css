@@ -1,0 +1,218 @@
+html,
+body,
+#app {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #eef3f7;
+  color: #17202a;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  letter-spacing: 0;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.field {
+  border: 1px solid #cfd7e3;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 8px 10px;
+  outline: none;
+}
+
+.field:focus {
+  border-color: #1f7a8c;
+  box-shadow: 0 0 0 3px rgba(31, 122, 140, 0.14);
+}
+
+.icon-button {
+  display: inline-flex;
+  height: 34px;
+  width: 34px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #cfd7e3;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #17202a;
+}
+
+.primary-button,
+.small-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #1f7a8c;
+  border-radius: 6px;
+  background: #1f7a8c;
+  color: #ffffff;
+  font-weight: 650;
+}
+
+.primary-button {
+  min-height: 38px;
+  padding: 8px 14px;
+}
+
+.small-button {
+  min-height: 30px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.room-row {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  border: 0;
+  border-bottom: 1px solid #d8dee8;
+  background: #ffffff;
+  padding: 12px 16px;
+  text-align: left;
+}
+
+.room-row:hover,
+.room-row-active {
+  background: #edf8fa;
+}
+
+.room-row-active {
+  box-shadow: inset 3px 0 0 #1f7a8c;
+}
+
+.tab-button {
+  min-height: 42px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  padding: 0 14px;
+  color: #5f6b7a;
+  font-weight: 650;
+}
+
+.tab-button-active {
+  border-bottom-color: #1f7a8c;
+  color: #17202a;
+}
+
+.status-pill,
+.badge-muted,
+.badge-warn {
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-weight: 700;
+}
+
+.status-pill,
+.badge-muted {
+  border: 1px solid #d8dee8;
+  background: #f7f9fc;
+  color: #5f6b7a;
+}
+
+.badge-warn {
+  background: #fff5db;
+  color: #a15c07;
+}
+
+.message-row,
+.side-panel,
+.memory-row,
+.settings-grid {
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.message-row,
+.side-panel,
+.memory-row {
+  padding: 16px;
+}
+
+.delivery-row,
+.settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border-radius: 6px;
+  background: #f7f9fc;
+  padding: 8px 10px;
+}
+
+.empty-state {
+  display: flex;
+  min-height: 96px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px dashed #cfd7e3;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #5f6b7a;
+  font-size: 14px;
+}
+
+.memory-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.settings-grid {
+  display: grid;
+  overflow: hidden;
+}
+
+.settings-row {
+  border-radius: 0;
+  border-bottom: 1px solid #d8dee8;
+  background: #ffffff;
+  padding: 12px 14px;
+  color: #5f6b7a;
+}
+
+.settings-row:last-child {
+  border-bottom: 0;
+}
+
+.settings-row code {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: #17202a;
+}
+
+@media (max-width: 760px) {
+  .auth-form,
+  .app-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .room-list {
+    height: auto;
+    max-height: 280px;
+  }
+
+  .primary-button {
+    justify-content: center;
+  }
+}

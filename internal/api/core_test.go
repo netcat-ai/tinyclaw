@@ -18,6 +18,10 @@ type fakeCoreStore struct {
 	listFn     func(context.Context, string, int64) ([]core.Delivery, error)
 	ackFn      func(context.Context, int64) (core.Delivery, error)
 	memoryFn   func(context.Context, string, core.MemorySearchInput) ([]core.MemoryItem, error)
+	authFn     func(context.Context, string, string) (core.APIClient, error)
+	roomsFn    func(context.Context, int) ([]core.AdminRoomSummary, error)
+	timelineFn func(context.Context, int64, int64, int) (core.AdminRoomTimeline, error)
+	adminMemFn func(context.Context, core.AdminMemoryListInput) ([]core.MemoryItem, error)
 }
 
 func (f fakeCoreStore) RegisterRoom(ctx context.Context, input core.RegisterRoomInput) (core.RegisterRoomResult, error) {
@@ -38,6 +42,22 @@ func (f fakeCoreStore) AckCoreDelivery(ctx context.Context, id int64) (core.Deli
 
 func (f fakeCoreStore) SearchRoomMemoryByToken(ctx context.Context, token string, input core.MemorySearchInput) ([]core.MemoryItem, error) {
 	return f.memoryFn(ctx, token, input)
+}
+
+func (f fakeCoreStore) AuthenticateAPIClient(ctx context.Context, clientID string, secret string) (core.APIClient, error) {
+	return f.authFn(ctx, clientID, secret)
+}
+
+func (f fakeCoreStore) ListAdminRooms(ctx context.Context, limit int) ([]core.AdminRoomSummary, error) {
+	return f.roomsFn(ctx, limit)
+}
+
+func (f fakeCoreStore) GetAdminRoomTimeline(ctx context.Context, roomID int64, beforeMessageID int64, limit int) (core.AdminRoomTimeline, error) {
+	return f.timelineFn(ctx, roomID, beforeMessageID, limit)
+}
+
+func (f fakeCoreStore) ListAdminRoomMemory(ctx context.Context, input core.AdminMemoryListInput) ([]core.MemoryItem, error) {
+	return f.adminMemFn(ctx, input)
 }
 
 type fakeCommandHandler struct {
@@ -256,6 +276,56 @@ func TestHandleRoomsRegistersRoom(t *testing.T) {
 	}
 	if payload.Room.ID != 10 || payload.AgentSession.ID != 100 {
 		t.Fatalf("unexpected response: %+v", payload)
+	}
+}
+
+func TestHandleAdminRoomsRequiresAdminClient(t *testing.T) {
+	api := NewServer(fakeCoreStore{
+		authFn: func(_ context.Context, clientID string, secret string) (core.APIClient, error) {
+			if clientID != "admin" || secret != "secret" {
+				t.Fatalf("credentials = %q/%q, want admin/secret", clientID, secret)
+			}
+			return core.APIClient{Permissions: []string{core.APIClientPermissionAdmin}}, nil
+		},
+		roomsFn: func(_ context.Context, limit int) ([]core.AdminRoomSummary, error) {
+			if limit != 20 {
+				t.Fatalf("limit = %d, want 20", limit)
+			}
+			return []core.AdminRoomSummary{{
+				Room: core.Room{
+					ID:              10,
+					TenantID:        core.DefaultTenantID,
+					Channel:         "wecom",
+					ChannelRoomID:   "room-1",
+					ChannelRoomType: core.RoomChatTypeGroup,
+					OutboundAlias:   "测试群",
+				},
+				AgentSession: core.AgentSession{
+					ID:       100,
+					RoomID:   10,
+					AgentKey: core.DefaultAgentKey,
+					Enabled:  true,
+				},
+				PendingDeliveryCount: 2,
+			}}, nil
+		},
+	}, "api-secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/rooms?limit=20", nil)
+	req.SetBasicAuth("admin", "secret")
+	rec := httptest.NewRecorder()
+
+	api.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload adminRoomsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Rooms) != 1 || payload.Rooms[0].PendingDeliveryCount != 2 {
+		t.Fatalf("unexpected rooms response: %+v", payload.Rooms)
 	}
 }
 

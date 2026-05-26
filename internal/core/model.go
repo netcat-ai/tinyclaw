@@ -9,6 +9,9 @@ const (
 	DefaultTenantID = "default"
 	DefaultAgentKey = "default"
 
+	APIClientPermissionAdapter = "adapter"
+	APIClientPermissionAdmin   = "admin"
+
 	DeliveryStatusPending int16 = 0
 	DeliveryStatusAcked   int16 = 1
 	DeliveryStatusFailed  int16 = 2
@@ -140,6 +143,47 @@ type MemoryWriteJob struct {
 	LastError           string
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+}
+
+type APIClient struct {
+	ID          int64
+	ClientID    string
+	Name        string
+	Enabled     bool
+	Permissions []string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+func (c APIClient) HasPermission(permission string) bool {
+	for _, value := range c.Permissions {
+		if value == permission {
+			return true
+		}
+	}
+	return false
+}
+
+type AdminRoomSummary struct {
+	Room                 Room
+	AgentSession         AgentSession
+	PendingDeliveryCount int64
+	LastMessageTime      time.Time
+}
+
+type AdminRoomTimeline struct {
+	Room          Room
+	AgentSessions []AgentSession
+	Messages      []Message
+	Deliveries    []Delivery
+	HasMore       bool
+}
+
+type AdminMemoryListInput struct {
+	RoomID int64
+	Status string
+	Types  []string
+	Limit  int
 }
 
 type RegisterRoomInput struct {

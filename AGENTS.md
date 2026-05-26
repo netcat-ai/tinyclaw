@@ -14,6 +14,7 @@ Prefer updating an existing document over creating overlapping files.
 - `rg -n "TODO|FIXME" *.md`: find open doc edits.
 - `git diff -- *.md`: review markdown-only changes.
 - `git status --short`: confirm the final change set.
+- For live PostgreSQL investigation, use the PostgreSQL tools available inside the Kubernetes `netcat` namespace PostgreSQL pod. Prefer read-only `SELECT` queries; do not mutate production data unless the user explicitly asks.
 - Deployments must use GitHub Actions workflows, not local Docker build/push.
 - Use `.github/workflows/build.yml` to build and publish images.
 - Use `.github/workflows/deploy.yml` to deploy `clawman`; pass an explicit image tag when needed.

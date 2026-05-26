@@ -33,16 +33,31 @@
 4. 补 agent execution loop：
    - 固化 Codex runner 的运行参数、超时、日志与错误分类。
    - 补 agent session lock 过期后的恢复与超时处理。
-5. 补 schema 管理：
+5. 补 Clawman Control Plane UI：
+   - 新增 `api_clients` 鉴权模型，使用 HTTP Basic 的 `client_id/client_secret`；第一版权限只区分 `adapter` 和 `admin` 能力包。
+   - 第一版默认一个 `admin` client；secret 读取 `CLAWMAN_ADMIN_SECRET`，未配置则禁用默认 admin client 和 `/admin/api/*`。
+   - 第一阶段先实现 `/admin/api/*` 后端读模型和管理写入口，再搭 `web/control/` 前端工程。
+   - 新增 `web/control/` 独立 Vue 3 + Composition API + UnoCSS + pnpm 前端工程。
+   - 新增 `/admin/api/*` 管理接口，支撑 Room 列表、Room Timeline、Room Settings、Delivery ack。
+   - Room 列表聚合展示 channel、display/outbound target、默认 Agent Session 边界、pending Delivery 数和最近消息时间。
+   - Room Timeline 合并展示 Messages、Agent Session trigger/processed 边界、Deliveries 和 ack 状态。
+   - Room Timeline 默认返回最近 N 条 Room 事件，并支持 `before_message_id` 向前翻页。
+   - Room Detail 提供只读 Room Memory tab，支持按 status/type 过滤 Memory Items。
+   - 第一版允许注册/更新 Room、启用/停用默认 Agent Session、更新 `display_name` / `outbound_alias` / `trigger_policy`、ack Delivery、Inject Message。
+   - Inject Message 是调试用入站 Message 注入，不是外部发送；source id 使用 `admin:<uuid>`，并进入 Room Timeline 审计。
+   - 第一版不提供删除 Room、删除 Message、直接修改 Message、直接修改 Room Memory。
+   - 构建产物可由 clawman 同域服务到 `/admin/`，但前端源码和构建链保持独立，后续可单独部署。
+6. 补 schema 管理：
    - 把当前 `InitSchema` 迁移到显式 migration。
    - 处理历史库里旧表的保留或清理策略。
-6. 补观测与联调：
+7. 补观测与联调：
    - 为 room registration、message、agent run、delivery、ack 增加基础指标。
    - 增加重复消息、agent session trigger window、delivery 重复 ack 的联调用例。
    - MobileClaw 增加发送结果页，避免只依赖 logcat 判断发送结果。
 
 ## PostgreSQL 当前范围
 
+- `api_clients`：可调用 Clawman HTTP API 的外部或管理客户端，保存 client secret hash 和权限集合。
 - `rooms`：TinyClaw room，与外部 channel room 映射。
 - `agent_sessions`：一个 Room 内的 agent 配置、trigger 边界、已处理消息边界和 Codex CLI continuation id。
 - `messages`：room 内 append-only 入站消息事实，`skipped` 标记是否排除出 agent 上下文。
@@ -66,3 +81,4 @@
 10. `/draw <prompt>` 只在新插入 Message 时启动一次异步生图；重复 Message 不重复扣费或重复发图。
 11. `/draw` 成功时 Delivery 顺序为 `正在画图...`、`图片已生成：<media_id>`、图片 payload；图片 payload 携带 24h presigned S3 URL。
 12. `/draw` 不触发普通 Agent Session，不写 Room Memory，失败通过 `command_failure` Delivery 异步告知用户。
+13. Control Plane UI 可以查看 Room Timeline，并能完成 Room 注册/更新、默认 Agent Session 启停、Delivery ack、Inject Message。

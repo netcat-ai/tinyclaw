@@ -8,6 +8,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/google/uuid"
 
 	"tinyclaw/internal/core"
 	"tinyclaw/internal/ingest"
@@ -18,6 +21,17 @@ type CoreStore interface {
 	CreateMessage(ctx context.Context, input core.CreateMessageInput) (core.CreateMessageResult, error)
 	ListCoreDeliveries(ctx context.Context, channel string, afterID int64) ([]core.Delivery, error)
 	AckCoreDelivery(ctx context.Context, id int64) (core.Delivery, error)
+}
+
+type APIClientStore interface {
+	AuthenticateAPIClient(ctx context.Context, clientID string, secret string) (core.APIClient, error)
+}
+
+type AdminStore interface {
+	APIClientStore
+	ListAdminRooms(ctx context.Context, limit int) ([]core.AdminRoomSummary, error)
+	GetAdminRoomTimeline(ctx context.Context, roomID int64, beforeMessageID int64, limit int) (core.AdminRoomTimeline, error)
+	ListAdminRoomMemory(ctx context.Context, input core.AdminMemoryListInput) ([]core.MemoryItem, error)
 }
 
 type MemorySearchStore interface {
@@ -64,6 +78,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/messages", s.handleMessages)
 	mux.HandleFunc("/api/deliveries", s.handleListDeliveries)
 	mux.HandleFunc("/api/deliveries/", s.handleDeliveryAction)
+	mux.HandleFunc("/admin/api/rooms", s.handleAdminRooms)
+	mux.HandleFunc("/admin/api/rooms/", s.handleAdminRoomAction)
+	mux.HandleFunc("/admin/api/deliveries/", s.handleAdminDeliveryAction)
 	mux.HandleFunc("/internal/memory/search", s.handleMemorySearch)
 }
 
@@ -133,13 +150,64 @@ type memorySearchResponse struct {
 	Items []core.MemoryItem `json:"items"`
 }
 
+type adminRoomsResponse struct {
+	Rooms []adminRoomSummaryResponse `json:"rooms"`
+}
+
+type adminRoomSummaryResponse struct {
+	Room                 coreRoomResponse         `json:"room"`
+	AgentSession         coreAgentSessionResponse `json:"agent_session,omitempty"`
+	PendingDeliveryCount int64                    `json:"pending_delivery_count"`
+	LastMessageTime      time.Time                `json:"last_message_time,omitempty"`
+	UpdatedAt            time.Time                `json:"updated_at"`
+}
+
+type adminTimelineResponse struct {
+	Room          coreRoomResponse           `json:"room"`
+	AgentSessions []coreAgentSessionResponse `json:"agent_sessions"`
+	Messages      []adminMessageResponse     `json:"messages"`
+	Deliveries    []adminDeliveryResponse    `json:"deliveries"`
+	HasMore       bool                       `json:"has_more"`
+}
+
+type adminMessageResponse struct {
+	ID              int64           `json:"id"`
+	RoomID          int64           `json:"room_id"`
+	SourceMessageID string          `json:"source_message_id"`
+	SenderID        string          `json:"sender_id"`
+	SenderName      string          `json:"sender_name,omitempty"`
+	Payload         json.RawMessage `json:"payload"`
+	MessageTime     time.Time       `json:"message_time"`
+	Skipped         bool            `json:"skipped"`
+	CreatedAt       time.Time       `json:"created_at"`
+}
+
+type adminDeliveryResponse struct {
+	coreDeliveryResponse
+	CreatedAt time.Time `json:"created_at"`
+	AckedAt   time.Time `json:"acked_at,omitempty"`
+}
+
+type adminMemoryResponse struct {
+	Items []core.MemoryItem `json:"items"`
+}
+
+type injectMessageRequest struct {
+	SenderID             string          `json:"sender_id"`
+	SenderName           string          `json:"sender_name"`
+	Text                 string          `json:"text"`
+	Payload              json.RawMessage `json:"payload"`
+	Skipped              bool            `json:"skipped"`
+	SuppressAgentTrigger bool            `json:"suppress_agent_trigger"`
+}
+
 func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
 		return
 	}
-	if !s.authenticateAPIBearer(r) {
-		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API bearer token")
+	if !s.authenticateAdapter(r) {
+		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API credentials")
 		return
 	}
 	if s.core == nil {
@@ -168,8 +236,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
 		return
 	}
-	if !s.authenticateAPIBearer(r) {
-		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API bearer token")
+	if !s.authenticateAdapter(r) {
+		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API credentials")
 		return
 	}
 	if s.core == nil {
@@ -203,8 +271,8 @@ func (s *Server) handleListDeliveries(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET")
 		return
 	}
-	if !s.authenticateAPIBearer(r) {
-		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API bearer token")
+	if !s.authenticateAdapter(r) {
+		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API credentials")
 		return
 	}
 	channels := parseDeliveryChannels(r.URL.Query().Get("channels"))
@@ -250,11 +318,177 @@ func (s *Server) handleDeliveryAction(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
 		return
 	}
-	if !s.authenticateAPIBearer(r) {
-		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API bearer token")
+	if !s.authenticateAdapter(r) {
+		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API credentials")
 		return
 	}
 	id, action, ok := parseIDActionPath(strings.TrimPrefix(r.URL.Path, "/api/deliveries/"))
+	if !ok || action != "ack" {
+		writeAPIError(w, http.StatusNotFound, "not_found", "unknown delivery action")
+		return
+	}
+	delivery, err := s.core.AckCoreDelivery(r.Context(), id)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "ack_failed", err.Error())
+		return
+	}
+	writeAPIJSON(w, http.StatusOK, deliveryToResponse(delivery))
+}
+
+func (s *Server) handleAdminRooms(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET")
+		return
+	}
+	store, ok := s.core.(AdminStore)
+	if !ok {
+		writeAPIError(w, http.StatusServiceUnavailable, "disabled", "admin API is unavailable")
+		return
+	}
+	if !s.authenticateAdmin(r) {
+		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid admin credentials")
+		return
+	}
+	rooms, err := store.ListAdminRooms(r.Context(), parsePositiveInt(r.URL.Query().Get("limit"), 100))
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "list_failed", err.Error())
+		return
+	}
+	response := make([]adminRoomSummaryResponse, 0, len(rooms))
+	for _, room := range rooms {
+		response = append(response, adminRoomSummaryToResponse(room))
+	}
+	writeAPIJSON(w, http.StatusOK, adminRoomsResponse{Rooms: response})
+}
+
+func (s *Server) handleAdminRoomAction(w http.ResponseWriter, r *http.Request) {
+	roomID, action, ok := parseAdminRoomActionPath(strings.TrimPrefix(r.URL.Path, "/admin/api/rooms/"))
+	if !ok {
+		writeAPIError(w, http.StatusNotFound, "not_found", "unknown room action")
+		return
+	}
+	switch action {
+	case "timeline":
+		s.handleAdminRoomTimeline(w, r, roomID)
+	case "memory":
+		s.handleAdminRoomMemory(w, r, roomID)
+	case "messages:inject":
+		s.handleAdminInjectMessage(w, r, roomID)
+	default:
+		writeAPIError(w, http.StatusNotFound, "not_found", "unknown room action")
+	}
+}
+
+func (s *Server) handleAdminRoomTimeline(w http.ResponseWriter, r *http.Request, roomID int64) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET")
+		return
+	}
+	store, ok := s.core.(AdminStore)
+	if !ok {
+		writeAPIError(w, http.StatusServiceUnavailable, "disabled", "admin API is unavailable")
+		return
+	}
+	if !s.authenticateAdmin(r) {
+		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid admin credentials")
+		return
+	}
+	timeline, err := store.GetAdminRoomTimeline(
+		r.Context(),
+		roomID,
+		parsePositiveInt64(r.URL.Query().Get("before_message_id"), 0),
+		parsePositiveInt(r.URL.Query().Get("limit"), 100),
+	)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "timeline_failed", err.Error())
+		return
+	}
+	writeAPIJSON(w, http.StatusOK, adminTimelineToResponse(timeline))
+}
+
+func (s *Server) handleAdminRoomMemory(w http.ResponseWriter, r *http.Request, roomID int64) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET")
+		return
+	}
+	store, ok := s.core.(AdminStore)
+	if !ok {
+		writeAPIError(w, http.StatusServiceUnavailable, "disabled", "admin API is unavailable")
+		return
+	}
+	if !s.authenticateAdmin(r) {
+		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid admin credentials")
+		return
+	}
+	items, err := store.ListAdminRoomMemory(r.Context(), core.AdminMemoryListInput{
+		RoomID: roomID,
+		Status: r.URL.Query().Get("status"),
+		Types:  parseCSVQuery(r.URL.Query().Get("types")),
+		Limit:  parsePositiveInt(r.URL.Query().Get("limit"), 100),
+	})
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "memory_failed", err.Error())
+		return
+	}
+	writeAPIJSON(w, http.StatusOK, adminMemoryResponse{Items: items})
+}
+
+func (s *Server) handleAdminInjectMessage(w http.ResponseWriter, r *http.Request, roomID int64) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
+		return
+	}
+	if !s.authenticateAdmin(r) {
+		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid admin credentials")
+		return
+	}
+	var input injectMessageRequest
+	if err := readJSONBody(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	payload := input.Payload
+	if len(payload) == 0 {
+		payload = mustMarshalJSON(map[string]string{
+			"type": "text",
+			"text": strings.TrimSpace(input.Text),
+		})
+	}
+	result, err := s.messages.IngestMessage(r.Context(), core.CreateMessageInput{
+		RoomID:               roomID,
+		SourceMessageID:      "admin:" + uuid.NewString(),
+		SenderID:             strings.TrimSpace(input.SenderID),
+		SenderName:           strings.TrimSpace(input.SenderName),
+		MessageTime:          time.Now().UTC(),
+		Payload:              payload,
+		Skipped:              input.Skipped,
+		SuppressAgentTrigger: input.SuppressAgentTrigger,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeAPIError(w, http.StatusNotFound, "room_not_found", err.Error())
+			return
+		}
+		writeAPIError(w, http.StatusBadRequest, "inject_failed", err.Error())
+		return
+	}
+	writeAPIJSON(w, http.StatusOK, createMessageResponse{
+		Message:   messageToResponse(result.Message),
+		Duplicate: result.Duplicate,
+		Triggered: result.Triggered,
+	})
+}
+
+func (s *Server) handleAdminDeliveryAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
+		return
+	}
+	if !s.authenticateAdmin(r) {
+		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid admin credentials")
+		return
+	}
+	id, action, ok := parseIDActionPath(strings.TrimPrefix(r.URL.Path, "/admin/api/deliveries/"))
 	if !ok || action != "ack" {
 		writeAPIError(w, http.StatusNotFound, "not_found", "unknown delivery action")
 		return
@@ -303,6 +537,34 @@ func (s *Server) authenticateAPIBearer(r *http.Request) bool {
 	return token != "" && token == s.apiToken
 }
 
+func (s *Server) authenticateAdapter(r *http.Request) bool {
+	if s.authenticateAPIBearer(r) {
+		return true
+	}
+	return s.authenticateBasicPermission(r, core.APIClientPermissionAdapter) ||
+		s.authenticateBasicPermission(r, core.APIClientPermissionAdmin)
+}
+
+func (s *Server) authenticateAdmin(r *http.Request) bool {
+	return s.authenticateBasicPermission(r, core.APIClientPermissionAdmin)
+}
+
+func (s *Server) authenticateBasicPermission(r *http.Request, permission string) bool {
+	store, ok := s.core.(APIClientStore)
+	if !ok {
+		return false
+	}
+	clientID, secret, ok := r.BasicAuth()
+	if !ok {
+		return false
+	}
+	client, err := store.AuthenticateAPIClient(r.Context(), clientID, secret)
+	if err != nil {
+		return false
+	}
+	return client.HasPermission(permission)
+}
+
 func bearerToken(r *http.Request) string {
 	value := strings.TrimSpace(r.Header.Get("Authorization"))
 	if !strings.HasPrefix(value, "Bearer ") {
@@ -333,6 +595,53 @@ func parseIDActionPath(path string) (int64, string, bool) {
 		return 0, "", false
 	}
 	return id, parts[1], true
+}
+
+func parseAdminRoomActionPath(path string) (int64, string, bool) {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) != 2 {
+		return 0, "", false
+	}
+	id, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || id <= 0 {
+		return 0, "", false
+	}
+	return id, parts[1], true
+}
+
+func parsePositiveInt(value string, fallback int) int {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func parsePositiveInt64(value string, fallback int64) int64 {
+	parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func parseCSVQuery(value string) []string {
+	var values []string
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			values = append(values, part)
+		}
+	}
+	return values
+}
+
+func mustMarshalJSON(value any) json.RawMessage {
+	data, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return data
 }
 
 func writeAPIJSON(w http.ResponseWriter, statusCode int, payload any) {
@@ -396,5 +705,59 @@ func deliveryToResponse(delivery core.Delivery) coreDeliveryResponse {
 		SourceMessageToID:   delivery.SourceMessageToID,
 		Payload:             delivery.Payload,
 		Status:              delivery.Status,
+	}
+}
+
+func adminRoomSummaryToResponse(summary core.AdminRoomSummary) adminRoomSummaryResponse {
+	return adminRoomSummaryResponse{
+		Room:                 roomToResponse(summary.Room),
+		AgentSession:         agentSessionToResponse(summary.AgentSession),
+		PendingDeliveryCount: summary.PendingDeliveryCount,
+		LastMessageTime:      summary.LastMessageTime,
+		UpdatedAt:            summary.Room.UpdatedAt,
+	}
+}
+
+func adminTimelineToResponse(timeline core.AdminRoomTimeline) adminTimelineResponse {
+	sessions := make([]coreAgentSessionResponse, 0, len(timeline.AgentSessions))
+	for _, session := range timeline.AgentSessions {
+		sessions = append(sessions, agentSessionToResponse(session))
+	}
+	messages := make([]adminMessageResponse, 0, len(timeline.Messages))
+	for _, message := range timeline.Messages {
+		messages = append(messages, adminMessageToResponse(message))
+	}
+	deliveries := make([]adminDeliveryResponse, 0, len(timeline.Deliveries))
+	for _, delivery := range timeline.Deliveries {
+		deliveries = append(deliveries, adminDeliveryToResponse(delivery))
+	}
+	return adminTimelineResponse{
+		Room:          roomToResponse(timeline.Room),
+		AgentSessions: sessions,
+		Messages:      messages,
+		Deliveries:    deliveries,
+		HasMore:       timeline.HasMore,
+	}
+}
+
+func adminMessageToResponse(message core.Message) adminMessageResponse {
+	return adminMessageResponse{
+		ID:              message.ID,
+		RoomID:          message.RoomID,
+		SourceMessageID: message.SourceMessageID,
+		SenderID:        message.SenderID,
+		SenderName:      message.SenderName,
+		Payload:         message.Payload,
+		MessageTime:     message.MessageTime,
+		Skipped:         message.Skipped,
+		CreatedAt:       message.CreatedAt,
+	}
+}
+
+func adminDeliveryToResponse(delivery core.Delivery) adminDeliveryResponse {
+	return adminDeliveryResponse{
+		coreDeliveryResponse: deliveryToResponse(delivery),
+		CreatedAt:            delivery.CreatedAt,
+		AckedAt:              delivery.AckedAt,
 	}
 }

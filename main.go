@@ -49,12 +49,17 @@ func main() {
 		slog.Error("init postgres schema failed", "err", err)
 		os.Exit(1)
 	}
+	coreStore := storage.NewCoreStore(store.DB())
+	if err := coreStore.EnsureDefaultAdminClient(ctx, cfg.ClawmanAdminSecret); err != nil {
+		cancel()
+		slog.Error("ensure default admin client failed", "err", err)
+		os.Exit(1)
+	}
 	cancel()
 
 	runCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	coreStore := storage.NewCoreStore(store.DB())
 	agentScheduler := executor.NewScheduler(runCtx, coreStore, buildAgentRunner(cfg))
 	agentScheduler.SetMemorySearchURL(memorySearchEndpoint(cfg.ControlAPIAddr))
 	memoryWriteWorker := executor.NewMemoryWriteWorker(runCtx, coreStore)

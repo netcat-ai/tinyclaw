@@ -3,3 +3,6 @@ tinyclaw
 .playwright-mcp/
 agent/node_modules
 agent/dist
+web/control/node_modules
+web/control/dist
+web/control/node_modules

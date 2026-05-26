@@ -12,8 +12,9 @@ import (
 type Config struct {
 	DatabaseURL string
 
-	ControlAPIAddr  string
-	ClawmanAPIToken string
+	ControlAPIAddr     string
+	ClawmanAPIToken    string
+	ClawmanAdminSecret string
 
 	MetricsAddr string
 
@@ -85,8 +86,9 @@ func LoadConfig() (Config, error) {
 	cfg := Config{
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 
-		ControlAPIAddr:  envOrDefault("CONTROL_API_ADDR", ":8081"),
-		ClawmanAPIToken: os.Getenv("CLAWMAN_API_TOKEN"),
+		ControlAPIAddr:     envOrDefault("CONTROL_API_ADDR", ":8081"),
+		ClawmanAPIToken:    os.Getenv("CLAWMAN_API_TOKEN"),
+		ClawmanAdminSecret: os.Getenv("CLAWMAN_ADMIN_SECRET"),
 
 		MetricsAddr: envOrDefault("METRICS_ADDR", ":9090"),
 

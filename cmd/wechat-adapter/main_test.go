@@ -6,28 +6,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func TestCursorAcceptsMessagesWithoutLocalIDAtSameTimestamp(t *testing.T) {
-	messages := []wxMessage{
-		{Username: "测试群", Timestamp: 100, Content: "first"},
-		{Username: "测试群", Timestamp: 100, Content: "second"},
-	}
-	c := cursor{}
-	for _, message := range messages {
-		if !c.accepts(message) {
-			t.Fatalf("cursor rejected %q at same timestamp", message.Content)
-		}
-		c = c.advance(message)
-	}
-	if c.accepts(messages[0]) {
-		t.Fatalf("cursor accepted duplicate message")
-	}
-}
-
 func TestAdapterTargetMatchesGroupNameOrID(t *testing.T) {
-	a := adapter{cfg: config{GroupID: "123@chatroom", GroupName: "测试群"}}
+	a := adapter{cfg: config{TargetChats: map[string]bool{"123@chatroom": true, "测试群": true}}}
 	tests := []struct {
 		name string
 		msg  wxMessage
@@ -39,10 +23,118 @@ func TestAdapterTargetMatchesGroupNameOrID(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := a.isTargetMessage(tt.msg); got != tt.want {
+			got, err := a.isTargetMessage(t.Context(), tt.msg)
+			if err != nil {
+				t.Fatalf("isTargetMessage() error = %v", err)
+			}
+			if got != tt.want {
 				t.Fatalf("isTargetMessage() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestAdapterTargetMatchesConfiguredGroupRoom(t *testing.T) {
+	a := adapter{cfg: config{TargetChats: map[string]bool{"47781818732@chatroom": true}}}
+	msg := wxMessage{
+		Username: "47781818732@chatroom",
+		Chat:     "私云服务",
+		ChatType: "group",
+		IsGroup:  true,
+		Sender:   "刘丰璨.tencent",
+	}
+	got, err := a.isTargetMessage(t.Context(), msg)
+	if err != nil {
+		t.Fatalf("isTargetMessage() error = %v", err)
+	}
+	if !got {
+		t.Fatalf("configured group room should pass regardless of sender")
+	}
+}
+
+func TestAdapterTargetMatchesConfiguredPrivateRoom(t *testing.T) {
+	a := adapter{cfg: config{TargetMembers: map[string]bool{"wxid_74wgcpw5yswo12": true}}}
+	msg := wxMessage{
+		Username: "wxid_74wgcpw5yswo12",
+		Chat:     "私云虾虾",
+		ChatType: "private",
+		Sender:   "小金鱼",
+	}
+	got, err := a.isTargetMessage(t.Context(), msg)
+	if err != nil {
+		t.Fatalf("isTargetMessage() error = %v", err)
+	}
+	if !got {
+		t.Fatalf("configured private room should pass")
+	}
+}
+
+func TestAdapterTargetDoesNotMatchSameDisplayNameOpenIM(t *testing.T) {
+	a := adapter{cfg: config{TargetMembers: map[string]bool{"wxid_74wgcpw5yswo12": true}}}
+	msg := wxMessage{
+		Username: "25984985071674453@openim",
+		Chat:     "私云虾虾",
+		ChatType: "private",
+		Sender:   "小金鱼",
+	}
+	got, err := a.isTargetMessage(t.Context(), msg)
+	if err != nil {
+		t.Fatalf("isTargetMessage() error = %v", err)
+	}
+	if got {
+		t.Fatalf("same display name openim room should not pass when only wxid is configured")
+	}
+}
+
+func TestAdapterTargetMatchesGroupContainingTargetMember(t *testing.T) {
+	tempDir := t.TempDir()
+	wxPath := filepath.Join(tempDir, "wx")
+	countPath := filepath.Join(tempDir, "members-count")
+	script := `#!/bin/sh
+if [ "$1" = "members" ] && [ "$2" = "24933085811@chatroom" ]; then
+  echo hit >> ` + countPath + `
+  printf '%s' '[{"display":"私云虾虾","username":"wxid_74wgcpw5yswo12"}]'
+  exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(wxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake wx: %v", err)
+	}
+	a := adapter{
+		cfg: config{
+			WXBin:         wxPath,
+			TargetMembers: map[string]bool{"wxid_74wgcpw5yswo12": true},
+		},
+		targetGroupCache: map[string]bool{},
+	}
+	msg := wxMessage{
+		Username: "24933085811@chatroom",
+		Chat:     "姑姑的钻粉只此一群❤️",
+		ChatType: "group",
+		IsGroup:  true,
+		Sender:   "小金鱼",
+	}
+	got, err := a.isTargetMessage(t.Context(), msg)
+	if err != nil {
+		t.Fatalf("isTargetMessage() error = %v", err)
+	}
+	if !got {
+		t.Fatalf("group containing target member should pass")
+	}
+	got, err = a.isTargetMessage(t.Context(), msg)
+	if err != nil {
+		t.Fatalf("isTargetMessage() second call error = %v", err)
+	}
+	if !got {
+		t.Fatalf("cached target group should pass")
+	}
+	data, err := os.ReadFile(countPath)
+	if err != nil {
+		t.Fatalf("read members count: %v", err)
+	}
+	if calls := strings.Count(string(data), "hit"); calls != 1 {
+		t.Fatalf("wx members calls = %d, want 1", calls)
 	}
 }
 
@@ -101,8 +193,8 @@ func TestCreateMessagePostsClawmanPayload(t *testing.T) {
 			GroupName:      defaultWechatGroup,
 			SelfSenders:    map[string]bool{"私云虾虾": true},
 		},
-		client: server.Client(),
-		roomID: 10,
+		client:  server.Client(),
+		roomIDs: map[string]int64{defaultWechatGroupID: 10},
 	}
 	err := a.createMessage(t.Context(), wxMessage{
 		Username:  defaultWechatGroupID,
@@ -146,8 +238,8 @@ func TestCreateImageMessageUsesStableImagePayload(t *testing.T) {
 			GroupName:      defaultWechatGroup,
 			SelfSenders:    map[string]bool{"私云虾虾": true},
 		},
-		client: server.Client(),
-		roomID: 10,
+		client:  server.Client(),
+		roomIDs: map[string]int64{defaultWechatGroupID: 10},
 	}
 	msg := normalizeWXMessage(wxMessage{
 		Username:  defaultWechatGroupID,
@@ -252,6 +344,7 @@ func TestRunOnceReadsWxAndPostsTargetMessages(t *testing.T) {
 	t.Setenv("WECHAT_WX_BIN", wxPath)
 	t.Setenv("WECHAT_GROUP_ID", defaultWechatGroupID)
 	t.Setenv("WECHAT_GROUP_NAME", defaultWechatGroup)
+	t.Setenv("WECHAT_TARGET_CHATS", defaultWechatGroup)
 	t.Setenv("WECHAT_READ_MODE", "history")
 	t.Setenv("WECHAT_CURSOR_PATH", filepath.Join(tempDir, "cursor.json"))
 	t.Setenv("WECHAT_ONCE", "true")
@@ -317,6 +410,7 @@ func TestRunOnceDoesNotPostDuplicateMessageInSameBatch(t *testing.T) {
 	t.Setenv("WECHAT_WX_BIN", wxPath)
 	t.Setenv("WECHAT_GROUP_ID", defaultWechatGroupID)
 	t.Setenv("WECHAT_GROUP_NAME", defaultWechatGroup)
+	t.Setenv("WECHAT_TARGET_CHATS", defaultWechatGroup)
 	t.Setenv("WECHAT_READ_MODE", "history")
 	t.Setenv("WECHAT_CURSOR_PATH", filepath.Join(tempDir, "cursor.json"))
 	t.Setenv("WECHAT_ONCE", "true")
@@ -372,6 +466,7 @@ func TestRunOnceSkipsSelfMessages(t *testing.T) {
 	t.Setenv("CLAWMAN_API_TOKEN", "token")
 	t.Setenv("CLAWMAN_BASE_URL", server.URL)
 	t.Setenv("WECHAT_WX_BIN", wxPath)
+	t.Setenv("WECHAT_TARGET_CHATS", defaultWechatGroup)
 	t.Setenv("WECHAT_READ_MODE", "history")
 	t.Setenv("WECHAT_CURSOR_PATH", filepath.Join(tempDir, "cursor.json"))
 	t.Setenv("WECHAT_ONCE", "true")
