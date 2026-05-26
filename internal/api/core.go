@@ -47,22 +47,24 @@ type MessageIngestor interface {
 }
 
 type Server struct {
-	core     CoreStore
-	messages MessageIngestor
-	apiToken string
-	mux      *http.ServeMux
+	core        CoreStore
+	messages    MessageIngestor
+	apiToken    string
+	adminSecret string
+	mux         *http.ServeMux
 }
 
 func NewServer(core CoreStore, apiToken string) *Server {
 	return NewServerWithCommandHandler(core, nil, apiToken)
 }
 
-func NewServerWithCommandHandler(core CoreStore, commands CommandHandler, apiToken string) *Server {
+func NewServerWithCommandHandler(core CoreStore, commands CommandHandler, apiToken string, adminSecret ...string) *Server {
 	server := &Server{
-		core:     core,
-		messages: ingest.NewMessageIngestor(core, commands),
-		apiToken: strings.TrimSpace(apiToken),
-		mux:      http.NewServeMux(),
+		core:        core,
+		messages:    ingest.NewMessageIngestor(core, commands),
+		apiToken:    strings.TrimSpace(apiToken),
+		adminSecret: strings.TrimSpace(firstString(adminSecret)),
+		mux:         http.NewServeMux(),
 	}
 	server.RegisterRoutes(server.mux)
 	return server
@@ -550,11 +552,14 @@ func (s *Server) authenticateAdmin(r *http.Request) bool {
 }
 
 func (s *Server) authenticateBasicPermission(r *http.Request, permission string) bool {
-	store, ok := s.core.(APIClientStore)
+	clientID, secret, ok := r.BasicAuth()
 	if !ok {
 		return false
 	}
-	clientID, secret, ok := r.BasicAuth()
+	if s.authenticateBuiltInAdmin(clientID, secret, permission) {
+		return true
+	}
+	store, ok := s.core.(APIClientStore)
 	if !ok {
 		return false
 	}
@@ -563,6 +568,15 @@ func (s *Server) authenticateBasicPermission(r *http.Request, permission string)
 		return false
 	}
 	return client.HasPermission(permission)
+}
+
+func (s *Server) authenticateBuiltInAdmin(clientID string, secret string, permission string) bool {
+	if permission != core.APIClientPermissionAdmin {
+		return false
+	}
+	return strings.TrimSpace(s.adminSecret) != "" &&
+		strings.TrimSpace(clientID) == "admin" &&
+		strings.TrimSpace(secret) == s.adminSecret
 }
 
 func bearerToken(r *http.Request) string {
@@ -583,6 +597,13 @@ func readJSONBody(r *http.Request, target any) error {
 		return err
 	}
 	return nil
+}
+
+func firstString(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
 }
 
 func parseIDActionPath(path string) (int64, string, bool) {

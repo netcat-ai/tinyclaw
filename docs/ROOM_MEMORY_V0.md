@@ -1,8 +1,6 @@
 # TinyClaw Room Memory v0
 
-> Historical: superseded by `docs/CORE_MODEL_REFACTOR_V1.md` for current execution boundaries. This draft keeps useful memory-design notes, but its `room_id -> sandbox` and `RoomChat` assumptions are not current implementation contracts.
-
-> 状态说明：本文档是独立草案，用于沉淀 room 级长期 memory 设计，避免与当前正在编辑的主架构文档产生冲突。后续确认后再合并回 `README.md`、`ARCHITECTURE_V0.md`、`ARCHITECTURE_REFACTOR_2026_04.md`。
+> Historical: superseded by `docs/CORE_MODEL_REFACTOR_V1.md` and `docs/adr/0002-use-room-owned-memory.md`. Keep only as background notes; its `room_id -> sandbox` and `RoomChat` assumptions are not current contracts.
 
 ## 1. 目标
 

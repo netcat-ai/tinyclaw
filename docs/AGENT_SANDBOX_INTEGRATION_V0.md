@@ -1,8 +1,6 @@
 # TinyClaw + Agent Sandbox Integration v0
 
-> Historical: superseded by `docs/CORE_MODEL_REFACTOR_V1.md`. The current service has no sandbox gRPC data plane; `AGENT_RUNNER=codex` is the implemented Invocation runner path.
-
-> 状态说明：本文档描述的是 2026-04-10 当前实现。控制面使用 `SandboxTemplate + SandboxClaim`，数据面已经切到 `clawman` gRPC server + sandbox gRPC client；旧的 `sandbox-router + HTTP /agent` 链路已不再代表当前代码。
+> Historical: superseded by `docs/CORE_MODEL_REFACTOR_V1.md`. The current service has no sandbox gRPC data plane; `AGENT_RUNNER=codex` runs the current Agent Session execution path.
 
 ## 1. 目标
 

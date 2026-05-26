@@ -13,30 +13,6 @@ import (
 	"tinyclaw/internal/core"
 )
 
-func (s *CoreStore) EnsureDefaultAdminClient(ctx context.Context, secret string) error {
-	secret = strings.TrimSpace(secret)
-	if secret == "" {
-		return nil
-	}
-	hash, err := hashAPIClientSecret(secret)
-	if err != nil {
-		return err
-	}
-	permissions, err := json.Marshal([]string{core.APIClientPermissionAdmin})
-	if err != nil {
-		return err
-	}
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO api_clients (client_id, client_secret_hash, name, enabled, permissions)
-		VALUES ($1, $2, $3, TRUE, $4)
-		ON CONFLICT (client_id) DO NOTHING
-	`, "admin", hash, "Default Admin", permissions)
-	if err != nil {
-		return fmt.Errorf("ensure default admin client: %w", err)
-	}
-	return nil
-}
-
 func (s *CoreStore) AuthenticateAPIClient(ctx context.Context, clientID string, secret string) (core.APIClient, error) {
 	clientID = strings.TrimSpace(clientID)
 	secret = strings.TrimSpace(secret)

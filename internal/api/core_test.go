@@ -329,6 +329,31 @@ func TestHandleAdminRoomsRequiresAdminClient(t *testing.T) {
 	}
 }
 
+func TestHandleAdminRoomsAcceptsBuiltInAdminSecret(t *testing.T) {
+	api := NewServerWithCommandHandler(fakeCoreStore{
+		authFn: func(context.Context, string, string) (core.APIClient, error) {
+			t.Fatal("AuthenticateAPIClient should not be called for built-in admin")
+			return core.APIClient{}, nil
+		},
+		roomsFn: func(_ context.Context, limit int) ([]core.AdminRoomSummary, error) {
+			if limit != 10 {
+				t.Fatalf("limit = %d, want 10", limit)
+			}
+			return nil, nil
+		},
+	}, nil, "api-secret", "admin-secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/rooms?limit=10", nil)
+	req.SetBasicAuth("admin", "admin-secret")
+	rec := httptest.NewRecorder()
+
+	api.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
 func TestHandleMessagesCreatesMessage(t *testing.T) {
 	now := time.Now().UTC()
 	api := NewServer(fakeCoreStore{

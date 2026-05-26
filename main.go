@@ -50,11 +50,6 @@ func main() {
 		os.Exit(1)
 	}
 	coreStore := storage.NewCoreStore(store.DB())
-	if err := coreStore.EnsureDefaultAdminClient(ctx, cfg.ClawmanAdminSecret); err != nil {
-		cancel()
-		slog.Error("ensure default admin client failed", "err", err)
-		os.Exit(1)
-	}
 	cancel()
 
 	runCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -65,7 +60,7 @@ func main() {
 	memoryWriteWorker := executor.NewMemoryWriteWorker(runCtx, coreStore)
 	commandHandler := buildCommandHandler(cfg, coreStore)
 	messageIngestor := ingest.NewMessageIngestor(coreStore, commandHandler)
-	coreAPI := httpapi.NewServerWithCommandHandler(coreStore, commandHandler, cfg.ClawmanAPIToken)
+	coreAPI := httpapi.NewServerWithCommandHandler(coreStore, commandHandler, cfg.ClawmanAPIToken, cfg.ClawmanAdminSecret)
 	controlHandler := withAdminUI(coreAPI, "web/control/dist")
 
 	// Start metrics server

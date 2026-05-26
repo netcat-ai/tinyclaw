@@ -88,7 +88,7 @@ Main service:
 
 - `DATABASE_URL`
 - `CLAWMAN_API_TOKEN`
-- `CLAWMAN_ADMIN_SECRET`: creates the default `admin` API client when set.
+- `CLAWMAN_ADMIN_SECRET`: enables the built-in `admin` client for `/admin/api/*` without writing it to the database.
 - `CONTROL_API_ADDR` default `:8081`
 - `METRICS_ADDR` default `:9090`
 
@@ -166,9 +166,12 @@ Mobile delivery uses `rooms.outbound_alias` as `recipient_alias`, falling back t
 
 ## Design Docs
 
-- [QA](./docs/QA.md)
-- [Core Model Refactor V1](./docs/CORE_MODEL_REFACTOR_V1.md)
-- [Next Steps](./docs/NEXT_STEPS.md)
+Current docs:
+
+- [Core Model Refactor V1](./docs/CORE_MODEL_REFACTOR_V1.md): source of truth for Room, Message, Agent Session, Agent, Delivery, and Memory.
+- [Next Steps](./docs/NEXT_STEPS.md): current implementation order.
+- [QA](./docs/QA.md): current production/debug checklist.
 - [Append-Only Room Messages ADR](./docs/adr/0001-append-only-room-messages.md)
 - [Room-Owned Memory ADR](./docs/adr/0002-use-room-owned-memory.md)
-- Historical docs such as [Architecture V0](./docs/ARCHITECTURE_V0.md), [Architecture Refactor 2026-04](./docs/ARCHITECTURE_REFACTOR_2026_04.md), [Agent Sandbox Integration V0](./docs/AGENT_SANDBOX_INTEGRATION_V0.md), and [Room Memory V0](./docs/ROOM_MEMORY_V0.md) no longer describe current code.
+
+Historical docs are retained only for decision history and must not be used as current contracts: [Architecture V0](./docs/ARCHITECTURE_V0.md), [Architecture Refactor 2026-04](./docs/ARCHITECTURE_REFACTOR_2026_04.md), [Agent Sandbox Integration V0](./docs/AGENT_SANDBOX_INTEGRATION_V0.md), [Room Memory V0](./docs/ROOM_MEMORY_V0.md), and [Conversation Log](./docs/CONVERSATION_LOG.md).

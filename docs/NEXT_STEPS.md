@@ -35,7 +35,7 @@
    - 补 agent session lock 过期后的恢复与超时处理。
 5. 补 Clawman Control Plane UI：
    - 新增 `api_clients` 鉴权模型，使用 HTTP Basic 的 `client_id/client_secret`；第一版权限只区分 `adapter` 和 `admin` 能力包。
-   - 第一版默认一个 `admin` client；secret 读取 `CLAWMAN_ADMIN_SECRET`，未配置则禁用默认 admin client 和 `/admin/api/*`。
+   - 第一版默认一个配置内建 `admin` client；secret 读取 `CLAWMAN_ADMIN_SECRET`，不写入 `api_clients`，未配置则禁用默认 admin client 和 `/admin/api/*`。
    - 第一阶段先实现 `/admin/api/*` 后端读模型和管理写入口，再搭 `web/control/` 前端工程。
    - 新增 `web/control/` 独立 Vue 3 + Composition API + UnoCSS + pnpm 前端工程。
    - 新增 `/admin/api/*` 管理接口，支撑 Room 列表、Room Timeline、Room Settings、Delivery ack。

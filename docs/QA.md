@@ -37,9 +37,10 @@ SELECT
   m.id,
   m.room_id,
   m.source_message_id,
+  m.source_kind,
+  m.sender_kind,
   m.sender_id,
   m.payload,
-  m.skipped,
   m.created_at
 FROM messages m
 ORDER BY m.id DESC
@@ -50,10 +51,9 @@ LIMIT 20;
 SELECT
   s.id,
   s.room_id,
-  s.agent_key,
   s.enabled,
-  s.trigger_message_id,
-  s.last_processed_message_id,
+  s.pending_trigger_message_id,
+  s.caught_up_message_id,
   s.codex_session_id,
   s.lock_owner,
   s.lock_expires_at,
@@ -66,9 +66,9 @@ LIMIT 20;
 Use these checks to separate the common cases:
 
 - No matching `messages` row: the Channel Adapter did not submit the message or submitted it to the wrong Room.
-- Message exists but `trigger_message_id` did not advance: trigger policy did not match, the Agent Session is disabled, the message was duplicate/skipped, or command handling suppressed normal agent trigger.
-- `trigger_message_id > last_processed_message_id`: the scheduler has pending agent work; check locks, runner logs, and process health.
-- `last_processed_message_id` reached `trigger_message_id` but no delivery exists: the runner produced empty output or delivery creation failed.
+- Message exists but `pending_trigger_message_id` did not advance: trigger policy did not match, the Agent Session is disabled, the message was duplicate, or command handling suppressed normal agent trigger.
+- `pending_trigger_message_id > caught_up_message_id`: the execution loop has pending agent work; check locks, runner logs, and process health.
+- `caught_up_message_id` reached `pending_trigger_message_id` but no delivery exists: the runner produced empty output or delivery creation failed.
 
 3. If the Agent Session was triggered, inspect runner failures.
 
