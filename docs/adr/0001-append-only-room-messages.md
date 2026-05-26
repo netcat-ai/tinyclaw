@@ -1,22 +1,22 @@
 # Use Append-Only Room Messages
 
-TinyClaw stores inbound messages as append-only room facts. Messages do not store invocation ownership. A message can only be excluded from agent context with `messages.skipped = true`.
+TinyClaw stores messages as append-only raw facts that have entered one Room through its channel. Messages do not store invocation ownership or global skipped state.
 
-Invocation execution boundaries live on `invocations`:
+Agent execution boundaries live on the Room's default `agent_sessions` row:
 
-- `trigger_message_id` records the message that created the invocation.
-- `start_message_id` records the latest non-skipped room message visible when execution starts.
-- `last_seen_message_id` records the latest room message the running agent has explicitly read.
+- `pending_trigger_message_id` records the latest triggering Message boundary.
+- `caught_up_message_id` records the Room Message boundary the Agent Session has caught up to.
+- Runner context is chosen from bounded recent Messages, Room Memory, and tools; it does not require replaying every Message between the two boundaries.
 
 **Considered Options**
 
 - Store `messages.dispatch_state` as waiting/skipped/invocation-id sentinel values.
 - Store nullable `messages.invocation_id`.
-- Keep messages append-only and move execution cursors to invocations.
+- Keep messages append-only and move execution cursors to Agent Session state.
 
 **Consequences**
 
-- Prompt boundaries are explicit and reproducible with `start_message_id`.
-- Running agents can see user follow-up messages by explicitly reading messages after `last_seen_message_id`.
+- Message history remains a raw audit timeline.
+- Prompt construction can evolve without mutating Message rows.
 - Storage does not mutate old messages when an invocation is created or running.
-- First version does not persist `input_snapshot`, `output_snapshot`, or `invocation_observations`; use structured logs and deliveries for debugging.
+- First version does not persist prompt snapshots or run-step snapshots; use structured logs, deliveries, and memory write jobs for debugging.

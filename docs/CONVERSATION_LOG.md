@@ -201,10 +201,10 @@ agent启动后就去从redis队列中拉取对应的消息，开始消费。
 
 ### 变更结论
 
-1. 当前代码已切到 Core Model：`rooms/messages/invocations/deliveries` 是主事实模型。
+1. 当前代码已切到 Core Model：`rooms/messages/agent_sessions/deliveries` 是主事实模型。
 2. 旧 `jobs`、`wecom_app_clients`、`RoomChat` gRPC、sandbox runtime 路径已从当前代码移除。
-3. `AGENT_RUNNER=codex` 时，Invocation execution module 会调用本机 `codex exec`，并将 final output 写入 Delivery。
+3. `AGENT_RUNNER=codex` 时，Agent Session execution loop 会调用本机 `codex exec`，并将 final output 写入 Delivery。
 4. MobileClaw 使用 `GET /api/deliveries?channel=<channel>&id=<last_id>` 拉取 delivery，入本地队列后调用 `POST /api/deliveries/{id}/ack`。
 5. 2026-05-20 真机联调通过企业微信链路：
-   `POST /api/inbound -> Codex runner -> delivery -> MobileClaw poll -> 企业微信发送 -> ack`。
+   `POST /api/rooms -> POST /api/messages -> Codex runner -> delivery -> MobileClaw poll -> 企业微信发送 -> ack`。
 6. 同次测试中微信链路未通过，原因是目标设备上的微信无障碍节点树为空，MobileClaw 无法稳定定位首页、会话、输入框和发送按钮。

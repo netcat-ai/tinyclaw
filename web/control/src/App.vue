@@ -18,6 +18,7 @@ import {
   type InjectMessageInput,
   type MemoryItem,
   type Message,
+  type RegisterRoomInput,
   type RoomSummary,
   type Timeline,
 } from './api'
@@ -41,6 +42,7 @@ const query = ref('')
 const roomLoading = ref(false)
 const detailLoading = ref(false)
 const memoryLoading = ref(false)
+const savingRoom = ref(false)
 const authError = ref('')
 const actionError = ref('')
 const senderId = ref('admin')
@@ -51,6 +53,13 @@ const injecting = ref(false)
 const ackingDeliveryId = ref<number | null>(null)
 const memoryStatus = ref('active')
 const memoryTypes = ref<string[]>([])
+const settingsChannel = ref('')
+const settingsChannelRoomId = ref('')
+const settingsChannelRoomType = ref('group')
+const settingsDisplayName = ref('')
+const settingsOutboundAlias = ref('')
+const settingsAgentEnabled = ref(true)
+const settingsTriggerPolicy = ref('')
 
 const credentials = computed<Credentials>(() => ({
   clientId: clientId.value.trim(),
@@ -120,6 +129,20 @@ const deliveryStatusLabel = (status: number) => {
   if (status === 1) return 'Acked'
   if (status === 2) return 'Failed'
   return `Status ${status}`
+}
+
+const syncSettingsFromSelectedRoom = () => {
+  const summary = selectedRoom.value
+  if (!summary) return
+  settingsChannel.value = summary.room.channel
+  settingsChannelRoomId.value = summary.room.channel_room_id
+  settingsChannelRoomType.value = summary.room.channel_room_type
+  settingsDisplayName.value = summary.room.display_name ?? ''
+  settingsOutboundAlias.value = summary.room.outbound_alias
+  settingsAgentEnabled.value = summary.agent_session?.enabled ?? false
+  settingsTriggerPolicy.value = summary.agent_session?.trigger_policy
+    ? JSON.stringify(summary.agent_session.trigger_policy, null, 2)
+    : ''
 }
 
 const loadRooms = async () => {
@@ -221,6 +244,33 @@ const ackDelivery = async (deliveryId: number) => {
   }
 }
 
+const saveRoomSettings = async () => {
+  if (!selectedRoom.value) return
+  savingRoom.value = true
+  actionError.value = ''
+  try {
+    let triggerPolicy: unknown
+    if (settingsTriggerPolicy.value.trim()) {
+      triggerPolicy = JSON.parse(settingsTriggerPolicy.value)
+    }
+    const input: RegisterRoomInput = {
+      channel: settingsChannel.value.trim(),
+      channel_room_id: settingsChannelRoomId.value.trim(),
+      channel_room_type: settingsChannelRoomType.value.trim(),
+      display_name: settingsDisplayName.value.trim(),
+      outbound_alias: settingsOutboundAlias.value.trim(),
+      agent_enabled: settingsAgentEnabled.value,
+      trigger_policy: triggerPolicy,
+    }
+    await api.registerRoom(credentials.value, input)
+    await Promise.all([loadRooms(), loadTimeline()])
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : 'Failed to save room settings'
+  } finally {
+    savingRoom.value = false
+  }
+}
+
 watch(activeTab, (tab) => {
   if (tab === 'memory') void loadMemory()
 })
@@ -228,6 +278,8 @@ watch(activeTab, (tab) => {
 watch(memoryStatus, () => {
   if (activeTab.value === 'memory') void loadMemory()
 })
+
+watch(selectedRoom, syncSettingsFromSelectedRoom, { immediate: true })
 
 onMounted(async () => {
   if (canUseAPI.value) {
@@ -439,9 +491,8 @@ onMounted(async () => {
                 </div>
                 <select v-model="memoryStatus" class="field text-sm">
                   <option value="active">Active</option>
-                  <option value="stale">Stale</option>
-                  <option value="closed">Closed</option>
-                  <option value="">All</option>
+                  <option value="inactive">Inactive</option>
+                  <option value="all">All</option>
                 </select>
               </div>
 
@@ -462,22 +513,70 @@ onMounted(async () => {
               <div v-if="!memoryLoading && !memoryItems.length" class="empty-state">No memory items.</div>
             </section>
 
-            <section v-else class="settings-grid">
-              <div class="settings-row">
-                <span>Room ID</span>
-                <code>{{ selectedRoom.room.id }}</code>
-              </div>
-              <div class="settings-row">
-                <span>Tenant</span>
-                <code>{{ selectedRoom.room.tenant_id }}</code>
-              </div>
-              <div class="settings-row">
-                <span>Outbound alias</span>
-                <code>{{ selectedRoom.room.outbound_alias }}</code>
-              </div>
-              <div class="settings-row">
-                <span>Agent session</span>
-                <code>{{ selectedRoom.agent_session?.id || 'None' }}</code>
+            <section v-else class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+              <form class="side-panel grid gap-3" @submit.prevent="saveRoomSettings">
+                <h3 class="text-sm font-700">Room Settings</h3>
+                <div class="grid grid-cols-2 gap-2">
+                  <label class="grid gap-1 text-xs text-muted">
+                    Channel
+                    <input v-model="settingsChannel" class="field" />
+                  </label>
+                  <label class="grid gap-1 text-xs text-muted">
+                    Type
+                    <select v-model="settingsChannelRoomType" class="field">
+                      <option value="group">Group</option>
+                      <option value="direct">Direct</option>
+                    </select>
+                  </label>
+                </div>
+                <label class="grid gap-1 text-xs text-muted">
+                  Channel Room ID
+                  <input v-model="settingsChannelRoomId" class="field" />
+                </label>
+                <label class="grid gap-1 text-xs text-muted">
+                  Display Name
+                  <input v-model="settingsDisplayName" class="field" />
+                </label>
+                <label class="grid gap-1 text-xs text-muted">
+                  Outbound Alias
+                  <input v-model="settingsOutboundAlias" class="field" />
+                </label>
+                <label class="flex items-center gap-2 text-sm text-muted">
+                  <input v-model="settingsAgentEnabled" type="checkbox" />
+                  Agent enabled
+                </label>
+                <label class="grid gap-1 text-xs text-muted">
+                  Trigger Policy JSON
+                  <textarea v-model="settingsTriggerPolicy" class="field min-h-32 resize-y font-mono text-xs" />
+                </label>
+                <button class="primary-button justify-center" :disabled="savingRoom || !settingsOutboundAlias.trim()">
+                  <Loader2 v-if="savingRoom" class="h-4 w-4 animate-spin" />
+                  <Check v-else class="h-4 w-4" />
+                  Save
+                </button>
+              </form>
+
+              <div class="settings-grid">
+                <div class="settings-row">
+                  <span>Room ID</span>
+                  <code>{{ selectedRoom.room.id }}</code>
+                </div>
+                <div class="settings-row">
+                  <span>Tenant</span>
+                  <code>{{ selectedRoom.room.tenant_id }}</code>
+                </div>
+                <div class="settings-row">
+                  <span>Agent session</span>
+                  <code>{{ selectedRoom.agent_session?.id || 'None' }}</code>
+                </div>
+                <div class="settings-row">
+                  <span>Trigger boundary</span>
+                  <code>{{ selectedRoom.agent_session?.trigger_message_id || 0 }}</code>
+                </div>
+                <div class="settings-row">
+                  <span>Processed boundary</span>
+                  <code>{{ selectedRoom.agent_session?.last_processed_message_id || 0 }}</code>
+                </div>
               </div>
             </section>
           </div>

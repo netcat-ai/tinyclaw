@@ -2,18 +2,19 @@
 
 TinyClaw is a room-scoped agent runtime control plane. The current implementation is centered on the Core Model:
 
-- **Room**: TinyClaw-owned conversation container mapped from an external Channel Room.
-- **Agent Session**: one configured agent context inside a Room, with its own trigger and processed-message checkpoint.
-- **Message**: inbound fact for exactly one Room.
-- **Room Memory**: durable Room-owned knowledge searched by Agent Sessions during Agent Runs.
-- **Delivery**: outbound item produced by an agent run.
+- **Room**: shared collaboration space over one append-only Message timeline.
+- **Agent Session**: one Room-scoped default orchestrator runtime state, with trigger and caught-up boundaries.
+- **Agent**: configurable agent definition that may be addressed in a Room or executed as a run-scoped Subagent.
+- **Message**: append-only raw fact that has entered exactly one Room through its channel.
+- **Room Memory**: durable Room-owned knowledge searched during Agent Runs.
+- **Delivery**: channel-bound outbound intent produced by an agent run or command.
 - **Command**: explicit Room message handled by Clawman without ordinary agent conversation.
 
 ## Current State
 
 The current codebase has removed the old in-repo agent runtime, sandbox orchestrator, and `RoomChat` gRPC bridge. Channel-specific ingestion and sending should live in external Channel Adapters that call TinyClaw APIs.
 
-Triggered Agent Sessions are picked up by an in-process execution loop. Until an agent runner is configured, triggered runs fail fast and produce a failure delivery.
+Triggered Agent Sessions are picked up by an in-process execution loop. First version has exactly one Agent Session per Room. Until an agent runner is configured, triggered runs fail fast and produce a failure delivery.
 
 Set `AGENT_RUNNER=codex` to run triggered Agent Sessions through `codex exec`. Optional Codex runner settings:
 
@@ -28,7 +29,7 @@ Codex runs receive a short-lived Room Memory Search capability. The capability c
 
 The Codex runner reuses one Codex CLI thread per Agent Session. Clawman stores the Codex `thread_id` on `agent_sessions.codex_session_id`; subsequent runs call `codex exec resume <codex_session_id> -`. If the saved thread is stale, the runner falls back to a fresh Codex thread and stores the new id.
 
-First-version `/draw <prompt>` is designed as a Clawman-owned Command rather than ordinary Codex conversation. It saves the Message, does not trigger the ordinary Agent Session, starts an in-process background draw task for new non-duplicate Messages, calls `gpt-image-2`, uploads the PNG to S3-compatible object storage, and emits command Deliveries. The image Delivery carries a 24h presigned S3 URL instead of embedding image bytes.
+First-version `/draw <prompt>` is designed as a Clawman-owned Command rather than ordinary Codex conversation. It saves the Message, does not advance the Agent Session trigger boundary, starts an in-process background draw task for new non-duplicate Messages, calls `gpt-image-2`, uploads the PNG to S3-compatible object storage, and emits command Deliveries. The image Delivery carries a 24h presigned S3 URL instead of embedding image bytes.
 
 Kubernetes deployment pins `api.openai.com` and `chatgpt.com` through `hostAliases` because the current cluster DNS resolves those domains incorrectly. Refresh those IPs if Codex CLI connectivity starts timing out before `thread.started`.
 
@@ -130,7 +131,7 @@ Local WeChat adapter:
 - `WECHAT_POLL_INTERVAL`: defaults to `3s`.
 - `WECHAT_POLL_LIMIT`: defaults to `200`.
 - `WECHAT_ONCE`: set to `true` to register the Room, run one poll, submit matching Messages, and exit.
-- `WECHAT_SELF_SENDERS`: comma-separated sender display names to persist as skipped self messages, defaults to `私云虾虾`.
+- `WECHAT_SELF_SENDERS`: comma-separated sender display names used by the adapter to avoid triggering on self-sent messages, defaults to `私云虾虾`.
 
 Test-group smoke flow:
 

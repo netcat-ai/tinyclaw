@@ -18,6 +18,7 @@ clawman 负责：
 - 保存 Message
 - 应用 Trigger Policy
 - 扫描 Agent Session 并运行 agent
+- 在一次 Agent Run 中按需运行 Subagents
 - 生成 Delivery outbox
 - 提供 adapter-facing HTTP API
 
@@ -25,29 +26,43 @@ clawman 负责：
 
 ### Room
 
-`Room` 是 TinyClaw 内部会话容器。第一版中，一个外部 `Channel Room` 严格映射到一个 `Room`。
+`Room` 是 TinyClaw 的共享协作空间，承载一条 append-only Message 时间线，并作为 agent runtime scope。第一版中，一个外部 `Channel Room` 可以映射到一个 `Room`。
 
 `rooms.channel` 和 `rooms.channel_room_id` 第一版不可变；如果外部绑定变化，创建新的 Room。
 
 Room 必须先注册，后续 Message 才能写入。Room 不再作为 Message 入站的副作用自动创建。
 
-Room 重新注册时允许更新 `display_name`、`outbound_alias`，并更新请求指定的 Agent Session 的 `agent_enabled`、`trigger_policy`。`channel`、`channel_room_id`、`channel_room_type` 是 Room 的外部身份，不允许通过更新改变。
+Room 的 `channel` 决定消息写入口和 Delivery consumer。`channel = local` 时由 TinyClaw local client 写入 Messages 并消费 Deliveries；第三方 channel 由对应 Channel Adapter 写入 Messages 并消费 Deliveries。
+
+Room 重新注册时允许更新 `display_name`、`outbound_alias`，以及该 Room 默认 Agent Session 的 `enabled`、`trigger_policy`。`channel`、`channel_room_id`、`channel_room_type` 是 Room 的外部身份，不允许通过更新改变。
 
 ### Message
 
-`Message` 是 TinyClaw 内部入站事实，属于一个 Room。
+`Message` 是已经通过某个 channel 进入 Room 的原始 append-only 事实，可来自本地用户、agent、系统或外部 Channel。
 
 Message 不再使用企业微信 archive `seq` 作为身份。第三方平台消息身份由 adapter 提供 `source_message_id`，用于幂等插入。
 
+Message 不保存全局 `skipped` 状态。是否触发 agent、是否进入某次 Agent Run 上下文，由 Trigger Policy、Command handler 和 Agent Session 的读取策略决定。
+
+### Agent
+
+`Agent` 是可配置的 agent 定义，可被用户在 Room 中寻址，也可在一次 Agent Run 内作为 Subagent 执行。第一版 Agent 定义可通过 API/UI 编辑，但不保留版本或运行快照；历史排障依赖结构化日志。
+
 ### Agent Session
 
-`Agent Session` 表示一个 agent 在一个 Room 内的长期状态。同一个 Room 可以有多个 Agent Session，每个 Agent Session 独立保存 agent 配置、触发规则和处理进度。
+`Agent Session` 表示一个 Room 内默认 orchestrator 的长期运行状态，保存启用状态、触发规则、处理边界、runner continuation 和执行锁。
+
+第一版每个 Room 恰好有一个 Agent Session。用户可寻址的多个 Agent 作为 run-scoped Subagents 执行，不为每个 Agent 创建长期 Agent Session。
+
+### Subagent
+
+`Subagent` 是一次 Agent Run 内部临时执行的 Agent。Subagent 可以通过本次 Agent Run 的 memory search capability 读取 Room Memory，但不拥有 Room 身份、进度游标或 Room Memory 写入权。
 
 ### Delivery
 
-`Delivery` 是 agent run 产生的外发项。agent run 完成只表示 agent 执行完成，不要求 Delivery 已发送成功。
+`Delivery` 是 agent run 或 Command 产生的 channel-bound outbound intent。agent run 完成只表示 agent 执行完成，不要求 Delivery 已发送成功，也不表示目标 channel 已出现该消息。
 
-第一版 agent final output 非空时，clawman 自动创建一条 Delivery；final output 为空时，只推进 Agent Session 的处理边界，不产生 Delivery。
+第一版 agent final output 非空时，clawman 自动创建一条 Delivery；final output 为空时，只推进 Agent Session 的处理边界，不产生 Delivery。Delivery ack 不要求同步写回 Message；consumer 可主动写回 `source_kind = agent` 的 Message，也可等待平台 self echo 后由 adapter 写入。
 
 ### Room Memory
 
@@ -85,52 +100,71 @@ unique(tenant_id, channel, channel_room_id)
 id bigint primary key
 room_id bigint not null references rooms(id)
 source_message_id text not null
+source_kind text not null
+source_ref text null
+sender_kind text not null
 sender_id text not null
 sender_name text null
 payload jsonb not null
 message_time timestamptz not null
-skipped boolean not null default false
 created_at timestamptz not null
 
 unique(room_id, source_message_id)
 ```
 
-Message 是 append-only 入站事实。`skipped = true` 表示该消息永远不应进入 agent 上下文。
+Message 是已进入 Room channel 的 append-only 原始事实。`source_kind` 表达来源类型，例如 `local`、`external`、`agent`、`system`；`sender_kind` 表达发言主体类型，例如 `person`、`agent`、`external`、`system`。
 
 ### agent_sessions
 
 ```text
 id bigint primary key
 room_id bigint not null references rooms(id)
-agent_key text not null
 enabled boolean not null
 trigger_policy jsonb null
-trigger_message_id bigint null references messages(id)
-last_processed_message_id bigint not null
+pending_trigger_message_id bigint null references messages(id)
+caught_up_message_id bigint not null
 codex_session_id text null
 lock_owner text null
 lock_expires_at timestamptz null
 created_at timestamptz not null
 updated_at timestamptz not null
 
-unique(room_id, agent_key)
+unique(room_id)
 ```
 
-`trigger_message_id` 是该 Agent Session 当前需要处理的最新触发消息。入站 Message 命中该 Agent Session 的 Trigger Policy 时，更新该字段。
+`pending_trigger_message_id` 是该 Agent Session 当前需要追上的最新触发边界。入站 Message 命中该 Agent Session 的 Trigger Policy 时，更新该字段。
 
-`last_processed_message_id` 是该 Agent Session 已成功处理到的 Room Message 边界。不同 Agent Session 可以独立处理同一个 Room 的消息流。
+`caught_up_message_id` 是该 Agent Session 已经追到的 Room Message 边界。它不表示边界前每条 Message 都逐条进入过 prompt，只表示该 Agent Session 的长期上下文已追到该 Room 时间线位置。
 
 `codex_session_id` 是当前 Codex CLI runner 的 continuation id。当前实现只有 Codex CLI runner，所以该 id 直接归属于 Agent Session，不引入通用 provider/session 表。该字段不是 Room Memory；它只用于让下一次 Agent Run 通过 `codex exec resume` 复用同一个 Codex CLI thread。
 
-`trigger_message_id` 同时是触发信号和本次处理窗口右边界。Agent run 读取 `id > agent_sessions.last_processed_message_id AND id <= agent_sessions.trigger_message_id` 且 `skipped = false` 的 messages。
+`pending_trigger_message_id` 同时是触发信号和本次追赶边界。Agent Run 可以读取最近窗口和按需 Memory Search，而不要求把 `caught_up_message_id < id <= pending_trigger_message_id` 的所有 Messages 全量放入 prompt。
 
 `lock_owner` 和 `lock_expires_at` 是执行 loop 的短租约，用于限制同一 Agent Session 同一时间只有一个 agent run。
 
-Agent execution loop 扫描 `trigger_message_id > last_processed_message_id` 且未被有效 lock 持有的 Agent Session，抢占 lock 后开始 agent run。入站 Message 写入路径只负责保存 Message 和更新匹配 Agent Session 的 `trigger_message_id`，不直接启动 agent run。
+Agent execution loop 扫描 `pending_trigger_message_id > caught_up_message_id` 且未被有效 lock 持有的 Agent Session，抢占 lock 后开始 agent run。入站 Message 写入路径只负责保存 Message 和更新匹配 Agent Session 的 `pending_trigger_message_id`，不直接启动 agent run。
 
-一次 agent run 的处理窗口包含 `last_processed_message_id < message.id <= trigger_message_id` 内所有非 skipped Messages，而不是只包含触发消息。Delivery 记录实际处理窗口的闭区间。
+一次 Agent Run 的追赶边界为 `caught_up_message_id < message.id <= pending_trigger_message_id`。Runner 实际上下文应使用 bounded recent messages、Room Memory 和按需工具调用，而不是无界重放全部历史。
 
-agent run 成功或失败后都推进 `last_processed_message_id` 到本次窗口的 `trigger_message_id` 并释放 lock。失败时写日志并创建失败提示 Delivery；失败不自动重试。
+Agent Run 成功或失败后都推进 `caught_up_message_id` 到本次 `pending_trigger_message_id` 并释放 lock。失败时写日志并创建失败提示 Delivery；失败不自动重试。
+
+### agents
+
+```text
+id bigint primary key
+key text not null unique
+display_name text not null
+description text null
+prompt text not null
+allowed_tools jsonb not null
+enabled boolean not null
+created_at timestamptz not null
+updated_at timestamptz not null
+```
+
+Agent definitions are mutable in the first version. Updating an Agent overwrites the current definition; TinyClaw does not keep `agent_versions`, prompt snapshots, or subagent run-step snapshots in the first version.
+
+Agent Run logs should include `agent_run_id`, `room_id`, `agent_session_id`, selected subagent keys, selected subagent `agent_id`s, tool calls, and memory search counts for troubleshooting.
 
 ### deliveries
 
@@ -149,6 +183,8 @@ acked_at timestamptz null
 Adapter 使用 `deliveries.id` 作为轮询游标。
 
 Delivery 不冗余保存 `channel` / `channel_room_id`；外发时通过 `room_id` join `rooms`。
+
+Delivery 消费成功后，consumer ack Delivery。若真实外发失败，Delivery 可失败或重试，但不会污染 Room 的 Message 时间线。Delivery 与后续 Message 的关联由 `source_message_id`、平台消息 id 或结构化日志 best-effort 追踪，不在 Delivery 核心表中保存强关联字段。
 
 `source_message_from_id` 和 `source_message_to_id` 记录产生该 Delivery 的 Message 闭区间，语义等同于 `source_message_from_id <= message.id AND message.id <= source_message_to_id`。普通 Agent Run 使用本次处理窗口的第一条 Message 和触发边界；Command Delivery 使用命令 Message 自身作为单点闭区间，即 `source_message_from_id = source_message_to_id = command_message.id`。
 
@@ -179,7 +215,7 @@ unique(room_id, type, key)
 id bigint primary key
 room_id bigint not null references rooms(id)
 agent_session_id bigint not null references agent_sessions(id)
-agent_key text not null
+agent_id bigint not null references agents(id)
 source_message_from_id bigint not null
 source_message_to_id bigint not null
 operation_key text not null unique
@@ -282,8 +318,8 @@ clawman 行为：
 3. `POST /api/messages` 只接受已存在的 `room_id`；找不到时返回 `404 room_not_found`。
 4. 按 `(room_id, source_message_id)` 幂等插入 Message。
 5. 如果 Message 已存在，返回已有结果，不重复触发。
-6. 对 Room 下 enabled 的 Agent Sessions 分别应用 Trigger Policy；为空时使用 channel default rule。
-7. 命中 trigger 时更新对应 Agent Session 的 `trigger_message_id`。
+6. 对 Room 的 Agent Session 应用 Trigger Policy；为空时使用 channel default rule。
+7. 命中 trigger 时更新该 Agent Session 的 `pending_trigger_message_id`。
 
 Duplicate Message never triggers side effects. Only a newly inserted Message may update Agent Session trigger boundaries, enqueue or start command handling, or produce Deliveries.
 
@@ -293,25 +329,25 @@ Message API success only means the inbound Message was accepted or deduplicated 
 
 Message 入库后不再改所属关系。未触发消息仍保留在 room message log 中，可在后续触发时作为上下文。
 
-如果平台层判断该消息永远不应进入 agent 上下文，写入 `skipped = true`。
+Message 本身不记录全局 agent 可见性。命令、第三方只读镜像和其它非对话消息是否进入 Agent Run 上下文，由 Command handler、Trigger Policy 和 runner 上下文选择决定。
 
 当 Message 命中某个 Agent Session 的 Trigger Policy：
 
 1. 不创建 run 记录。
-2. 更新该 Agent Session 的 `trigger_message_id = message.id`。
-3. execution loop 后续发现 `trigger_message_id > last_processed_message_id` 后开始运行。
+2. 更新该 Agent Session 的 `pending_trigger_message_id = message.id`。
+3. execution loop 后续发现 `pending_trigger_message_id > caught_up_message_id` 后开始运行。
 
 当同一 Agent Session 正在运行：
 
 1. 新 Message 只追加到 room message log。
-2. 如果新 Message 命中 trigger，只更新 `trigger_message_id`。
-3. 当前 run 完成后，下一轮 loop 会处理 `last_processed_message_id < id <= trigger_message_id` 的剩余窗口。
+2. 如果新 Message 命中 trigger，只更新 `pending_trigger_message_id`。
+3. 当前 run 完成后，下一轮 loop 会追到新的 `pending_trigger_message_id`。
 
 这让“运行期间的新消息”成为下一次窗口，而不是当前 agent run 的隐式输入。
 
 ## 6. Agent Run 与 Delivery
 
-Agent run 由 clawman 进程内 execution loop 启动，不设计外部 claim API。execution loop 抢占 Agent Session lock，读取 `last_processed_message_id < id <= trigger_message_id` 的初始上下文，并调用 agent runner。
+Agent run 由 clawman 进程内 execution loop 启动，不设计外部 claim API。execution loop 抢占 Agent Session lock，读取 bounded recent messages 和 Room Memory，并调用 agent runner 追到 `pending_trigger_message_id`。
 
 当前实现提供 `CodexRunner`：设置 `AGENT_RUNNER=codex` 后，execution module 会调用本机 `codex exec`，并把 runner 输出解析成 Agent Run Result。
 
@@ -336,7 +372,9 @@ empty output     -> no delivery
 failure          -> create failure delivery(status=pending)
 ```
 
-第一版 `/draw <prompt>` 作为 Clawman-owned Command 处理，不进入普通 Codex Agent Run，也不更新普通 Agent Session trigger boundary。Command 是有效 Room Message，不标记为 `skipped`。
+Agent Run 成功不会直接追加 agent Message。Message 只在 channel consumer 或后续平台回流通过 `POST /api/messages` 写入后出现。若 consumer 主动写回，建议使用 `source_message_id = "delivery:<delivery_id>"` 保证幂等；若等待外部平台 self echo，则由 Channel Adapter 使用平台消息 id 写入并按需关联 Delivery。
+
+第一版 `/draw <prompt>` 作为 Clawman-owned Command 处理，不进入 Codex Agent Run，也不更新 Agent Session trigger boundary。Command 是有效 Room Message，但由 Command handler 消费。
 
 第一版 Draw Command 采用轻量执行模型：`POST /api/messages` 只有在插入新 Message 且命中 `/draw` 时，才启动一个 in-process background goroutine 执行生图；重复 Message 不启动副作用。该版本不提供 crash recovery，clawman 重启会丢失正在执行的 `/draw`。
 
@@ -382,7 +420,7 @@ Memory Write Job 失败不阻止 Delivery 创建。
 
 Rejected 和最终 failed 的 Memory Write Jobs 都会写 durable audit，并输出结构化日志，方便 operator 从运行日志和审计记录两侧定位失败 proposal。
 
-Agent run 成功或失败后都推进 `agent_sessions.last_processed_message_id` 到本次窗口的 `trigger_message_id`，并释放 lock。成功且 final output 非空时创建 Delivery；失败时写日志并创建失败提示 Delivery。失败不自动重试，后续新触发消息会创建新的处理窗口。
+Agent run 成功或失败后都推进 `agent_sessions.caught_up_message_id` 到本次 `pending_trigger_message_id`，并释放 lock。成功且 final output 非空时创建 Delivery，但不直接写 agent Message；失败时写日志并创建失败提示 Delivery。失败不自动重试，后续新触发消息会创建新的处理窗口。
 
 ## 7. Delivery Pull API
 
@@ -408,6 +446,8 @@ ack 后 Delivery 保留，只更新状态，后续 pending 轮询不再返回。
 
 第一版由 adapter 负责发送失败后的短期重试；clawman 不主动重试 failed Delivery。
 
+Ack 表示 consumer 已成功处理该 outbound intent，例如第三方发送接口调用成功或 local UI 已接受展示。Ack 不要求已经写回 Message；Delivery-to-Message 关联是可选、best-effort 的 channel 策略。
+
 ## 8. Control Plane UI
 
 第一版 Control Plane UI 作为独立前端工程放在同仓库内，源码位于 `web/control/`。前端使用 Vue 3 + Composition API、UnoCSS、pnpm。构建产物可由 clawman 同域服务在 `/admin/` 下提供，但源码和构建链保持独立，后续复杂化时可以单独部署。
@@ -422,8 +462,8 @@ Room list 是运维索引页，第一版聚合展示：
 - `display_name`
 - `outbound_alias`
 - default `agent_enabled`
-- `trigger_message_id`
-- `last_processed_message_id`
+- `pending_trigger_message_id`
+- `caught_up_message_id`
 - `pending_delivery_count`
 - `last_message_time`
 - `updated_at`

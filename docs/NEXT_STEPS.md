@@ -17,7 +17,7 @@
 1. 实现 `/draw` Generated Media 纵切：
    - 破坏性统一 source message window 字段为 `source_message_from_id` / `source_message_to_id`。
    - 在 `POST /api/messages` 的新 Message 路径识别 trim 后行首 `/draw` 命令；重复 Message 不启动副作用。
-   - `/draw` 不更新普通 Agent Session trigger boundary，不标记 `skipped`。
+   - `/draw` 不更新 Agent Session trigger boundary；Message 表不保存 `skipped`。
    - 第一版用 in-process background goroutine 执行，不提供 crash recovery。
    - 调用 image provider：默认 `IMAGE_PROVIDER_BASE_URL=https://code.v4.chat`、`IMAGE_PROVIDER_MODEL=gpt-image-2`，API key 优先 `IMAGE_PROVIDER_API_KEY`，否则兼容读取 `CODEX_AUTH_JSON.OPENAI_API_KEY`。
    - 上传 PNG 到 S3-compatible object storage，Delivery payload 使用 `media_url_kind=presigned_s3` 和 24h presigned URL。
@@ -59,8 +59,9 @@
 
 - `api_clients`：可调用 Clawman HTTP API 的外部或管理客户端，保存 client secret hash 和权限集合。
 - `rooms`：TinyClaw room，与外部 channel room 映射。
-- `agent_sessions`：一个 Room 内的 agent 配置、trigger 边界、已处理消息边界和 Codex CLI continuation id。
-- `messages`：room 内 append-only 入站消息事实，`skipped` 标记是否排除出 agent 上下文。
+- `agent_sessions`：一个 Room 内唯一默认 orchestrator 的启用状态、trigger 边界、caught-up 边界和 Codex CLI continuation id。
+- `agents`：用户可配置的 agent 定义，可被 @ 寻址，也可作为 run-scoped Subagent 执行。
+- `messages`：room 内 append-only 原始消息事实；是否触发 agent、是否进入上下文由 Trigger Policy、Command handler 和 runner 读取策略决定。
 - `deliveries`：agent run 或 command 产生的外发消息，并用 `source_message_from_id` / `source_message_to_id` 记录来源 Message 闭区间。
 - `memory_items`：Room-owned durable memory，第一版类型为 fact / preference / todo。
 - `memory_write_jobs`：Agent Run Result 产生的异步 memory 写入任务。
@@ -80,5 +81,5 @@
 9. 同一 Agent Session 的第二次及后续 Codex run 会使用已保存的 `codex_session_id` 继续同一个 Codex CLI thread。
 10. `/draw <prompt>` 只在新插入 Message 时启动一次异步生图；重复 Message 不重复扣费或重复发图。
 11. `/draw` 成功时 Delivery 顺序为 `正在画图...`、`图片已生成：<media_id>`、图片 payload；图片 payload 携带 24h presigned S3 URL。
-12. `/draw` 不触发普通 Agent Session，不写 Room Memory，失败通过 `command_failure` Delivery 异步告知用户。
+12. `/draw` 不推进 Agent Session trigger boundary，不写 Room Memory，失败通过 `command_failure` Delivery 异步告知用户。
 13. Control Plane UI 可以查看 Room Timeline，并能完成 Room 注册/更新、默认 Agent Session 启停、Delivery ack、Inject Message。

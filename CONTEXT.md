@@ -5,7 +5,7 @@ TinyClaw is a room-scoped agent runtime that lets enterprise users interact with
 ## Language
 
 **Room**:
-A stable TinyClaw-owned conversation container mapped one-to-one from a **Channel Room** in the first room model.
+A shared collaboration space where people and agents work over one append-only **Message** timeline.
 _Avoid_: Agent context, sandbox identity
 
 **Channel Room**:
@@ -33,8 +33,8 @@ An **Agent Session** whose inbound messages may trigger agent execution.
 _Avoid_: Known room, send-ready room
 
 **Agent Session**:
-A long-running agent context inside a **Room** with its own processing progress.
-_Avoid_: Room, Agent Run
+A long-running execution state for the default orchestrator in one **Room**.
+_Avoid_: Room, Agent, Subagent
 
 **Room Memory**:
 Durable knowledge owned by one **Room** and used by **Agent Sessions** in that Room.
@@ -93,8 +93,12 @@ The control plane that owns Core Model persistence, trigger decisions, agent exe
 _Avoid_: WeCom bot, agent process
 
 **Agent**:
-The configured reasoning behavior used by an **Agent Runner**.
-_Avoid_: Channel adapter, message consumer
+A configured agent definition that may be addressed in a **Room** or executed as a **Subagent**.
+_Avoid_: Channel Adapter, Agent Session, message consumer
+
+**Subagent**:
+A run-scoped execution of an **Agent** inside one **Agent Run** without independent Room identity, progress, or Room Memory ownership.
+_Avoid_: Agent Session, Room participant, Agent Runner
 
 **Agent Runner**:
 A local executor adapter that runs one **Agent Run** and returns final output. The current concrete runner is `CodexRunner`.
@@ -105,8 +109,8 @@ An external service that translates a third-party platform into TinyClaw's inbou
 _Avoid_: Core protocol, runtime logic
 
 **Message**:
-A TinyClaw-owned inbound fact associated with exactly one **Room**.
-_Avoid_: Channel cursor, WeCom seq
+An append-only raw fact that has entered one **Room** through its channel.
+_Avoid_: Channel cursor, WeCom seq, Delivery
 
 **Command**:
 A user-authored **Message** that requests a specific Clawman-owned action instead of ordinary agent conversation.
@@ -137,7 +141,7 @@ A user-authored command message that requests **Generated Media** for the curren
 _Avoid_: Agent prompt, Memory Todo, scheduled task
 
 **Delivery**:
-A channel-bound outbound item produced from an **Agent Run** or **Command**.
+A channel-bound outbound intent produced from an **Agent Run** or **Command**.
 _Avoid_: Job, reply row
 
 **Trigger Policy**:
@@ -158,7 +162,7 @@ _Avoid_: Clawman state, Message id, processing seq
 
 ## Relationships
 
-- A **Room** may have one or more **Agent Sessions**.
+- A **Room** has exactly one **Agent Session** in the first version.
 - An **Agent Session** belongs to exactly one **Room**.
 - A **Room** may have **Room Memory**.
 - **Room Memory** belongs to exactly one **Room**.
@@ -203,6 +207,7 @@ _Avoid_: Clawman state, Message id, processing seq
 - **Generated Media** has one **Generated Media ID** for user-visible reference.
 - An **Agent Run** may produce zero or more **Deliveries**.
 - An **Agent Run Result** may produce zero or more **Deliveries**.
+- A **Delivery** is not a **Message** unless a channel consumer or later channel echo writes a corresponding **Message**.
 - **Generated Media** is delivered to the current **Room** and is not a reusable long-term artifact in the first version.
 - A **Delivery** may reference **Generated Media** without embedding the media bytes in the delivery list.
 - A **Delivery** targets exactly one external channel destination.
@@ -212,6 +217,11 @@ _Avoid_: Clawman state, Message id, processing seq
 - A **Scheduled Message** belongs to exactly one **Agent Session**.
 - A **Schedule** created from an agent interaction belongs to the **Agent Session** handling that interaction.
 - A **Channel Cursor** belongs to a **Channel Adapter**, not to `clawman` or a **Message**.
+- A **Room** may have people and **Agents** as addressable collaborators.
+- An **Agent** may be executed as a **Subagent** during one **Agent Run**.
+- First-version **Agent** definitions are mutable and not versioned.
+- A **Subagent** may request **Memory Search** through the current **Agent Run**.
+- A **Subagent** may suggest memory candidates, but only an **Agent Run Result** may contain **Memory Write Proposals**.
 
 ## Example dialogue
 
@@ -227,8 +237,8 @@ _Avoid_: Clawman state, Message id, processing seq
 - Enterprise WeCom `seq` was used as both **Message** identity and **Channel Cursor**; resolved: **Message** identity is TinyClaw-owned, while channel checkpoints stay adapter-local.
 - WeCom-specific ingestion was considered part of `clawman`; resolved: third-party platform ingestion belongs to external **Channel Adapters**, and `clawman` receives standardized inbound messages.
 - Duplicate inbound delivery from **Channel Adapters** is expected; resolved: every inbound **Message** must carry a **Source Message ID** for idempotent insertion.
-- **Room** was used as both external conversation container and agent execution boundary; resolved: **Room** is the conversation container, while **Agent Session** is the execution and long-running context boundary.
-- Multiple agents in one **Room** require distinct **Agent Sessions**; resolved: each **Agent Session** tracks its own processing progress.
+- **Room** was used as both external conversation container and agent execution boundary; resolved: **Channel Room** is external, while **Room** is TinyClaw's shared collaboration and agent runtime boundary.
+- Multiple user-addressable agents in one **Room** were considered as multiple long-running **Agent Sessions**; resolved: first model gives each **Room** exactly one default orchestrator **Agent Session** and uses **Agents** as run-scoped **Subagent** definitions.
 - Long-term memory was considered as **Agent Session** or runner-owned state; resolved: use **Room Memory** for durable Room-owned knowledge, with **Agent Sessions** as readers and writers.
 - **Room Memory** recall was considered as prompt preload; resolved: use **Memory Search** as the canonical recall action requested by an **Agent Session** during an **Agent Run**.
 - Running agents were considered allowed to directly mutate **Room Memory**; resolved: first version uses **Memory Search** during the run and **Memory Write Proposals** after the run.
@@ -238,6 +248,8 @@ _Avoid_: Clawman state, Message id, processing seq
 - **Memory Search** was considered as a generated summary; resolved: it returns ranked **Memory Items** with source metadata.
 - **Memory Search** was considered as accepting a `room_id`; resolved: the **Room** comes from the current **Agent Run**, not from tool parameters.
 - **Memory Search** was considered as a per-run sidecar concern; resolved: Clawman owns the memory capability endpoint, while runner-specific tool protocols are adapters.
+- "web chat" and "workspace" were considered as separate built-in product concepts; resolved: use **Room** directly because TinyClaw is an agent collaboration tool, not a full chat client.
+- Mirrored third-party conversations were considered sendable from the built-in product; resolved: first version uses **Room** `channel` to determine the message writer and **Delivery** consumer, and does not introduce **Room Sources**.
 - **Memory Search** was considered as historical message search; resolved: it only searches **Room Memory**, while raw **Message** search would be a separate capability.
 - Durable audit was considered for **Memory Search**; resolved: first version keeps durable audit for memory changes and uses structured logs for search.
 - **Memory Item** types were considered open-ended; resolved: first version only uses **Memory Fact**, **Memory Preference**, and **Memory Todo**.
@@ -262,4 +274,4 @@ _Avoid_: Clawman state, Message id, processing seq
 - Generated image bytes were considered for embedding in **Delivery** payloads; resolved: **Deliveries** reference **Generated Media** instead of carrying media bytes in the delivery list.
 - Generated images were considered as free-form agent output; resolved: first-version image generation starts from an explicit **Draw Command**.
 - Generated Media IDs were considered as reusable artifact handles; resolved: first-version **Generated Media IDs** are for user-visible reference and troubleshooting, not for `/show` or `/resend` commands.
-- Commands were considered for `skipped` messages; resolved: a **Command** is a valid **Room** message history item, but it does not trigger ordinary agent conversation when consumed by a command handler.
+- Commands were considered as messages hidden from the Room timeline; resolved: a **Command** is a valid **Room** message history item, but it does not trigger ordinary agent conversation when consumed by a command handler.

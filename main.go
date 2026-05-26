@@ -66,12 +66,13 @@ func main() {
 	commandHandler := buildCommandHandler(cfg, coreStore)
 	messageIngestor := ingest.NewMessageIngestor(coreStore, commandHandler)
 	coreAPI := httpapi.NewServerWithCommandHandler(coreStore, commandHandler, cfg.ClawmanAPIToken)
+	controlHandler := withAdminUI(coreAPI, "web/control/dist")
 
 	// Start metrics server
 	go agentScheduler.RunLoop()
 	go memoryWriteWorker.RunLoop()
 	go serveMetrics(runCtx, cfg.MetricsAddr)
-	go serveCoreAPI(runCtx, cfg.ControlAPIAddr, coreAPI)
+	go serveCoreAPI(runCtx, cfg.ControlAPIAddr, controlHandler)
 	if cfg.WeComEnabled {
 		go serveWeComArchiveAdapter(runCtx, store, coreStore, messageIngestor, cfg)
 	}
@@ -79,6 +80,21 @@ func main() {
 	<-runCtx.Done()
 
 	slog.Info("clawman stopped")
+}
+
+func withAdminUI(api http.Handler, distDir string) http.Handler {
+	files := http.FileServer(http.Dir(distDir))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/admin" {
+			http.Redirect(w, r, "/admin/", http.StatusPermanentRedirect)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/admin/") && !strings.HasPrefix(r.URL.Path, "/admin/api/") {
+			http.StripPrefix("/admin/", files).ServeHTTP(w, r)
+			return
+		}
+		api.ServeHTTP(w, r)
+	})
 }
 
 func buildCommandHandler(cfg Config, coreStore *storage.CoreStore) *command.Handler {

@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY dist/tinyclaw /app/tinyclaw
+COPY web/control/dist /app/web/control/dist
 COPY channel/wecom/finance/lib /app/channel/wecom/finance/lib
 
 ENV LD_LIBRARY_PATH=/app/channel/wecom/finance/lib
