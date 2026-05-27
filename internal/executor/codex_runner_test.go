@@ -70,6 +70,33 @@ func TestBuildCodexPromptMarksHandledCommandMessages(t *testing.T) {
 	}
 }
 
+func TestBuildCodexPromptIncludesRunScopedSubagents(t *testing.T) {
+	prompt := BuildCodexPrompt(AgentRunRequest{
+		AgentRun: testAgentRun,
+		SelectedAgents: []core.Agent{{
+			Key:         "product",
+			DisplayName: "Product",
+			Description: "Clarifies requirements.",
+			Prompt:      "Focus on scope and tradeoffs.",
+			Enabled:     true,
+		}},
+		ContextMessages: []core.Message{
+			{ID: 2, SenderID: "bob", Payload: []byte(`{"type":"text","text":"@product 看下这个方案"}`)},
+		},
+	})
+
+	for _, want := range []string{
+		"Run-scoped Subagents:",
+		"@product (Product): Clarifies requirements.",
+		"Prompt: Focus on scope and tradeoffs.",
+		"do not own Room state or memory writes",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestCodexRunnerUsesOutputLastMessage(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "codex")

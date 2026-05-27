@@ -83,6 +83,7 @@ jobs:
           GENERATED_MEDIA_URL_TTL: ${{ vars.GENERATED_MEDIA_URL_TTL }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           CLAWMAN_API_TOKEN: ${{ secrets.CLAWMAN_API_TOKEN }}
+          CLAWMAN_ADMIN_SECRET: ${{ secrets.CLAWMAN_ADMIN_SECRET }}
           CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
           CODEX_CONFIG_TOML: ${{ secrets.CODEX_CONFIG_TOML }}
           IMAGE_PROVIDER_API_KEY: ${{ secrets.IMAGE_PROVIDER_API_KEY }}
@@ -162,6 +163,7 @@ jobs:
           kubectl -n claw create secret generic tinyclaw-secret \
             --from-literal=DATABASE_URL="${DATABASE_URL}" \
             --from-literal=CLAWMAN_API_TOKEN="${CLAWMAN_API_TOKEN}" \
+            --from-literal=CLAWMAN_ADMIN_SECRET="${CLAWMAN_ADMIN_SECRET}" \
             --from-literal=CODEX_AUTH_JSON="${CODEX_AUTH_JSON}" \
             --from-literal=CODEX_CONFIG_TOML="${CODEX_CONFIG_TOML}" \
             --from-literal=IMAGE_PROVIDER_API_KEY="${IMAGE_PROVIDER_API_KEY}" \

@@ -34,6 +34,8 @@ func validateCreateMessage(input core.CreateMessageInput) error {
 		return fmt.Errorf("room_id is required")
 	case input.SourceMessageID == "":
 		return fmt.Errorf("source_message_id is required")
+	case input.Source == "":
+		return fmt.Errorf("source is required")
 	case input.SenderID == "":
 		return fmt.Errorf("sender_id is required")
 	}
@@ -82,37 +84,31 @@ func upsertRoomTx(ctx context.Context, tx *sql.Tx, input core.RegisterRoomInput)
 }
 
 func upsertAgentSessionTx(ctx context.Context, tx *sql.Tx, roomID int64, input core.RegisterRoomInput) (core.AgentSession, error) {
-	agentKey := input.AgentKey
-	if agentKey == "" {
-		agentKey = core.DefaultAgentKey
-	}
 	var session core.AgentSession
 	var triggerPolicy []byte
-	var triggerMessageID sql.NullInt64
+	var pendingTriggerMessageID sql.NullInt64
 	var codexSessionID sql.NullString
 	var lockOwner sql.NullString
 	var lockExpiresAt sql.NullTime
 	err := tx.QueryRowContext(ctx, `
 		INSERT INTO agent_sessions (
 			room_id,
-			agent_key,
 			enabled,
 			trigger_policy
 		)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (room_id, agent_key) DO UPDATE
+		VALUES ($1, $2, $3)
+		ON CONFLICT (room_id) DO UPDATE
 		SET enabled = EXCLUDED.enabled,
 		    trigger_policy = EXCLUDED.trigger_policy,
 		    updated_at = NOW()
-		RETURNING id, room_id, agent_key, enabled, trigger_policy, trigger_message_id, last_processed_message_id, codex_session_id, lock_owner, lock_expires_at, created_at, updated_at
-	`, roomID, agentKey, input.AgentEnabled, nullJSON(input.TriggerPolicy)).Scan(
+		RETURNING id, room_id, enabled, trigger_policy, pending_trigger_message_id, caught_up_message_id, codex_session_id, lock_owner, lock_expires_at, created_at, updated_at
+	`, roomID, input.AgentEnabled, nullJSON(input.TriggerPolicy)).Scan(
 		&session.ID,
 		&session.RoomID,
-		&session.AgentKey,
 		&session.Enabled,
 		&triggerPolicy,
-		&triggerMessageID,
-		&session.LastProcessedMessageID,
+		&pendingTriggerMessageID,
+		&session.CaughtUpMessageID,
 		&codexSessionID,
 		&lockOwner,
 		&lockExpiresAt,
@@ -125,8 +121,8 @@ func upsertAgentSessionTx(ctx context.Context, tx *sql.Tx, roomID int64, input c
 	if len(triggerPolicy) > 0 {
 		session.TriggerPolicy = append(json.RawMessage(nil), triggerPolicy...)
 	}
-	if triggerMessageID.Valid {
-		session.TriggerMessageID = triggerMessageID.Int64
+	if pendingTriggerMessageID.Valid {
+		session.PendingTriggerMessageID = pendingTriggerMessageID.Int64
 	}
 	if codexSessionID.Valid {
 		session.CodexSessionID = codexSessionID.String
@@ -162,16 +158,16 @@ func insertCoreMessageTx(ctx context.Context, tx *sql.Tx, input core.CreateMessa
 		INSERT INTO messages (
 			room_id,
 			source_message_id,
+			source,
 			sender_id,
 			sender_name,
 			payload,
-			message_time,
-			skipped
+			message_time
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (room_id, source_message_id) DO NOTHING
 		RETURNING id
-	`, input.RoomID, input.SourceMessageID, input.SenderID, nullIfEmpty(input.SenderName), input.Payload, input.MessageTime, input.Skipped).Scan(&id)
+	`, input.RoomID, input.SourceMessageID, input.Source, input.SenderID, nullIfEmpty(input.SenderName), input.Payload, input.MessageTime).Scan(&id)
 	switch {
 	case err == nil:
 		message, getErr := getCoreMessageByIDTx(ctx, tx, id)
@@ -186,7 +182,7 @@ func insertCoreMessageTx(ctx context.Context, tx *sql.Tx, input core.CreateMessa
 
 func getCoreMessageByIDTx(ctx context.Context, tx *sql.Tx, id int64) (core.Message, error) {
 	row := tx.QueryRowContext(ctx, `
-		SELECT id, room_id, source_message_id, sender_id, sender_name, payload, message_time, skipped, created_at
+		SELECT id, room_id, source_message_id, source, sender_id, sender_name, payload, message_time, created_at
 		FROM messages
 		WHERE id = $1
 	`, id)
@@ -195,7 +191,7 @@ func getCoreMessageByIDTx(ctx context.Context, tx *sql.Tx, id int64) (core.Messa
 
 func getCoreMessageBySourceTx(ctx context.Context, tx *sql.Tx, roomID int64, sourceMessageID string) (core.Message, error) {
 	row := tx.QueryRowContext(ctx, `
-		SELECT id, room_id, source_message_id, sender_id, sender_name, payload, message_time, skipped, created_at
+		SELECT id, room_id, source_message_id, source, sender_id, sender_name, payload, message_time, created_at
 		FROM messages
 		WHERE room_id = $1
 		  AND source_message_id = $2
@@ -205,7 +201,7 @@ func getCoreMessageBySourceTx(ctx context.Context, tx *sql.Tx, roomID int64, sou
 
 func listEnabledAgentSessionsForRoomTx(ctx context.Context, tx *sql.Tx, roomID int64) ([]core.AgentSession, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, room_id, agent_key, enabled, trigger_policy, trigger_message_id, last_processed_message_id, codex_session_id, lock_owner, lock_expires_at, created_at, updated_at
+		SELECT id, room_id, enabled, trigger_policy, pending_trigger_message_id, caught_up_message_id, codex_session_id, lock_owner, lock_expires_at, created_at, updated_at
 		FROM agent_sessions
 		WHERE room_id = $1
 		  AND enabled = TRUE
@@ -233,10 +229,10 @@ func listEnabledAgentSessionsForRoomTx(ctx context.Context, tx *sql.Tx, roomID i
 func markAgentSessionTriggeredTx(ctx context.Context, tx *sql.Tx, sessionID int64, messageID int64) error {
 	_, err := tx.ExecContext(ctx, `
 		UPDATE agent_sessions
-		SET trigger_message_id = $2,
+		SET pending_trigger_message_id = $2,
 		    updated_at = NOW()
 		WHERE id = $1
-		  AND (trigger_message_id IS NULL OR trigger_message_id < $2)
+		  AND (pending_trigger_message_id IS NULL OR pending_trigger_message_id < $2)
 	`, sessionID, messageID)
 	if err != nil {
 		return fmt.Errorf("mark agent session triggered: %w", err)
@@ -252,8 +248,8 @@ func claimNextAgentRunTx(ctx context.Context, tx *sql.Tx, owner string, ttl time
 			SELECT s.id
 			FROM agent_sessions s
 			WHERE s.enabled = TRUE
-			  AND s.trigger_message_id IS NOT NULL
-			  AND s.trigger_message_id > s.last_processed_message_id
+			  AND s.pending_trigger_message_id IS NOT NULL
+			  AND s.pending_trigger_message_id > s.caught_up_message_id
 			  AND (s.lock_expires_at IS NULL OR s.lock_expires_at < NOW())
 			ORDER BY s.updated_at ASC, s.id ASC
 			LIMIT 1
@@ -267,24 +263,21 @@ func claimNextAgentRunTx(ctx context.Context, tx *sql.Tx, owner string, ttl time
 		WHERE s.id = candidate.id
 		RETURNING s.id,
 		          s.room_id,
-		          s.agent_key,
 		          s.codex_session_id,
 		          COALESCE((
 		              SELECT MIN(m.id)
 		              FROM messages m
 		              WHERE m.room_id = s.room_id
-		                AND m.id > s.last_processed_message_id
-		                AND m.id <= s.trigger_message_id
-		                AND m.skipped = FALSE
-		          ), s.trigger_message_id),
-		          s.trigger_message_id,
+		                AND m.id > s.caught_up_message_id
+		                AND m.id <= s.pending_trigger_message_id
+		          ), s.pending_trigger_message_id),
+		          s.pending_trigger_message_id,
 		          s.lock_owner
 	`, owner, expiresAt)
 	var codexSessionID sql.NullString
 	err := row.Scan(
 		&run.AgentSessionID,
 		&run.RoomID,
-		&run.AgentKey,
 		&codexSessionID,
 		&run.SourceMessageFromID,
 		&run.SourceMessageToID,
@@ -304,12 +297,11 @@ func claimNextAgentRunTx(ctx context.Context, tx *sql.Tx, owner string, ttl time
 
 func listAgentRunMessages(ctx context.Context, db *sql.DB, run core.AgentRun) ([]core.Message, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, room_id, source_message_id, sender_id, sender_name, payload, message_time, skipped, created_at
+		SELECT id, room_id, source_message_id, source, sender_id, sender_name, payload, message_time, created_at
 		FROM messages
 		WHERE room_id = $1
 		  AND id >= $2
 		  AND id <= $3
-		  AND skipped = FALSE
 		ORDER BY id ASC
 	`, run.RoomID, run.SourceMessageFromID, run.SourceMessageToID)
 	if err != nil {
@@ -320,17 +312,25 @@ func listAgentRunMessages(ctx context.Context, db *sql.DB, run core.AgentRun) ([
 }
 
 func finishAgentRunTx(ctx context.Context, tx *sql.Tx, run core.AgentRun, payload json.RawMessage) (*core.Delivery, error) {
-	if _, err := tx.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 		UPDATE agent_sessions
-		SET last_processed_message_id = $2,
+		SET caught_up_message_id = $2,
 		    codex_session_id = COALESCE(NULLIF($4, ''), codex_session_id),
 		    lock_owner = NULL,
 		    lock_expires_at = NULL,
 		    updated_at = NOW()
 		WHERE id = $1
 		  AND lock_owner = $3
-	`, run.AgentSessionID, run.SourceMessageToID, run.LockOwner, run.CodexSessionID); err != nil {
+	`, run.AgentSessionID, run.SourceMessageToID, run.LockOwner, run.CodexSessionID)
+	if err != nil {
 		return nil, fmt.Errorf("finish agent run: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("finish agent run rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return nil, fmt.Errorf("agent session lock is no longer held")
 	}
 	if len(payload) == 0 {
 		return nil, nil
@@ -364,12 +364,22 @@ func createCoreDeliveryTx(ctx context.Context, tx *sql.Tx, run core.AgentRun, pa
 
 func ackCoreDelivery(ctx context.Context, db *sql.DB, id int64) (core.Delivery, error) {
 	row := db.QueryRowContext(ctx, `
-		UPDATE deliveries
-		SET status = $2,
-		    acked_at = NOW()
+		WITH updated AS (
+			UPDATE deliveries
+			SET status = $2,
+			    acked_at = COALESCE(acked_at, NOW())
+			WHERE id = $1
+			  AND status = $3
+			RETURNING id, room_id, agent_session_id, source_message_from_id, source_message_to_id, payload, status, created_at, acked_at
+		)
+		SELECT id, room_id, agent_session_id, source_message_from_id, source_message_to_id, payload, status, created_at, acked_at
+		FROM updated
+		UNION ALL
+		SELECT id, room_id, agent_session_id, source_message_from_id, source_message_to_id, payload, status, created_at, acked_at
+		FROM deliveries
 		WHERE id = $1
-		  AND status = $3
-		RETURNING id, room_id, agent_session_id, source_message_from_id, source_message_to_id, payload, status, created_at, acked_at
+		  AND status = $2
+		  AND NOT EXISTS (SELECT 1 FROM updated)
 	`, id, core.DeliveryStatusAcked, core.DeliveryStatusPending)
 	delivery, err := scanCoreDelivery(row)
 	if err != nil {
@@ -426,11 +436,11 @@ func scanCoreMessage(row scanner) (core.Message, error) {
 		&message.ID,
 		&message.RoomID,
 		&message.SourceMessageID,
+		&message.Source,
 		&message.SenderID,
 		&senderName,
 		&message.Payload,
 		&message.MessageTime,
-		&message.Skipped,
 		&message.CreatedAt,
 	); err != nil {
 		return core.Message{}, err
@@ -444,18 +454,17 @@ func scanCoreMessage(row scanner) (core.Message, error) {
 func scanAgentSession(row scanner) (core.AgentSession, error) {
 	var session core.AgentSession
 	var triggerPolicy []byte
-	var triggerMessageID sql.NullInt64
+	var pendingTriggerMessageID sql.NullInt64
 	var codexSessionID sql.NullString
 	var lockOwner sql.NullString
 	var lockExpiresAt sql.NullTime
 	if err := row.Scan(
 		&session.ID,
 		&session.RoomID,
-		&session.AgentKey,
 		&session.Enabled,
 		&triggerPolicy,
-		&triggerMessageID,
-		&session.LastProcessedMessageID,
+		&pendingTriggerMessageID,
+		&session.CaughtUpMessageID,
 		&codexSessionID,
 		&lockOwner,
 		&lockExpiresAt,
@@ -467,8 +476,8 @@ func scanAgentSession(row scanner) (core.AgentSession, error) {
 	if len(triggerPolicy) > 0 {
 		session.TriggerPolicy = append(json.RawMessage(nil), triggerPolicy...)
 	}
-	if triggerMessageID.Valid {
-		session.TriggerMessageID = triggerMessageID.Int64
+	if pendingTriggerMessageID.Valid {
+		session.PendingTriggerMessageID = pendingTriggerMessageID.Int64
 	}
 	if codexSessionID.Valid {
 		session.CodexSessionID = codexSessionID.String

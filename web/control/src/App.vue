@@ -2,17 +2,20 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useStorage } from '@vueuse/core'
 import {
+  Bot,
   Check,
   Database,
   KeyRound,
   Loader2,
   MessageSquarePlus,
+  Plus,
   RefreshCw,
   Search,
   ShieldCheck,
 } from 'lucide-vue-next'
 import {
   api,
+  type Agent,
   type Credentials,
   type Delivery,
   type InjectMessageInput,
@@ -21,9 +24,10 @@ import {
   type RegisterRoomInput,
   type RoomSummary,
   type Timeline,
+  type UpsertAgentInput,
 } from './api'
 
-type Tab = 'timeline' | 'memory' | 'settings'
+type Tab = 'timeline' | 'memory' | 'agents' | 'settings'
 
 const savedCredentials = useStorage<Credentials>('tinyclaw.control.credentials', {
   clientId: 'admin',
@@ -34,7 +38,9 @@ const clientId = ref(savedCredentials.value.clientId)
 const clientSecret = ref(savedCredentials.value.clientSecret)
 const rememberCredentials = useStorage('tinyclaw.control.remember_credentials', true)
 const rooms = ref<RoomSummary[]>([])
+const agents = ref<Agent[]>([])
 const selectedRoomId = useStorage<number | null>('tinyclaw.control.selected_room_id', null)
+const selectedAgentId = useStorage<number | null>('tinyclaw.control.selected_agent_id', null)
 const timeline = ref<Timeline | null>(null)
 const memoryItems = ref<MemoryItem[]>([])
 const activeTab = ref<Tab>('timeline')
@@ -43,6 +49,8 @@ const roomLoading = ref(false)
 const detailLoading = ref(false)
 const memoryLoading = ref(false)
 const savingRoom = ref(false)
+const agentLoading = ref(false)
+const savingAgent = ref(false)
 const authError = ref('')
 const actionError = ref('')
 const senderId = ref('admin')
@@ -60,6 +68,12 @@ const settingsDisplayName = ref('')
 const settingsOutboundAlias = ref('')
 const settingsAgentEnabled = ref(true)
 const settingsTriggerPolicy = ref('')
+const agentKey = ref('')
+const agentDisplayName = ref('')
+const agentDescription = ref('')
+const agentPrompt = ref('')
+const agentAllowedTools = ref('[]')
+const agentEnabled = ref(true)
 
 const credentials = computed<Credentials>(() => ({
   clientId: clientId.value.trim(),
@@ -69,6 +83,8 @@ const credentials = computed<Credentials>(() => ({
 const selectedRoom = computed(() =>
   rooms.value.find((summary) => summary.room.id === selectedRoomId.value) ?? null,
 )
+
+const selectedAgent = computed(() => agents.value.find((agent) => agent.id === selectedAgentId.value) ?? null)
 
 const filteredRooms = computed(() => {
   const value = query.value.trim().toLowerCase()
@@ -162,6 +178,23 @@ const loadRooms = async () => {
   }
 }
 
+const loadAgents = async () => {
+  if (!canUseAPI.value) return
+  agentLoading.value = true
+  actionError.value = ''
+  try {
+    const result = await api.listAgents(credentials.value)
+    agents.value = result.agents
+    if (!selectedAgentId.value && result.agents.length) {
+      selectedAgentId.value = result.agents[0].id
+    }
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : 'Failed to load agents'
+  } finally {
+    agentLoading.value = false
+  }
+}
+
 const loadTimeline = async () => {
   if (!canUseAPI.value || !selectedRoomId.value) return
   detailLoading.value = true
@@ -197,6 +230,7 @@ const selectRoom = async (roomId: number) => {
 
 const refreshCurrent = async () => {
   await loadRooms()
+  await loadAgents()
   await loadTimeline()
   if (activeTab.value === 'memory') await loadMemory()
 }
@@ -271,8 +305,63 @@ const saveRoomSettings = async () => {
   }
 }
 
+const syncAgentForm = () => {
+  const agent = selectedAgent.value
+  if (!agent) {
+    agentKey.value = ''
+    agentDisplayName.value = ''
+    agentDescription.value = ''
+    agentPrompt.value = ''
+    agentAllowedTools.value = '[]'
+    agentEnabled.value = true
+    return
+  }
+  agentKey.value = agent.key
+  agentDisplayName.value = agent.display_name
+  agentDescription.value = agent.description ?? ''
+  agentPrompt.value = agent.prompt
+  agentAllowedTools.value = JSON.stringify(agent.allowed_tools ?? [], null, 2)
+  agentEnabled.value = agent.enabled
+}
+
+const newAgent = () => {
+  selectedAgentId.value = null
+  syncAgentForm()
+}
+
+const selectAgent = (agentId: number) => {
+  selectedAgentId.value = agentId
+  syncAgentForm()
+}
+
+const saveAgent = async () => {
+  savingAgent.value = true
+  actionError.value = ''
+  try {
+    const input: UpsertAgentInput = {
+      key: agentKey.value.trim(),
+      display_name: agentDisplayName.value.trim(),
+      description: agentDescription.value.trim(),
+      prompt: agentPrompt.value.trim(),
+      allowed_tools: agentAllowedTools.value.trim() ? JSON.parse(agentAllowedTools.value) : [],
+      enabled: agentEnabled.value,
+    }
+    const result = selectedAgentId.value
+      ? await api.updateAgent(credentials.value, selectedAgentId.value, input)
+      : await api.createAgent(credentials.value, input)
+    selectedAgentId.value = result.agent.id
+    await loadAgents()
+    syncAgentForm()
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : 'Failed to save agent'
+  } finally {
+    savingAgent.value = false
+  }
+}
+
 watch(activeTab, (tab) => {
   if (tab === 'memory') void loadMemory()
+  if (tab === 'agents') void loadAgents()
 })
 
 watch(memoryStatus, () => {
@@ -280,10 +369,12 @@ watch(memoryStatus, () => {
 })
 
 watch(selectedRoom, syncSettingsFromSelectedRoom, { immediate: true })
+watch(selectedAgent, syncAgentForm, { immediate: true })
 
 onMounted(async () => {
   if (canUseAPI.value) {
     await loadRooms()
+    await loadAgents()
     await loadTimeline()
   }
 })
@@ -395,6 +486,9 @@ onMounted(async () => {
               <button class="tab-button" :class="{ 'tab-button-active': activeTab === 'memory' }" @click="activeTab = 'memory'">
                 Memory
               </button>
+              <button class="tab-button" :class="{ 'tab-button-active': activeTab === 'agents' }" @click="activeTab = 'agents'">
+                Agents
+              </button>
               <button class="tab-button" :class="{ 'tab-button-active': activeTab === 'settings' }" @click="activeTab = 'settings'">
                 Settings
               </button>
@@ -419,7 +513,7 @@ onMounted(async () => {
                       <div class="flex flex-wrap items-center gap-2">
                         <span class="text-sm font-700">{{ message.sender_name || message.sender_id }}</span>
                         <span class="text-xs text-muted">#{{ message.id }}</span>
-                        <span v-if="message.skipped" class="badge-muted">Skipped</span>
+                        <span class="badge-muted">{{ message.source }}</span>
                       </div>
                       <p class="mt-2 whitespace-pre-wrap break-words text-sm leading-6">{{ textFromPayload(message.payload) }}</p>
                       <p class="mt-2 text-xs text-muted">{{ formatDate(message.message_time) }} · {{ message.source_message_id }}</p>
@@ -513,7 +607,75 @@ onMounted(async () => {
               <div v-if="!memoryLoading && !memoryItems.length" class="empty-state">No memory items.</div>
             </section>
 
-            <section v-else class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <section v-else-if="activeTab === 'agents'" class="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
+              <aside class="side-panel">
+                <div class="mb-3 flex items-center justify-between gap-2">
+                  <div class="flex items-center gap-2">
+                    <Bot class="h-4 w-4 text-accent" />
+                    <h3 class="text-sm font-700">Agents</h3>
+                  </div>
+                  <button class="icon-button" title="New agent" @click="newAgent">
+                    <Plus class="h-4 w-4" />
+                  </button>
+                </div>
+                <div v-if="agentLoading" class="empty-state">
+                  <Loader2 class="h-4 w-4 animate-spin" />
+                  Loading agents
+                </div>
+                <button
+                  v-for="agent in agents"
+                  v-else
+                  :key="agent.id"
+                  class="room-row"
+                  :class="{ 'room-row-active': agent.id === selectedAgentId }"
+                  @click="selectAgent(agent.id)"
+                >
+                  <span class="min-w-0">
+                    <span class="block truncate text-sm font-650">{{ agent.display_name }}</span>
+                    <span class="mt-1 block truncate text-xs text-muted">@{{ agent.key }}</span>
+                  </span>
+                  <span class="badge-muted">{{ agent.enabled ? 'Enabled' : 'Disabled' }}</span>
+                </button>
+                <div v-if="!agentLoading && !agents.length" class="empty-state">No agents.</div>
+              </aside>
+
+              <form class="side-panel grid gap-3" @submit.prevent="saveAgent">
+                <h3 class="text-sm font-700">{{ selectedAgentId ? 'Edit Agent' : 'New Agent' }}</h3>
+                <div class="grid grid-cols-2 gap-2">
+                  <label class="grid gap-1 text-xs text-muted">
+                    Key
+                    <input v-model="agentKey" class="field" placeholder="product" />
+                  </label>
+                  <label class="grid gap-1 text-xs text-muted">
+                    Display Name
+                    <input v-model="agentDisplayName" class="field" placeholder="Product" />
+                  </label>
+                </div>
+                <label class="grid gap-1 text-xs text-muted">
+                  Description
+                  <input v-model="agentDescription" class="field" />
+                </label>
+                <label class="grid gap-1 text-xs text-muted">
+                  Prompt
+                  <textarea v-model="agentPrompt" class="field min-h-48 resize-y" />
+                </label>
+                <label class="grid gap-1 text-xs text-muted">
+                  Allowed Tools JSON
+                  <textarea v-model="agentAllowedTools" class="field min-h-24 resize-y font-mono text-xs" />
+                </label>
+                <label class="flex items-center gap-2 text-sm text-muted">
+                  <input v-model="agentEnabled" type="checkbox" />
+                  Enabled
+                </label>
+                <button class="primary-button justify-center" :disabled="savingAgent || !agentKey.trim() || !agentDisplayName.trim() || !agentPrompt.trim()">
+                  <Loader2 v-if="savingAgent" class="h-4 w-4 animate-spin" />
+                  <Check v-else class="h-4 w-4" />
+                  Save Agent
+                </button>
+              </form>
+            </section>
+
+            <section v-else-if="activeTab === 'settings'" class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
               <form class="side-panel grid gap-3" @submit.prevent="saveRoomSettings">
                 <h3 class="text-sm font-700">Room Settings</h3>
                 <div class="grid grid-cols-2 gap-2">
@@ -571,11 +733,11 @@ onMounted(async () => {
                 </div>
                 <div class="settings-row">
                   <span>Trigger boundary</span>
-                  <code>{{ selectedRoom.agent_session?.trigger_message_id || 0 }}</code>
+                  <code>{{ selectedRoom.agent_session?.pending_trigger_message_id || 0 }}</code>
                 </div>
                 <div class="settings-row">
-                  <span>Processed boundary</span>
-                  <code>{{ selectedRoom.agent_session?.last_processed_message_id || 0 }}</code>
+                  <span>Caught-up boundary</span>
+                  <code>{{ selectedRoom.agent_session?.caught_up_message_id || 0 }}</code>
                 </div>
               </div>
             </section>

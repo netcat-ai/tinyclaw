@@ -22,7 +22,6 @@ func (s *fakeMessageStore) CreateMessage(_ context.Context, input core.CreateMes
 				ID:      10,
 				RoomID:  input.RoomID,
 				Payload: input.Payload,
-				Skipped: input.Skipped,
 			},
 			Duplicate: s.duplicate,
 		}
@@ -73,7 +72,7 @@ func TestMessageIngestorSuppressesAgentTriggerAndHandlesDrawCommand(t *testing.T
 	}
 }
 
-func TestMessageIngestorDoesNotHandleDuplicateOrSkippedMessages(t *testing.T) {
+func TestMessageIngestorDoesNotHandleDuplicateMessages(t *testing.T) {
 	tests := []struct {
 		name      string
 		input     core.CreateMessageInput
@@ -86,14 +85,6 @@ func TestMessageIngestorDoesNotHandleDuplicateOrSkippedMessages(t *testing.T) {
 				Payload: json.RawMessage(`{"type":"text","text":"/draw 一朵花"}`),
 			},
 			duplicate: true,
-		},
-		{
-			name: "skipped",
-			input: core.CreateMessageInput{
-				RoomID:  1,
-				Payload: json.RawMessage(`{"type":"text","text":"/draw 一朵花"}`),
-				Skipped: true,
-			},
 		},
 	}
 

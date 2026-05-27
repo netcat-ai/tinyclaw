@@ -7,7 +7,6 @@ import (
 
 const (
 	DefaultTenantID = "default"
-	DefaultAgentKey = "default"
 
 	APIClientPermissionAdapter = "adapter"
 	APIClientPermissionAdmin   = "admin"
@@ -52,29 +51,28 @@ type Room struct {
 }
 
 type AgentSession struct {
-	ID                     int64
-	RoomID                 int64
-	AgentKey               string
-	Enabled                bool
-	TriggerPolicy          json.RawMessage
-	TriggerMessageID       int64
-	LastProcessedMessageID int64
-	CodexSessionID         string
-	LockOwner              string
-	LockExpiresAt          time.Time
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
+	ID                      int64
+	RoomID                  int64
+	Enabled                 bool
+	TriggerPolicy           json.RawMessage
+	PendingTriggerMessageID int64
+	CaughtUpMessageID       int64
+	CodexSessionID          string
+	LockOwner               string
+	LockExpiresAt           time.Time
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
 }
 
 type Message struct {
 	ID              int64
 	RoomID          int64
 	SourceMessageID string
+	Source          string
 	SenderID        string
 	SenderName      string
 	Payload         json.RawMessage
 	MessageTime     time.Time
-	Skipped         bool
 	CreatedAt       time.Time
 }
 
@@ -88,6 +86,18 @@ type Delivery struct {
 	Status              int16
 	CreatedAt           time.Time
 	AckedAt             time.Time
+}
+
+type Agent struct {
+	ID           int64           `json:"id"`
+	Key          string          `json:"key"`
+	DisplayName  string          `json:"display_name"`
+	Description  string          `json:"description,omitempty"`
+	Prompt       string          `json:"prompt"`
+	AllowedTools json.RawMessage `json:"allowed_tools"`
+	Enabled      bool            `json:"enabled"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
 }
 
 type MemoryItem struct {
@@ -130,7 +140,7 @@ type MemoryWriteJob struct {
 	ID                  int64
 	RoomID              int64
 	AgentSessionID      int64
-	AgentKey            string
+	AgentID             int64
 	SourceMessageFromID int64
 	SourceMessageToID   int64
 	OperationKey        string
@@ -186,13 +196,21 @@ type AdminMemoryListInput struct {
 	Limit  int
 }
 
+type UpsertAgentInput struct {
+	Key          string          `json:"key"`
+	DisplayName  string          `json:"display_name"`
+	Description  string          `json:"description"`
+	Prompt       string          `json:"prompt"`
+	AllowedTools json.RawMessage `json:"allowed_tools"`
+	Enabled      bool            `json:"enabled"`
+}
+
 type RegisterRoomInput struct {
 	Channel         string          `json:"channel"`
 	ChannelRoomID   string          `json:"channel_room_id"`
 	ChannelRoomType string          `json:"channel_room_type"`
 	DisplayName     string          `json:"display_name"`
 	OutboundAlias   string          `json:"outbound_alias"`
-	AgentKey        string          `json:"agent_key"`
 	AgentEnabled    bool            `json:"agent_enabled"`
 	TriggerPolicy   json.RawMessage `json:"trigger_policy"`
 }
@@ -205,11 +223,11 @@ type RegisterRoomResult struct {
 type CreateMessageInput struct {
 	RoomID               int64           `json:"room_id"`
 	SourceMessageID      string          `json:"source_message_id"`
+	Source               string          `json:"source"`
 	SenderID             string          `json:"sender_id"`
 	SenderName           string          `json:"sender_name"`
 	MessageTime          time.Time       `json:"message_time"`
 	Payload              json.RawMessage `json:"payload"`
-	Skipped              bool            `json:"skipped"`
 	SuppressAgentTrigger bool            `json:"-"`
 }
 
@@ -229,7 +247,7 @@ type AgentRunResult struct {
 type AgentRun struct {
 	AgentSessionID      int64
 	RoomID              int64
-	AgentKey            string
+	AgentID             int64
 	CodexSessionID      string
 	SourceMessageFromID int64
 	SourceMessageToID   int64

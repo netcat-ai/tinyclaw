@@ -29,7 +29,7 @@ func NewMessageIngestor(store MessageStore, commands CommandHandler) *MessageIng
 }
 
 func (i *MessageIngestor) IngestMessage(ctx context.Context, input core.CreateMessageInput) (core.CreateMessageResult, error) {
-	if !input.Skipped && command.IsDrawPayload(input.Payload) {
+	if command.IsDrawPayload(input.Payload) {
 		input.SuppressAgentTrigger = true
 		input.Payload = markCommandPayload(input.Payload, "draw")
 	}
@@ -37,7 +37,7 @@ func (i *MessageIngestor) IngestMessage(ctx context.Context, input core.CreateMe
 	if err != nil {
 		return core.CreateMessageResult{}, err
 	}
-	if !result.Duplicate && !result.Message.Skipped && i.commands != nil {
+	if !result.Duplicate && i.commands != nil {
 		i.commands.HandleMessage(context.Background(), result.Message)
 	}
 	return result, nil

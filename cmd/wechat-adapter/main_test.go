@@ -150,22 +150,22 @@ func TestNormalizeWechatType(t *testing.T) {
 	}
 }
 
-func TestShouldSkipMessage(t *testing.T) {
+func TestShouldSuppressAgentTrigger(t *testing.T) {
 	a := adapter{cfg: config{SelfSenders: map[string]bool{"私云虾虾": true}}}
-	if a.shouldSkipMessage(wxMessage{Type: "文本", Sender: "小金鱼"}) {
-		t.Fatalf("text message should not be skipped")
+	if a.shouldSuppressAgentTrigger(wxMessage{Type: "文本", Sender: "小金鱼"}) {
+		t.Fatalf("text message should not suppress agent trigger")
 	}
-	if a.shouldSkipMessage(wxMessage{Type: "图片", Sender: "小金鱼"}) {
-		t.Fatalf("image message should not be skipped")
+	if a.shouldSuppressAgentTrigger(wxMessage{Type: "图片", Sender: "小金鱼"}) {
+		t.Fatalf("image message should not suppress agent trigger")
 	}
-	if !a.shouldSkipMessage(wxMessage{Type: "系统", Sender: "小金鱼"}) {
-		t.Fatalf("system message should be skipped")
+	if !a.shouldSuppressAgentTrigger(wxMessage{Type: "系统", Sender: "小金鱼"}) {
+		t.Fatalf("system message should suppress agent trigger")
 	}
-	if !a.shouldSkipMessage(wxMessage{Type: "文本", Sender: "私云虾虾"}) {
-		t.Fatalf("self text message should be skipped")
+	if !a.shouldSuppressAgentTrigger(wxMessage{Type: "文本", Sender: "私云虾虾"}) {
+		t.Fatalf("self text message should suppress agent trigger")
 	}
-	if !a.shouldSkipMessage(wxMessage{Type: "文本", Sender: ""}) {
-		t.Fatalf("empty sender message should be skipped")
+	if !a.shouldSuppressAgentTrigger(wxMessage{Type: "文本", Sender: ""}) {
+		t.Fatalf("empty sender message should suppress agent trigger")
 	}
 }
 
@@ -211,8 +211,11 @@ func TestCreateMessagePostsClawmanPayload(t *testing.T) {
 	if posted["source_message_id"] != "wechat:50261801724@chatroom:7" {
 		t.Fatalf("source_message_id = %v", posted["source_message_id"])
 	}
-	if posted["skipped"] != false {
-		t.Fatalf("skipped = %v, want false", posted["skipped"])
+	if posted["source"] != "wechat" {
+		t.Fatalf("source = %+v, want wechat", posted["source"])
+	}
+	if posted["suppress_agent_trigger"] != false {
+		t.Fatalf("suppress_agent_trigger = %v, want false", posted["suppress_agent_trigger"])
 	}
 	payload := posted["payload"].(map[string]any)
 	if payload["type"] != "text" || payload["text"] != "虾虾，你好呀" {
@@ -255,8 +258,8 @@ func TestCreateImageMessageUsesStableImagePayload(t *testing.T) {
 	if posted["source_message_id"] != "wechat:50261801724@chatroom:20281" {
 		t.Fatalf("source_message_id = %v", posted["source_message_id"])
 	}
-	if posted["skipped"] != false {
-		t.Fatalf("skipped = %v, want false", posted["skipped"])
+	if posted["suppress_agent_trigger"] != false {
+		t.Fatalf("suppress_agent_trigger = %v, want false", posted["suppress_agent_trigger"])
 	}
 	payload := posted["payload"].(map[string]any)
 	if payload["type"] != "image" || payload["text"] != "[图片]" || payload["raw_text"] != "[图片] local_id=20281" {
@@ -453,8 +456,8 @@ func TestRunOnceSkipsSelfMessages(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
 				t.Fatalf("decode message: %v", err)
 			}
-			if posted["skipped"] != true {
-				t.Fatalf("skipped = %v, want true for self message", posted["skipped"])
+			if posted["suppress_agent_trigger"] != true {
+				t.Fatalf("suppress_agent_trigger = %v, want true for self message", posted["suppress_agent_trigger"])
 			}
 			_, _ = w.Write([]byte(`{"message":{"id":1}}`))
 		default:
@@ -476,7 +479,7 @@ func TestRunOnceSkipsSelfMessages(t *testing.T) {
 		t.Fatalf("run once: %v", err)
 	}
 	if messageCalls != 1 {
-		t.Fatalf("messageCalls=%d, want 1 skipped message persisted", messageCalls)
+		t.Fatalf("messageCalls=%d, want 1 suppressed message persisted", messageCalls)
 	}
 }
 

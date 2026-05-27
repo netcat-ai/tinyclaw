@@ -26,11 +26,11 @@ CREATE TABLE IF NOT EXISTS messages (
 	id BIGSERIAL PRIMARY KEY,
 	room_id BIGINT NOT NULL REFERENCES rooms(id),
 	source_message_id TEXT NOT NULL,
+	source TEXT NOT NULL,
 	sender_id TEXT NOT NULL,
 	sender_name TEXT,
 	payload JSONB NOT NULL,
 	message_time TIMESTAMPTZ NOT NULL,
-	skipped BOOLEAN NOT NULL DEFAULT FALSE,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	UNIQUE (room_id, source_message_id)
 );
@@ -38,21 +38,29 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE TABLE IF NOT EXISTS agent_sessions (
 	id BIGSERIAL PRIMARY KEY,
 	room_id BIGINT NOT NULL REFERENCES rooms(id),
-	agent_key TEXT NOT NULL,
 	enabled BOOLEAN NOT NULL DEFAULT TRUE,
 	trigger_policy JSONB,
-	trigger_message_id BIGINT REFERENCES messages(id),
-	last_processed_message_id BIGINT NOT NULL DEFAULT 0,
+	pending_trigger_message_id BIGINT REFERENCES messages(id),
+	caught_up_message_id BIGINT NOT NULL DEFAULT 0,
 	codex_session_id TEXT,
 	lock_owner TEXT,
 	lock_expires_at TIMESTAMPTZ,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-	UNIQUE (room_id, agent_key)
+	UNIQUE (room_id)
 );
 
-ALTER TABLE agent_sessions
-	ADD COLUMN IF NOT EXISTS codex_session_id TEXT;
+CREATE TABLE IF NOT EXISTS agents (
+	id BIGSERIAL PRIMARY KEY,
+	key TEXT NOT NULL UNIQUE,
+	display_name TEXT NOT NULL,
+	description TEXT,
+	prompt TEXT NOT NULL,
+	allowed_tools JSONB NOT NULL,
+	enabled BOOLEAN NOT NULL DEFAULT TRUE,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 CREATE TABLE IF NOT EXISTS deliveries (
 	id BIGSERIAL PRIMARY KEY,
@@ -86,7 +94,7 @@ CREATE TABLE IF NOT EXISTS memory_write_jobs (
 	id BIGSERIAL PRIMARY KEY,
 	room_id BIGINT NOT NULL REFERENCES rooms(id),
 	agent_session_id BIGINT NOT NULL REFERENCES agent_sessions(id),
-	agent_key TEXT NOT NULL,
+	agent_id BIGINT REFERENCES agents(id),
 	source_message_from_id BIGINT NOT NULL,
 	source_message_to_id BIGINT NOT NULL,
 	operation_key TEXT NOT NULL UNIQUE,
@@ -116,48 +124,16 @@ CREATE TABLE IF NOT EXISTS memory_capability_tokens (
 	token_hash TEXT PRIMARY KEY,
 	room_id BIGINT NOT NULL REFERENCES rooms(id),
 	agent_session_id BIGINT NOT NULL REFERENCES agent_sessions(id),
-	agent_key TEXT NOT NULL,
 	source_message_from_id BIGINT NOT NULL,
 	source_message_to_id BIGINT NOT NULL,
 	expires_at TIMESTAMPTZ NOT NULL,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-DO $$
-BEGIN
-	IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'deliveries' AND column_name = 'source_message_after_id')
-	   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'deliveries' AND column_name = 'source_message_from_id') THEN
-		ALTER TABLE deliveries RENAME COLUMN source_message_after_id TO source_message_from_id;
-	END IF;
-	IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'deliveries' AND column_name = 'source_message_until_id')
-	   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'deliveries' AND column_name = 'source_message_to_id') THEN
-		ALTER TABLE deliveries RENAME COLUMN source_message_until_id TO source_message_to_id;
-	END IF;
-
-	IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_items' AND column_name = 'source_message_after_id')
-	   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_items' AND column_name = 'source_message_from_id') THEN
-		ALTER TABLE memory_items RENAME COLUMN source_message_after_id TO source_message_from_id;
-	END IF;
-	IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_items' AND column_name = 'source_message_until_id')
-	   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_items' AND column_name = 'source_message_to_id') THEN
-		ALTER TABLE memory_items RENAME COLUMN source_message_until_id TO source_message_to_id;
-	END IF;
-
-	IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_write_jobs' AND column_name = 'source_message_after_id')
-	   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_write_jobs' AND column_name = 'source_message_from_id') THEN
-		ALTER TABLE memory_write_jobs RENAME COLUMN source_message_after_id TO source_message_from_id;
-	END IF;
-	IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_write_jobs' AND column_name = 'source_message_until_id')
-	   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_write_jobs' AND column_name = 'source_message_to_id') THEN
-		ALTER TABLE memory_write_jobs RENAME COLUMN source_message_until_id TO source_message_to_id;
-	END IF;
-
-	IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_capability_tokens' AND column_name = 'source_message_after_id')
-	   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_capability_tokens' AND column_name = 'source_message_from_id') THEN
-		ALTER TABLE memory_capability_tokens RENAME COLUMN source_message_after_id TO source_message_from_id;
-	END IF;
-	IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_capability_tokens' AND column_name = 'source_message_until_id')
-	   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memory_capability_tokens' AND column_name = 'source_message_to_id') THEN
-		ALTER TABLE memory_capability_tokens RENAME COLUMN source_message_until_id TO source_message_to_id;
-	END IF;
-END $$;
+CREATE INDEX IF NOT EXISTS idx_messages_room_id_id_desc ON messages (room_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_deliveries_status_id ON deliveries (status, id);
+CREATE INDEX IF NOT EXISTS idx_deliveries_room_source_message_to_id ON deliveries (room_id, source_message_to_id);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_pending_caught_up ON agent_sessions (pending_trigger_message_id, caught_up_message_id);
+CREATE INDEX IF NOT EXISTS idx_memory_items_room_status_updated_at_desc ON memory_items (room_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_write_jobs_status_id ON memory_write_jobs (status, id);
+CREATE INDEX IF NOT EXISTS idx_memory_capability_tokens_expires_at ON memory_capability_tokens (expires_at);

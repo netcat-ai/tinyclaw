@@ -38,13 +38,12 @@ func (s *CoreStore) CreateMemoryCapabilityToken(ctx context.Context, run core.Ag
 			token_hash,
 			room_id,
 			agent_session_id,
-			agent_key,
 			source_message_from_id,
 			source_message_to_id,
 			expires_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, hash, run.RoomID, run.AgentSessionID, run.AgentKey, run.SourceMessageFromID, run.SourceMessageToID, time.Now().UTC().Add(ttl))
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, hash, run.RoomID, run.AgentSessionID, run.SourceMessageFromID, run.SourceMessageToID, time.Now().UTC().Add(ttl))
 	if err != nil {
 		return "", fmt.Errorf("create memory capability token: %w", err)
 	}
@@ -144,13 +143,13 @@ func (s *CoreStore) agentRunForMemoryToken(ctx context.Context, token string) (c
 		return core.AgentRun{}, fmt.Errorf("memory capability token is required")
 	}
 	row := s.db.QueryRowContext(ctx, `
-		SELECT room_id, agent_session_id, agent_key, source_message_from_id, source_message_to_id
+		SELECT room_id, agent_session_id, source_message_from_id, source_message_to_id
 		FROM memory_capability_tokens
 		WHERE token_hash = $1
 		  AND expires_at > NOW()
 	`, memoryTokenHash(token))
 	var run core.AgentRun
-	if err := row.Scan(&run.RoomID, &run.AgentSessionID, &run.AgentKey, &run.SourceMessageFromID, &run.SourceMessageToID); err != nil {
+	if err := row.Scan(&run.RoomID, &run.AgentSessionID, &run.SourceMessageFromID, &run.SourceMessageToID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return core.AgentRun{}, fmt.Errorf("invalid memory capability token")
 		}
@@ -257,7 +256,7 @@ func enqueueMemoryWriteJobsTx(ctx context.Context, tx *sql.Tx, run core.AgentRun
 			INSERT INTO memory_write_jobs (
 				room_id,
 				agent_session_id,
-				agent_key,
+				agent_id,
 				source_message_from_id,
 				source_message_to_id,
 				operation_key,
@@ -269,7 +268,7 @@ func enqueueMemoryWriteJobsTx(ctx context.Context, tx *sql.Tx, run core.AgentRun
 			)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 			ON CONFLICT (operation_key) DO NOTHING
-		`, job.RoomID, job.AgentSessionID, job.AgentKey, job.SourceMessageFromID, job.SourceMessageToID, job.OperationKey, job.Op, job.Type, job.Key, job.Content, core.MemoryWriteJobStatusPending); err != nil {
+		`, job.RoomID, job.AgentSessionID, nullInt64IfZero(job.AgentID), job.SourceMessageFromID, job.SourceMessageToID, job.OperationKey, job.Op, job.Type, job.Key, job.Content, core.MemoryWriteJobStatusPending); err != nil {
 			return fmt.Errorf("enqueue memory write job: %w", err)
 		}
 	}
@@ -286,7 +285,7 @@ func insertRejectedMemoryWriteJobTx(ctx context.Context, tx *sql.Tx, run core.Ag
 		INSERT INTO memory_write_jobs (
 			room_id,
 			agent_session_id,
-			agent_key,
+			agent_id,
 			source_message_from_id,
 			source_message_to_id,
 			operation_key,
@@ -301,8 +300,8 @@ func insertRejectedMemoryWriteJobTx(ctx context.Context, tx *sql.Tx, run core.Ag
 		ON CONFLICT (operation_key) DO UPDATE
 		SET last_error = EXCLUDED.last_error,
 		    updated_at = NOW()
-		RETURNING id, room_id, agent_session_id, agent_key, source_message_from_id, source_message_to_id, operation_key, op, type, key, content, status, attempts, last_error, created_at, updated_at
-	`, run.RoomID, run.AgentSessionID, run.AgentKey, run.SourceMessageFromID, run.SourceMessageToID, operationKey, op, typ, key, content, core.MemoryWriteJobStatusRejected, rejectErr.Error())
+		RETURNING id, room_id, agent_session_id, agent_id, source_message_from_id, source_message_to_id, operation_key, op, type, key, content, status, attempts, last_error, created_at, updated_at
+	`, run.RoomID, run.AgentSessionID, nullInt64IfZero(run.AgentID), run.SourceMessageFromID, run.SourceMessageToID, operationKey, op, typ, key, content, core.MemoryWriteJobStatusRejected, rejectErr.Error())
 	job, err := scanMemoryWriteJob(row)
 	if err != nil {
 		return fmt.Errorf("insert rejected memory write job: %w", err)
@@ -338,7 +337,7 @@ func memoryWriteJobFromProposal(run core.AgentRun, proposal core.MemoryWriteProp
 	job := core.MemoryWriteJob{
 		RoomID:              run.RoomID,
 		AgentSessionID:      run.AgentSessionID,
-		AgentKey:            run.AgentKey,
+		AgentID:             run.AgentID,
 		SourceMessageFromID: run.SourceMessageFromID,
 		SourceMessageToID:   run.SourceMessageToID,
 		Op:                  proposal.Op,
@@ -396,7 +395,7 @@ func claimMemoryWriteJobTx(ctx context.Context, tx *sql.Tx) (core.MemoryWriteJob
 		    updated_at = NOW()
 		FROM candidate
 		WHERE j.id = candidate.id
-		RETURNING j.id, j.room_id, j.agent_session_id, j.agent_key, j.source_message_from_id, j.source_message_to_id, j.operation_key, j.op, j.type, j.key, j.content, j.status, j.attempts, j.last_error, j.created_at, j.updated_at
+		RETURNING j.id, j.room_id, j.agent_session_id, j.agent_id, j.source_message_from_id, j.source_message_to_id, j.operation_key, j.op, j.type, j.key, j.content, j.status, j.attempts, j.last_error, j.created_at, j.updated_at
 	`, core.MemoryWriteJobStatusPending, maxMemoryJobAttempts)
 	job, err := scanMemoryWriteJob(row)
 	if err != nil {
@@ -579,11 +578,12 @@ func scanMemoryItem(row scanner) (core.MemoryItem, error) {
 func scanMemoryWriteJob(row scanner) (core.MemoryWriteJob, error) {
 	var job core.MemoryWriteJob
 	var lastError sql.NullString
+	var agentID sql.NullInt64
 	if err := row.Scan(
 		&job.ID,
 		&job.RoomID,
 		&job.AgentSessionID,
-		&job.AgentKey,
+		&agentID,
 		&job.SourceMessageFromID,
 		&job.SourceMessageToID,
 		&job.OperationKey,
@@ -601,6 +601,9 @@ func scanMemoryWriteJob(row scanner) (core.MemoryWriteJob, error) {
 	}
 	if lastError.Valid {
 		job.LastError = lastError.String
+	}
+	if agentID.Valid {
+		job.AgentID = agentID.Int64
 	}
 	return job, nil
 }

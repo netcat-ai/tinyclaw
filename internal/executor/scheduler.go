@@ -28,15 +28,20 @@ type MemoryCapabilityTokenStore interface {
 	CreateMemoryCapabilityToken(ctx context.Context, run core.AgentRun, ttl time.Duration) (string, error)
 }
 
+type AgentDefinitionStore interface {
+	ListAgents(ctx context.Context) ([]core.Agent, error)
+}
+
 type Runner interface {
 	RunAgent(ctx context.Context, run AgentRunRequest) (core.AgentRunResult, error)
 }
 
 type AgentRunRequest struct {
-	AgentRun          core.AgentRun
-	ContextMessages   []core.Message
-	MemorySearchURL   string
-	MemorySearchToken string
+	AgentRun            core.AgentRun
+	ContextMessages     []core.Message
+	SelectedAgents      []core.Agent
+	MemorySearchURL     string
+	MemorySearchToken   string
 	MemorySearchResults []core.MemorySearchResult
 }
 
@@ -127,6 +132,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) bool {
 	request := AgentRunRequest{
 		AgentRun:        run,
 		ContextMessages: contextMessages,
+		SelectedAgents:  s.selectedAgentsForRun(ctx, contextMessages),
 		MemorySearchURL: s.memorySearchURL,
 	}
 	if s.memorySearchURL != "" {
@@ -148,6 +154,42 @@ func (s *Scheduler) RunOnce(ctx context.Context) bool {
 		slog.Error("complete agent run failed", "agent_session_id", run.AgentSessionID, "err", err)
 	}
 	return true
+}
+
+func (s *Scheduler) selectedAgentsForRun(ctx context.Context, messages []core.Message) []core.Agent {
+	store, ok := s.store.(AgentDefinitionStore)
+	if !ok {
+		return nil
+	}
+	agents, err := store.ListAgents(ctx)
+	if err != nil {
+		slog.Warn("list agents for run failed", "err", err)
+		return nil
+	}
+	return selectMentionedAgents(messages, agents)
+}
+
+func selectMentionedAgents(messages []core.Message, agents []core.Agent) []core.Agent {
+	text := strings.ToLower(strings.Join(messageTexts(messages), "\n"))
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	selected := make([]core.Agent, 0, len(agents))
+	for _, agent := range agents {
+		if !agent.Enabled {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(agent.Key))
+		name := strings.ToLower(strings.TrimSpace(agent.DisplayName))
+		if key != "" && strings.Contains(text, "@"+key) {
+			selected = append(selected, agent)
+			continue
+		}
+		if name != "" && strings.Contains(text, "@"+name) {
+			selected = append(selected, agent)
+		}
+	}
+	return selected
 }
 
 func (s *Scheduler) failAgentRun(ctx context.Context, run core.AgentRun, err error) {

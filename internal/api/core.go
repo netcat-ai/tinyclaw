@@ -32,6 +32,10 @@ type AdminStore interface {
 	ListAdminRooms(ctx context.Context, limit int) ([]core.AdminRoomSummary, error)
 	GetAdminRoomTimeline(ctx context.Context, roomID int64, beforeMessageID int64, limit int) (core.AdminRoomTimeline, error)
 	ListAdminRoomMemory(ctx context.Context, input core.AdminMemoryListInput) ([]core.MemoryItem, error)
+	ListAgents(ctx context.Context) ([]core.Agent, error)
+	GetAgent(ctx context.Context, id int64) (core.Agent, error)
+	CreateAgent(ctx context.Context, input core.UpsertAgentInput) (core.Agent, error)
+	UpdateAgent(ctx context.Context, id int64, input core.UpsertAgentInput) (core.Agent, error)
 }
 
 type MemorySearchStore interface {
@@ -82,6 +86,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/deliveries/", s.handleDeliveryAction)
 	mux.HandleFunc("/admin/api/rooms", s.handleAdminRooms)
 	mux.HandleFunc("/admin/api/rooms/", s.handleAdminRoomAction)
+	mux.HandleFunc("/admin/api/agents", s.handleAdminAgents)
+	mux.HandleFunc("/admin/api/agents/", s.handleAdminAgentAction)
 	mux.HandleFunc("/admin/api/deliveries/", s.handleAdminDeliveryAction)
 	mux.HandleFunc("/internal/memory/search", s.handleMemorySearch)
 }
@@ -114,24 +120,23 @@ type coreRoomResponse struct {
 }
 
 type coreAgentSessionResponse struct {
-	ID                     int64           `json:"id"`
-	RoomID                 int64           `json:"room_id"`
-	AgentKey               string          `json:"agent_key"`
-	Enabled                bool            `json:"enabled"`
-	TriggerPolicy          json.RawMessage `json:"trigger_policy,omitempty"`
-	TriggerMessageID       int64           `json:"trigger_message_id,omitempty"`
-	LastProcessedMessageID int64           `json:"last_processed_message_id"`
-	CodexSessionID         string          `json:"codex_session_id,omitempty"`
+	ID                      int64           `json:"id"`
+	RoomID                  int64           `json:"room_id"`
+	Enabled                 bool            `json:"enabled"`
+	TriggerPolicy           json.RawMessage `json:"trigger_policy,omitempty"`
+	PendingTriggerMessageID int64           `json:"pending_trigger_message_id,omitempty"`
+	CaughtUpMessageID       int64           `json:"caught_up_message_id"`
+	CodexSessionID          string          `json:"codex_session_id,omitempty"`
 }
 
 type coreMessageResponse struct {
 	ID              int64           `json:"id"`
 	RoomID          int64           `json:"room_id"`
 	SourceMessageID string          `json:"source_message_id"`
+	Source          string          `json:"source"`
 	SenderID        string          `json:"sender_id"`
 	SenderName      string          `json:"sender_name,omitempty"`
 	Payload         json.RawMessage `json:"payload"`
-	Skipped         bool            `json:"skipped"`
 }
 
 type coreDeliveryResponse struct {
@@ -176,11 +181,11 @@ type adminMessageResponse struct {
 	ID              int64           `json:"id"`
 	RoomID          int64           `json:"room_id"`
 	SourceMessageID string          `json:"source_message_id"`
+	Source          string          `json:"source"`
 	SenderID        string          `json:"sender_id"`
 	SenderName      string          `json:"sender_name,omitempty"`
 	Payload         json.RawMessage `json:"payload"`
 	MessageTime     time.Time       `json:"message_time"`
-	Skipped         bool            `json:"skipped"`
 	CreatedAt       time.Time       `json:"created_at"`
 }
 
@@ -194,13 +199,95 @@ type adminMemoryResponse struct {
 	Items []core.MemoryItem `json:"items"`
 }
 
+type adminAgentsResponse struct {
+	Agents []core.Agent `json:"agents"`
+}
+
+type adminAgentResponse struct {
+	Agent core.Agent `json:"agent"`
+}
+
 type injectMessageRequest struct {
 	SenderID             string          `json:"sender_id"`
 	SenderName           string          `json:"sender_name"`
 	Text                 string          `json:"text"`
 	Payload              json.RawMessage `json:"payload"`
-	Skipped              bool            `json:"skipped"`
 	SuppressAgentTrigger bool            `json:"suppress_agent_trigger"`
+}
+
+func (s *Server) handleAdminAgents(w http.ResponseWriter, r *http.Request) {
+	store, ok := s.core.(AdminStore)
+	if !ok {
+		writeAPIError(w, http.StatusServiceUnavailable, "disabled", "admin API is unavailable")
+		return
+	}
+	if !s.authenticateAdmin(r) {
+		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid admin credentials")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		agents, err := store.ListAgents(r.Context())
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "list_failed", err.Error())
+			return
+		}
+		writeAPIJSON(w, http.StatusOK, adminAgentsResponse{Agents: agents})
+	case http.MethodPost:
+		var input core.UpsertAgentInput
+		if err := readJSONBody(r, &input); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		agent, err := store.CreateAgent(r.Context(), input)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "create_failed", err.Error())
+			return
+		}
+		writeAPIJSON(w, http.StatusOK, adminAgentResponse{Agent: agent})
+	default:
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET or POST")
+	}
+}
+
+func (s *Server) handleAdminAgentAction(w http.ResponseWriter, r *http.Request) {
+	store, ok := s.core.(AdminStore)
+	if !ok {
+		writeAPIError(w, http.StatusServiceUnavailable, "disabled", "admin API is unavailable")
+		return
+	}
+	if !s.authenticateAdmin(r) {
+		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid admin credentials")
+		return
+	}
+	id, err := strconv.ParseInt(strings.Trim(strings.TrimPrefix(r.URL.Path, "/admin/api/agents/"), "/"), 10, 64)
+	if err != nil || id <= 0 {
+		writeAPIError(w, http.StatusNotFound, "not_found", "unknown agent")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		agent, err := store.GetAgent(r.Context(), id)
+		if err != nil {
+			writeAPIError(w, http.StatusNotFound, "not_found", err.Error())
+			return
+		}
+		writeAPIJSON(w, http.StatusOK, adminAgentResponse{Agent: agent})
+	case http.MethodPut:
+		var input core.UpsertAgentInput
+		if err := readJSONBody(r, &input); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		agent, err := store.UpdateAgent(r.Context(), id, input)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "update_failed", err.Error())
+			return
+		}
+		writeAPIJSON(w, http.StatusOK, adminAgentResponse{Agent: agent})
+	default:
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET or PUT")
+	}
 }
 
 func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
@@ -282,9 +369,10 @@ func (s *Server) handleListDeliveries(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", "channels is required")
 		return
 	}
+	afterID := parsePositiveInt64(firstNonEmpty(r.URL.Query().Get("after_id"), r.URL.Query().Get("id")), 0)
 	var deliveries []core.Delivery
 	for _, channel := range channels {
-		channelDeliveries, err := s.core.ListCoreDeliveries(r.Context(), channel, 0)
+		channelDeliveries, err := s.core.ListCoreDeliveries(r.Context(), channel, afterID)
 		if err != nil {
 			writeAPIError(w, http.StatusBadRequest, "list_failed", err.Error())
 			return
@@ -459,11 +547,11 @@ func (s *Server) handleAdminInjectMessage(w http.ResponseWriter, r *http.Request
 	result, err := s.messages.IngestMessage(r.Context(), core.CreateMessageInput{
 		RoomID:               roomID,
 		SourceMessageID:      "admin:" + uuid.NewString(),
+		Source:               "admin",
 		SenderID:             strings.TrimSpace(input.SenderID),
 		SenderName:           strings.TrimSpace(input.SenderName),
 		MessageTime:          time.Now().UTC(),
 		Payload:              payload,
-		Skipped:              input.Skipped,
 		SuppressAgentTrigger: input.SuppressAgentTrigger,
 	})
 	if err != nil {
@@ -606,6 +694,15 @@ func firstString(values []string) string {
 	return values[0]
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func parseIDActionPath(path string) (int64, string, bool) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) != 2 {
@@ -694,14 +791,13 @@ func roomToResponse(room core.Room) coreRoomResponse {
 
 func agentSessionToResponse(session core.AgentSession) coreAgentSessionResponse {
 	return coreAgentSessionResponse{
-		ID:                     session.ID,
-		RoomID:                 session.RoomID,
-		AgentKey:               session.AgentKey,
-		Enabled:                session.Enabled,
-		TriggerPolicy:          session.TriggerPolicy,
-		TriggerMessageID:       session.TriggerMessageID,
-		LastProcessedMessageID: session.LastProcessedMessageID,
-		CodexSessionID:         session.CodexSessionID,
+		ID:                      session.ID,
+		RoomID:                  session.RoomID,
+		Enabled:                 session.Enabled,
+		TriggerPolicy:           session.TriggerPolicy,
+		PendingTriggerMessageID: session.PendingTriggerMessageID,
+		CaughtUpMessageID:       session.CaughtUpMessageID,
+		CodexSessionID:          session.CodexSessionID,
 	}
 }
 
@@ -710,10 +806,10 @@ func messageToResponse(message core.Message) coreMessageResponse {
 		ID:              message.ID,
 		RoomID:          message.RoomID,
 		SourceMessageID: message.SourceMessageID,
+		Source:          message.Source,
 		SenderID:        message.SenderID,
 		SenderName:      message.SenderName,
 		Payload:         message.Payload,
-		Skipped:         message.Skipped,
 	}
 }
 
@@ -766,11 +862,11 @@ func adminMessageToResponse(message core.Message) adminMessageResponse {
 		ID:              message.ID,
 		RoomID:          message.RoomID,
 		SourceMessageID: message.SourceMessageID,
+		Source:          message.Source,
 		SenderID:        message.SenderID,
 		SenderName:      message.SenderName,
 		Payload:         message.Payload,
 		MessageTime:     message.MessageTime,
-		Skipped:         message.Skipped,
 		CreatedAt:       message.CreatedAt,
 	}
 }

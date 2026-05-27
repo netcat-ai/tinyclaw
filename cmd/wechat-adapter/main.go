@@ -190,7 +190,6 @@ func (a *adapter) ensureRoom(ctx context.Context, msg wxMessage) (int64, error) 
 		"channel_room_type": identity.ChannelRoomType,
 		"display_name":      identity.DisplayName,
 		"outbound_alias":    identity.DisplayName,
-		"agent_key":         "default",
 		"agent_enabled":     true,
 		"trigger_policy":    json.RawMessage(a.cfg.TriggerPolicy),
 	}
@@ -471,13 +470,14 @@ func (a *adapter) createMessage(ctx context.Context, msg wxMessage) error {
 		"wechat_time_label": msg.Time,
 	}
 	reqBody := map[string]any{
-		"room_id":           roomID,
-		"source_message_id": sourceMessageID(msg),
-		"sender_id":         senderID(msg),
-		"sender_name":       msg.Sender,
-		"message_time":      messageTime.Format(time.RFC3339),
-		"payload":           payload,
-		"skipped":           a.shouldSkipMessage(msg),
+		"room_id":                roomID,
+		"source_message_id":      sourceMessageID(msg),
+		"source":                 defaultWechatChannel,
+		"sender_id":              senderID(msg),
+		"sender_name":            msg.Sender,
+		"message_time":           messageTime.Format(time.RFC3339),
+		"payload":                payload,
+		"suppress_agent_trigger": a.shouldSuppressAgentTrigger(msg),
 	}
 	var ignored map[string]any
 	if err := a.postJSON(ctx, "/api/messages", reqBody, &ignored); err != nil {
@@ -538,7 +538,7 @@ func normalizeWechatType(value string) string {
 	}
 }
 
-func (a *adapter) shouldSkipMessage(msg wxMessage) bool {
+func (a *adapter) shouldSuppressAgentTrigger(msg wxMessage) bool {
 	if a.isSelfSender(msg) {
 		return true
 	}

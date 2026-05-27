@@ -392,6 +392,19 @@ func BuildCodexPrompt(run AgentRunRequest) string {
 		builder.WriteString(string(data))
 		builder.WriteString("\n\n")
 	}
+	if len(run.SelectedAgents) > 0 {
+		builder.WriteString("Run-scoped Subagents:\n")
+		builder.WriteString("Treat these as addressed specialist roles for this run. They do not own Room state or memory writes; synthesize one final reply as the orchestrator.\n")
+		for _, agent := range run.SelectedAgents {
+			fmt.Fprintf(&builder, "- @%s (%s): %s\n", agent.Key, agent.DisplayName, strings.TrimSpace(agent.Description))
+			if prompt := strings.TrimSpace(agent.Prompt); prompt != "" {
+				builder.WriteString("  Prompt: ")
+				builder.WriteString(prompt)
+				builder.WriteString("\n")
+			}
+		}
+		builder.WriteString("\n")
+	}
 	builder.WriteString("Agent Session ID: ")
 	fmt.Fprintf(&builder, "%d", run.AgentRun.AgentSessionID)
 	builder.WriteString("\nRoom ID: ")

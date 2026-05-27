@@ -26,10 +26,6 @@ func (s *CoreStore) RegisterRoom(ctx context.Context, input core.RegisterRoomInp
 	input.ChannelRoomType = strings.TrimSpace(input.ChannelRoomType)
 	input.DisplayName = strings.TrimSpace(input.DisplayName)
 	input.OutboundAlias = strings.TrimSpace(input.OutboundAlias)
-	input.AgentKey = strings.TrimSpace(input.AgentKey)
-	if input.AgentKey == "" {
-		input.AgentKey = core.DefaultAgentKey
-	}
 	if err := validateRegisterRoom(input); err != nil {
 		return core.RegisterRoomResult{}, err
 	}
@@ -56,8 +52,12 @@ func (s *CoreStore) RegisterRoom(ctx context.Context, input core.RegisterRoomInp
 
 func (s *CoreStore) CreateMessage(ctx context.Context, input core.CreateMessageInput) (core.CreateMessageResult, error) {
 	input.SourceMessageID = strings.TrimSpace(input.SourceMessageID)
+	input.Source = strings.TrimSpace(input.Source)
 	input.SenderID = strings.TrimSpace(input.SenderID)
 	input.SenderName = strings.TrimSpace(input.SenderName)
+	if input.Source == "" {
+		input.Source = "external"
+	}
 	if input.MessageTime.IsZero() {
 		input.MessageTime = time.Now().UTC()
 	}
@@ -86,7 +86,7 @@ func (s *CoreStore) CreateMessage(ctx context.Context, input core.CreateMessageI
 		Message:   message,
 		Duplicate: !inserted,
 	}
-	if !inserted || input.Skipped || input.SuppressAgentTrigger {
+	if !inserted || input.SuppressAgentTrigger {
 		if err := tx.Commit(); err != nil {
 			return core.CreateMessageResult{}, fmt.Errorf("commit create message: %w", err)
 		}

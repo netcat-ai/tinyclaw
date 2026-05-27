@@ -37,8 +37,7 @@ SELECT
   m.id,
   m.room_id,
   m.source_message_id,
-  m.source_kind,
-  m.sender_kind,
+  m.source,
   m.sender_id,
   m.payload,
   m.created_at

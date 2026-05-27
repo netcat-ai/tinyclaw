@@ -10,7 +10,7 @@ func TestMemoryWriteJobFromProposalNormalizesType(t *testing.T) {
 	run := core.AgentRun{
 		AgentSessionID:      100,
 		RoomID:              10,
-		AgentKey:            core.DefaultAgentKey,
+		AgentID:             1,
 		SourceMessageFromID: 20,
 		SourceMessageToID:   22,
 	}

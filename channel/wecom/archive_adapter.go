@@ -225,13 +225,12 @@ func (a *ArchiveAdapter) toRegisterRoomInput(ctx context.Context, msg archiveMes
 		ChannelRoomType: roomType,
 		DisplayName:     displayName,
 		OutboundAlias:   displayName,
-		AgentKey:        core.DefaultAgentKey,
 		AgentEnabled:    true,
 	}, true
 }
 
 func (a *ArchiveAdapter) toCreateMessageInput(ctx context.Context, seq int64, msg archiveMessage, raw json.RawMessage, roomID int64) core.CreateMessageInput {
-	skipped := strings.TrimSpace(msg.Action) != "send" || strings.TrimSpace(msg.MsgType) != "text" || strings.TrimSpace(msg.From) == strings.TrimSpace(a.cfg.BotID)
+	suppressAgentTrigger := strings.TrimSpace(msg.Action) != "send" || strings.TrimSpace(msg.MsgType) != "text" || strings.TrimSpace(msg.From) == strings.TrimSpace(a.cfg.BotID)
 	payload := map[string]any{
 		"type":        msg.MsgType,
 		"wecom_seq":   seq,
@@ -241,18 +240,19 @@ func (a *ArchiveAdapter) toCreateMessageInput(ctx context.Context, seq int64, ms
 		payload["type"] = "text"
 		payload["text"] = msg.Text.Content
 	}
-	if skipped {
+	if suppressAgentTrigger {
 		payload["raw"] = json.RawMessage(raw)
 	}
 
 	return core.CreateMessageInput{
-		RoomID:          roomID,
-		SourceMessageID: sourceMessageID(seq, msg.MsgID),
-		SenderID:        strings.TrimSpace(msg.From),
-		SenderName:      a.resolveSenderName(ctx, strings.TrimSpace(msg.From)),
-		MessageTime:     archiveMessageTime(msg.MsgTime),
-		Payload:         mustJSON(payload),
-		Skipped:         skipped,
+		RoomID:               roomID,
+		SourceMessageID:      sourceMessageID(seq, msg.MsgID),
+		Source:               defaultWeComChannel,
+		SenderID:             strings.TrimSpace(msg.From),
+		SenderName:           a.resolveSenderName(ctx, strings.TrimSpace(msg.From)),
+		MessageTime:          archiveMessageTime(msg.MsgTime),
+		Payload:              mustJSON(payload),
+		SuppressAgentTrigger: suppressAgentTrigger,
 	}
 }
 

@@ -26,11 +26,11 @@ func (s *CoreStore) ListAdminRooms(ctx context.Context, limit int) ([]core.Admin
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			r.id, r.tenant_id, r.channel, r.channel_room_id, r.channel_room_type, r.display_name, r.outbound_alias, r.created_at, r.updated_at,
-			s.id, s.room_id, s.agent_key, s.enabled, s.trigger_policy, s.trigger_message_id, s.last_processed_message_id, s.codex_session_id, s.lock_owner, s.lock_expires_at, s.created_at, s.updated_at,
+			s.id, s.room_id, s.enabled, s.trigger_policy, s.pending_trigger_message_id, s.caught_up_message_id, s.codex_session_id, s.lock_owner, s.lock_expires_at, s.created_at, s.updated_at,
 			COALESCE(pending.pending_delivery_count, 0),
 			last_message.last_message_time
 		FROM rooms r
-		LEFT JOIN agent_sessions s ON s.room_id = r.id AND s.agent_key = $1
+		LEFT JOIN agent_sessions s ON s.room_id = r.id
 		LEFT JOIN LATERAL (
 			SELECT COUNT(*) AS pending_delivery_count
 			FROM deliveries d
@@ -44,7 +44,7 @@ func (s *CoreStore) ListAdminRooms(ctx context.Context, limit int) ([]core.Admin
 		) last_message ON TRUE
 		ORDER BY COALESCE(last_message.last_message_time, r.updated_at) DESC, r.id DESC
 		LIMIT $3
-	`, core.DefaultAgentKey, core.DeliveryStatusPending, limit)
+	`, core.DeliveryStatusPending, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list admin rooms: %w", err)
 	}
@@ -160,10 +160,10 @@ func (s *CoreStore) ListAdminRoomMemory(ctx context.Context, input core.AdminMem
 
 func listAgentSessionsForRoomTx(ctx context.Context, tx *sql.Tx, roomID int64) ([]core.AgentSession, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, room_id, agent_key, enabled, trigger_policy, trigger_message_id, last_processed_message_id, codex_session_id, lock_owner, lock_expires_at, created_at, updated_at
+		SELECT id, room_id, enabled, trigger_policy, pending_trigger_message_id, caught_up_message_id, codex_session_id, lock_owner, lock_expires_at, created_at, updated_at
 		FROM agent_sessions
 		WHERE room_id = $1
-		ORDER BY agent_key ASC, id ASC
+		ORDER BY id ASC
 	`, roomID)
 	if err != nil {
 		return nil, fmt.Errorf("list room agent sessions: %w", err)
@@ -193,7 +193,7 @@ func listAdminTimelineMessagesTx(ctx context.Context, tx *sql.Tx, roomID int64, 
 	}
 	args = append(args, limit+1)
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, room_id, source_message_id, sender_id, sender_name, payload, message_time, skipped, created_at
+		SELECT id, room_id, source_message_id, source, sender_id, sender_name, payload, message_time, created_at
 		FROM messages
 		WHERE room_id = $1
 		`+condition+`
@@ -257,11 +257,10 @@ func scanAdminRoomSummary(row scanner) (core.AdminRoomSummary, error) {
 	var displayName sql.NullString
 	var sessionID sql.NullInt64
 	var sessionRoomID sql.NullInt64
-	var agentKey sql.NullString
 	var enabled sql.NullBool
 	var triggerPolicy []byte
-	var triggerMessageID sql.NullInt64
-	var lastProcessedMessageID sql.NullInt64
+	var pendingTriggerMessageID sql.NullInt64
+	var caughtUpMessageID sql.NullInt64
 	var codexSessionID sql.NullString
 	var lockOwner sql.NullString
 	var lockExpiresAt sql.NullTime
@@ -280,11 +279,10 @@ func scanAdminRoomSummary(row scanner) (core.AdminRoomSummary, error) {
 		&summary.Room.UpdatedAt,
 		&sessionID,
 		&sessionRoomID,
-		&agentKey,
 		&enabled,
 		&triggerPolicy,
-		&triggerMessageID,
-		&lastProcessedMessageID,
+		&pendingTriggerMessageID,
+		&caughtUpMessageID,
 		&codexSessionID,
 		&lockOwner,
 		&lockExpiresAt,
@@ -301,14 +299,13 @@ func scanAdminRoomSummary(row scanner) (core.AdminRoomSummary, error) {
 	if sessionID.Valid {
 		summary.AgentSession.ID = sessionID.Int64
 		summary.AgentSession.RoomID = sessionRoomID.Int64
-		summary.AgentSession.AgentKey = agentKey.String
 		summary.AgentSession.Enabled = enabled.Bool
 		summary.AgentSession.TriggerPolicy = append(summary.AgentSession.TriggerPolicy, triggerPolicy...)
-		summary.AgentSession.LastProcessedMessageID = lastProcessedMessageID.Int64
+		summary.AgentSession.CaughtUpMessageID = caughtUpMessageID.Int64
 		summary.AgentSession.CreatedAt = sessionCreatedAt.Time
 		summary.AgentSession.UpdatedAt = sessionUpdatedAt.Time
-		if triggerMessageID.Valid {
-			summary.AgentSession.TriggerMessageID = triggerMessageID.Int64
+		if pendingTriggerMessageID.Valid {
+			summary.AgentSession.PendingTriggerMessageID = pendingTriggerMessageID.Int64
 		}
 		if codexSessionID.Valid {
 			summary.AgentSession.CodexSessionID = codexSessionID.String

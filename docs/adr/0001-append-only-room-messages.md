@@ -1,6 +1,6 @@
 # Use Append-Only Room Messages
 
-TinyClaw stores messages as append-only raw facts that have entered one Room through its channel. Messages do not store invocation ownership or global skipped state.
+TinyClaw stores messages as append-only raw facts that have entered one Room through its channel. Messages do not store invocation ownership or global visibility state.
 
 Agent execution boundaries live on the Room's default `agent_sessions` row:
 
@@ -10,7 +10,7 @@ Agent execution boundaries live on the Room's default `agent_sessions` row:
 
 **Considered Options**
 
-- Store `messages.dispatch_state` as waiting/skipped/invocation-id sentinel values.
+- Store `messages.dispatch_state` as waiting/ignored/invocation-id sentinel values.
 - Store nullable `messages.invocation_id`.
 - Keep messages append-only and move execution cursors to Agent Session state.
 

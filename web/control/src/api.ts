@@ -16,11 +16,10 @@ export type Room = {
 export type AgentSession = {
   id: number
   room_id: number
-  agent_key: string
   enabled: boolean
   trigger_policy?: unknown
-  trigger_message_id?: number
-  last_processed_message_id: number
+  pending_trigger_message_id?: number
+  caught_up_message_id: number
   codex_session_id?: string
 }
 
@@ -28,11 +27,11 @@ export type Message = {
   id: number
   room_id: number
   source_message_id: string
+  source: string
   sender_id: string
   sender_name?: string
   payload: Record<string, unknown>
   message_time: string
-  skipped: boolean
   created_at: string
 }
 
@@ -93,6 +92,27 @@ export type InjectMessageInput = {
   suppress_agent_trigger: boolean
 }
 
+export type Agent = {
+  id: number
+  key: string
+  display_name: string
+  description?: string
+  prompt: string
+  allowed_tools: unknown
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type UpsertAgentInput = {
+  key: string
+  display_name: string
+  description: string
+  prompt: string
+  allowed_tools: unknown
+  enabled: boolean
+}
+
 const authHeader = (credentials: Credentials) => {
   const raw = `${credentials.clientId}:${credentials.clientSecret}`
   return `Basic ${btoa(unescape(encodeURIComponent(raw)))}`
@@ -123,6 +143,21 @@ export const requestJSON = async <T>(
 export const api = {
   listRooms: (credentials: Credentials) =>
     requestJSON<{ rooms: RoomSummary[] }>('/admin/api/rooms?limit=200', credentials),
+
+  listAgents: (credentials: Credentials) =>
+    requestJSON<{ agents: Agent[] }>('/admin/api/agents', credentials),
+
+  createAgent: (credentials: Credentials, input: UpsertAgentInput) =>
+    requestJSON<{ agent: Agent }>('/admin/api/agents', credentials, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  updateAgent: (credentials: Credentials, agentId: number, input: UpsertAgentInput) =>
+    requestJSON<{ agent: Agent }>(`/admin/api/agents/${agentId}`, credentials, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
 
   getTimeline: (credentials: Credentials, roomId: number, beforeMessageId?: number) => {
     const params = new URLSearchParams({ limit: '100' })

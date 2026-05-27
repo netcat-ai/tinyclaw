@@ -30,8 +30,7 @@ type coreE2ERoomResponse struct {
 
 type coreE2EMessageResponse struct {
 	Message struct {
-		ID      int64 `json:"id"`
-		Skipped bool  `json:"skipped"`
+		ID int64 `json:"id"`
 	} `json:"message"`
 	Duplicate bool `json:"duplicate"`
 	Triggered bool `json:"triggered"`
@@ -77,9 +76,6 @@ func TestCoreE2EDrawCommandCreatesCommandDeliveries(t *testing.T) {
 	drawResp := postMessageE2E(t, api, roomResp.Room.ID, "draw-msg-1", "/draw 一朵花")
 	if drawResp.Triggered {
 		t.Fatalf("draw triggered = true, want false")
-	}
-	if drawResp.Message.Skipped {
-		t.Fatal("draw skipped = true, want false")
 	}
 	if image.calls != 1 || image.prompt != "一朵花" {
 		t.Fatalf("image calls=%d prompt=%q, want one draw prompt", image.calls, image.prompt)
@@ -227,9 +223,6 @@ func TestCoreModelE2E(t *testing.T) {
 	roomResp := postRoomE2E(t, api, roomName)
 
 	contextResp := postMessageE2E(t, api, roomResp.Room.ID, "msg-1", "context message")
-	if contextResp.Message.Skipped {
-		t.Fatal("context skipped = true, want false")
-	}
 
 	duplicateResp := postMessageE2E(t, api, roomResp.Room.ID, "msg-1", "context message")
 	if !duplicateResp.Duplicate {
@@ -264,7 +257,6 @@ func TestCoreModelE2E(t *testing.T) {
 	token, err := coreStore.CreateMemoryCapabilityToken(ctx, core.AgentRun{
 		AgentSessionID:      roomResp.AgentSession.ID,
 		RoomID:              roomResp.Room.ID,
-		AgentKey:            core.DefaultAgentKey,
 		SourceMessageFromID: contextResp.Message.ID,
 		SourceMessageToID:   triggerResp.Message.ID,
 	}, time.Minute)
