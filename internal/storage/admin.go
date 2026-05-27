@@ -35,7 +35,7 @@ func (s *CoreStore) ListAdminRooms(ctx context.Context, limit int) ([]core.Admin
 			SELECT COUNT(*) AS pending_delivery_count
 			FROM deliveries d
 			WHERE d.room_id = r.id
-			  AND d.status = $2
+			  AND d.status = $1
 		) pending ON TRUE
 		LEFT JOIN LATERAL (
 			SELECT MAX(message_time) AS last_message_time
@@ -43,7 +43,7 @@ func (s *CoreStore) ListAdminRooms(ctx context.Context, limit int) ([]core.Admin
 			WHERE m.room_id = r.id
 		) last_message ON TRUE
 		ORDER BY COALESCE(last_message.last_message_time, r.updated_at) DESC, r.id DESC
-		LIMIT $3
+		LIMIT $2
 	`, core.DeliveryStatusPending, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list admin rooms: %w", err)
