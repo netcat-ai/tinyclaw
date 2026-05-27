@@ -113,6 +113,11 @@ export type UpsertAgentInput = {
   enabled: boolean
 }
 
+export type RegisterRoomResult = {
+  room: Room
+  agent_session: AgentSession
+}
+
 const authHeader = (credentials: Credentials) => {
   const raw = `${credentials.clientId}:${credentials.clientSecret}`
   return `Basic ${btoa(unescape(encodeURIComponent(raw)))}`
@@ -172,7 +177,7 @@ export const api = {
   },
 
   registerRoom: (credentials: Credentials, input: RegisterRoomInput) =>
-    requestJSON('/api/rooms', credentials, {
+    requestJSON<RegisterRoomResult>('/admin/api/rooms', credentials, {
       method: 'POST',
       body: JSON.stringify(input),
     }),

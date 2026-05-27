@@ -5,6 +5,7 @@ import {
   Bot,
   Check,
   Database,
+  DoorOpen,
   KeyRound,
   Loader2,
   MessageSquarePlus,
@@ -124,6 +125,8 @@ const messageDeliveries = computed(() => {
 
 const canUseAPI = computed(() => credentials.value.clientId.length > 0 && credentials.value.clientSecret.length > 0)
 
+const canShowWorkspace = computed(() => selectedRoom.value !== null || activeTab.value === 'agents' || activeTab.value === 'settings')
+
 const formatDate = (value?: string) => {
   if (!value || value.startsWith('0001-')) return 'Never'
   return new Intl.DateTimeFormat(undefined, {
@@ -161,15 +164,27 @@ const syncSettingsFromSelectedRoom = () => {
     : ''
 }
 
+const resetRoomForm = () => {
+  settingsChannel.value = 'wecom'
+  settingsChannelRoomId.value = ''
+  settingsChannelRoomType.value = 'group'
+  settingsDisplayName.value = ''
+  settingsOutboundAlias.value = ''
+  settingsAgentEnabled.value = true
+  settingsTriggerPolicy.value = ''
+}
+
 const loadRooms = async () => {
   if (!canUseAPI.value) return
   roomLoading.value = true
   authError.value = ''
   try {
     const result = await api.listRooms(credentials.value)
-    rooms.value = result.rooms
-    if (!selectedRoomId.value && result.rooms.length) {
-      selectedRoomId.value = result.rooms[0].room.id
+    rooms.value = result.rooms ?? []
+    if (!rooms.value.some((summary) => summary.room.id === selectedRoomId.value)) {
+      selectedRoomId.value = rooms.value[0]?.room.id ?? null
+      timeline.value = null
+      memoryItems.value = []
     }
   } catch (error) {
     authError.value = error instanceof Error ? error.message : 'Failed to load rooms'
@@ -184,9 +199,9 @@ const loadAgents = async () => {
   actionError.value = ''
   try {
     const result = await api.listAgents(credentials.value)
-    agents.value = result.agents
-    if (!selectedAgentId.value && result.agents.length) {
-      selectedAgentId.value = result.agents[0].id
+    agents.value = result.agents ?? []
+    if (!agents.value.some((agent) => agent.id === selectedAgentId.value)) {
+      selectedAgentId.value = agents.value[0]?.id ?? null
     }
   } catch (error) {
     actionError.value = error instanceof Error ? error.message : 'Failed to load agents'
@@ -201,6 +216,9 @@ const loadTimeline = async () => {
   actionError.value = ''
   try {
     timeline.value = await api.getTimeline(credentials.value, selectedRoomId.value)
+    timeline.value.messages ??= []
+    timeline.value.deliveries ??= []
+    timeline.value.agent_sessions ??= []
   } catch (error) {
     actionError.value = error instanceof Error ? error.message : 'Failed to load timeline'
   } finally {
@@ -214,7 +232,7 @@ const loadMemory = async () => {
   actionError.value = ''
   try {
     const result = await api.listMemory(credentials.value, selectedRoomId.value, memoryStatus.value, memoryTypes.value)
-    memoryItems.value = result.items
+    memoryItems.value = result.items ?? []
   } catch (error) {
     actionError.value = error instanceof Error ? error.message : 'Failed to load memory'
   } finally {
@@ -226,6 +244,19 @@ const selectRoom = async (roomId: number) => {
   selectedRoomId.value = roomId
   activeTab.value = 'timeline'
   await loadTimeline()
+}
+
+const newRoom = () => {
+  selectedRoomId.value = null
+  timeline.value = null
+  memoryItems.value = []
+  activeTab.value = 'settings'
+  resetRoomForm()
+}
+
+const openAgents = async () => {
+  activeTab.value = 'agents'
+  await loadAgents()
 }
 
 const refreshCurrent = async () => {
@@ -279,7 +310,6 @@ const ackDelivery = async (deliveryId: number) => {
 }
 
 const saveRoomSettings = async () => {
-  if (!selectedRoom.value) return
   savingRoom.value = true
   actionError.value = ''
   try {
@@ -296,7 +326,8 @@ const saveRoomSettings = async () => {
       agent_enabled: settingsAgentEnabled.value,
       trigger_policy: triggerPolicy,
     }
-    await api.registerRoom(credentials.value, input)
+    const result = await api.registerRoom(credentials.value, input)
+    selectedRoomId.value = result.room.id
     await Promise.all([loadRooms(), loadTimeline()])
   } catch (error) {
     actionError.value = error instanceof Error ? error.message : 'Failed to save room settings'
@@ -423,12 +454,21 @@ onMounted(async () => {
         <div class="border-b border-line p-4">
           <div class="mb-3 flex items-center justify-between">
             <h2 class="text-sm font-700">Rooms</h2>
-            <span class="text-xs text-muted">{{ filteredRooms.length }} / {{ rooms.length }}</span>
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-muted">{{ filteredRooms.length }} / {{ rooms.length }}</span>
+              <button class="icon-button" title="New room" @click="newRoom">
+                <Plus class="h-4 w-4" />
+              </button>
+            </div>
           </div>
           <label class="flex items-center gap-2 rounded-6px border border-line bg-white px-3 py-2">
             <Search class="h-4 w-4 text-muted" />
             <input v-model="query" class="min-w-0 flex-1 bg-transparent text-sm outline-none" placeholder="Search rooms" />
           </label>
+          <button class="mt-3 w-full small-button justify-center" type="button" @click="openAgents">
+            <Bot class="h-3.5 w-3.5" />
+            Manage Agents
+          </button>
         </div>
 
         <div class="room-list h-[calc(100vh-150px)] overflow-y-auto">
@@ -460,18 +500,25 @@ onMounted(async () => {
       </aside>
 
       <section class="min-w-0 min-h-0">
-        <div v-if="selectedRoom" class="grid h-full grid-rows-[auto_auto_minmax(0,1fr)]">
+        <div v-if="canShowWorkspace" class="grid h-full grid-rows-[auto_auto_minmax(0,1fr)]">
           <div class="border-b border-line bg-surface px-5 py-4">
             <div class="flex items-start justify-between gap-4">
               <div class="min-w-0">
                 <h2 class="truncate text-xl font-750">
-                  {{ selectedRoom.room.display_name || selectedRoom.room.channel_room_id }}
+                  <template v-if="selectedRoom">
+                    {{ selectedRoom.room.display_name || selectedRoom.room.channel_room_id }}
+                  </template>
+                  <template v-else-if="activeTab === 'agents'">Agents</template>
+                  <template v-else>New Room</template>
                 </h2>
-                <p class="mt-1 text-sm text-muted">
+                <p v-if="selectedRoom" class="mt-1 text-sm text-muted">
                   #{{ selectedRoom.room.id }} · {{ selectedRoom.room.channel }} · {{ selectedRoom.room.channel_room_id }}
                 </p>
+                <p v-else class="mt-1 text-sm text-muted">
+                  Create and edit admin-managed TinyClaw records
+                </p>
               </div>
-              <div class="flex gap-2 text-xs">
+              <div v-if="selectedRoom" class="flex gap-2 text-xs">
                 <span class="status-pill">{{ selectedRoom.agent_session?.enabled ? 'Agent enabled' : 'Agent disabled' }}</span>
                 <span class="status-pill">{{ pendingDeliveries.length }} pending</span>
               </div>
@@ -480,10 +527,20 @@ onMounted(async () => {
 
           <div class="border-b border-line bg-surface px-5">
             <nav class="flex gap-1">
-              <button class="tab-button" :class="{ 'tab-button-active': activeTab === 'timeline' }" @click="activeTab = 'timeline'">
+              <button
+                class="tab-button"
+                :class="{ 'tab-button-active': activeTab === 'timeline' }"
+                :disabled="!selectedRoom"
+                @click="activeTab = 'timeline'"
+              >
                 Timeline
               </button>
-              <button class="tab-button" :class="{ 'tab-button-active': activeTab === 'memory' }" @click="activeTab = 'memory'">
+              <button
+                class="tab-button"
+                :class="{ 'tab-button-active': activeTab === 'memory' }"
+                :disabled="!selectedRoom"
+                @click="activeTab = 'memory'"
+              >
                 Memory
               </button>
               <button class="tab-button" :class="{ 'tab-button-active': activeTab === 'agents' }" @click="activeTab = 'agents'">
@@ -711,14 +768,17 @@ onMounted(async () => {
                   Trigger Policy JSON
                   <textarea v-model="settingsTriggerPolicy" class="field min-h-32 resize-y font-mono text-xs" />
                 </label>
-                <button class="primary-button justify-center" :disabled="savingRoom || !settingsOutboundAlias.trim()">
+                <button
+                  class="primary-button justify-center"
+                  :disabled="savingRoom || !settingsChannel.trim() || !settingsChannelRoomId.trim() || !settingsChannelRoomType.trim() || !settingsOutboundAlias.trim()"
+                >
                   <Loader2 v-if="savingRoom" class="h-4 w-4 animate-spin" />
                   <Check v-else class="h-4 w-4" />
-                  Save
+                  {{ selectedRoom ? 'Save Room' : 'Create Room' }}
                 </button>
               </form>
 
-              <div class="settings-grid">
+              <div v-if="selectedRoom" class="settings-grid">
                 <div class="settings-row">
                   <span>Room ID</span>
                   <code>{{ selectedRoom.room.id }}</code>
@@ -740,12 +800,28 @@ onMounted(async () => {
                   <code>{{ selectedRoom.agent_session?.caught_up_message_id || 0 }}</code>
                 </div>
               </div>
+              <div v-else class="empty-state">
+                <DoorOpen class="h-4 w-4" />
+                Fill the form to register a send-ready room.
+              </div>
             </section>
           </div>
         </div>
 
         <div v-else class="grid h-full place-items-center p-6">
-          <div class="empty-state">Connect with admin credentials to load rooms.</div>
+          <div class="grid justify-items-center gap-3">
+            <div class="empty-state px-8">Connect with admin credentials or create the first room.</div>
+            <div class="flex gap-2">
+              <button class="primary-button" type="button" :disabled="!canUseAPI" @click="newRoom">
+                <Plus class="h-4 w-4" />
+                New Room
+              </button>
+              <button class="small-button" type="button" :disabled="!canUseAPI" @click="openAgents">
+                <Bot class="h-3.5 w-3.5" />
+                Manage Agents
+              </button>
+            </div>
+          </div>
         </div>
       </section>
     </section>

@@ -417,6 +417,95 @@ func TestHandleAdminRoomsAcceptsBuiltInAdminSecret(t *testing.T) {
 	}
 }
 
+func TestHandleAdminRoomsRegistersRoomWithAdminAuth(t *testing.T) {
+	api := NewServerWithCommandHandler(fakeCoreStore{
+		registerFn: func(_ context.Context, input core.RegisterRoomInput) (core.RegisterRoomResult, error) {
+			if input.Channel != "wecom" || input.ChannelRoomID != "room-1" || input.OutboundAlias != "测试群" || !input.AgentEnabled {
+				t.Fatalf("unexpected input: %+v", input)
+			}
+			return core.RegisterRoomResult{
+				Room: core.Room{
+					ID:              10,
+					TenantID:        core.DefaultTenantID,
+					Channel:         input.Channel,
+					ChannelRoomID:   input.ChannelRoomID,
+					ChannelRoomType: input.ChannelRoomType,
+					DisplayName:     input.DisplayName,
+					OutboundAlias:   input.OutboundAlias,
+				},
+				AgentSession: core.AgentSession{
+					ID:      100,
+					RoomID:  10,
+					Enabled: input.AgentEnabled,
+				},
+			}, nil
+		},
+	}, nil, "api-secret", "admin-secret")
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/rooms", strings.NewReader(`{
+		"channel":"wecom",
+		"channel_room_id":"room-1",
+		"channel_room_type":"group",
+		"display_name":"测试群",
+		"outbound_alias":"测试群",
+		"agent_enabled":true
+	}`))
+	req.SetBasicAuth("admin", "admin-secret")
+	rec := httptest.NewRecorder()
+	api.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload registerRoomResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Room.ID != 10 || payload.AgentSession.ID != 100 {
+		t.Fatalf("payload = %+v, want registered room", payload)
+	}
+}
+
+func TestHandleAdminAgentsListReturnsEmptyArray(t *testing.T) {
+	api := NewServerWithCommandHandler(fakeCoreStore{
+		agentsFn: func(context.Context) ([]core.Agent, error) {
+			return nil, nil
+		},
+	}, nil, "api-secret", "admin-secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/agents", nil)
+	req.SetBasicAuth("admin", "admin-secret")
+	rec := httptest.NewRecorder()
+	api.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"agents":[]`) {
+		t.Fatalf("body = %s, want empty agents array", rec.Body.String())
+	}
+}
+
+func TestHandleAdminRoomMemoryReturnsEmptyArray(t *testing.T) {
+	api := NewServerWithCommandHandler(fakeCoreStore{
+		adminMemFn: func(context.Context, core.AdminMemoryListInput) ([]core.MemoryItem, error) {
+			return nil, nil
+		},
+	}, nil, "api-secret", "admin-secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/rooms/10/memory?status=active", nil)
+	req.SetBasicAuth("admin", "admin-secret")
+	rec := httptest.NewRecorder()
+	api.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"items":[]`) {
+		t.Fatalf("body = %s, want empty memory items array", rec.Body.String())
+	}
+}
+
 func TestHandleAdminAgentsCreatesMutableAgent(t *testing.T) {
 	api := NewServerWithCommandHandler(fakeCoreStore{
 		createAgentFn: func(_ context.Context, input core.UpsertAgentInput) (core.Agent, error) {
