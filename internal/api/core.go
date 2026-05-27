@@ -232,6 +232,9 @@ func (s *Server) handleAdminAgents(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusBadRequest, "list_failed", err.Error())
 			return
 		}
+		if agents == nil {
+			agents = []core.Agent{}
+		}
 		writeAPIJSON(w, http.StatusOK, adminAgentsResponse{Agents: agents})
 	case http.MethodPost:
 		var input core.UpsertAgentInput
@@ -426,29 +429,53 @@ func (s *Server) handleDeliveryAction(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdminRooms(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET")
-		return
-	}
-	store, ok := s.core.(AdminStore)
-	if !ok {
-		writeAPIError(w, http.StatusServiceUnavailable, "disabled", "admin API is unavailable")
-		return
-	}
 	if !s.authenticateAdmin(r) {
 		writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid admin credentials")
 		return
 	}
-	rooms, err := store.ListAdminRooms(r.Context(), parsePositiveInt(r.URL.Query().Get("limit"), 100))
-	if err != nil {
-		writeAPIError(w, http.StatusBadRequest, "list_failed", err.Error())
+	switch r.Method {
+	case http.MethodGet:
+		store, ok := s.core.(AdminStore)
+		if !ok {
+			writeAPIError(w, http.StatusServiceUnavailable, "disabled", "admin API is unavailable")
+			return
+		}
+		rooms, err := store.ListAdminRooms(r.Context(), parsePositiveInt(r.URL.Query().Get("limit"), 100))
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "list_failed", err.Error())
+			return
+		}
+		response := make([]adminRoomSummaryResponse, 0, len(rooms))
+		for _, room := range rooms {
+			response = append(response, adminRoomSummaryToResponse(room))
+		}
+		writeAPIJSON(w, http.StatusOK, adminRoomsResponse{Rooms: response})
+	case http.MethodPost:
+		s.handleAdminRegisterRoom(w, r)
+	default:
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET or POST")
+	}
+}
+
+func (s *Server) handleAdminRegisterRoom(w http.ResponseWriter, r *http.Request) {
+	if s.core == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "disabled", "core API is unavailable")
 		return
 	}
-	response := make([]adminRoomSummaryResponse, 0, len(rooms))
-	for _, room := range rooms {
-		response = append(response, adminRoomSummaryToResponse(room))
+	var input core.RegisterRoomInput
+	if err := readJSONBody(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
 	}
-	writeAPIJSON(w, http.StatusOK, adminRoomsResponse{Rooms: response})
+	result, err := s.core.RegisterRoom(r.Context(), input)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	writeAPIJSON(w, http.StatusOK, registerRoomResponse{
+		Room:         roomToResponse(result.Room),
+		AgentSession: agentSessionToResponse(result.AgentSession),
+	})
 }
 
 func (s *Server) handleAdminRoomAction(w http.ResponseWriter, r *http.Request) {
@@ -519,6 +546,9 @@ func (s *Server) handleAdminRoomMemory(w http.ResponseWriter, r *http.Request, r
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "memory_failed", err.Error())
 		return
+	}
+	if items == nil {
+		items = []core.MemoryItem{}
 	}
 	writeAPIJSON(w, http.StatusOK, adminMemoryResponse{Items: items})
 }

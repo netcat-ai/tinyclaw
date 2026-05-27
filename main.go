@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -85,11 +86,31 @@ func withAdminUI(api http.Handler, distDir string) http.Handler {
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/admin/") && !strings.HasPrefix(r.URL.Path, "/admin/api/") {
-			http.StripPrefix("/admin/", files).ServeHTTP(w, r)
+			relativePath := strings.TrimPrefix(r.URL.Path, "/admin/")
+			if shouldServeAdminFile(distDir, relativePath) {
+				http.StripPrefix("/admin/", files).ServeHTTP(w, r)
+				return
+			}
+			http.ServeFile(w, r, filepath.Join(distDir, "index.html"))
 			return
 		}
 		api.ServeHTTP(w, r)
 	})
+}
+
+func shouldServeAdminFile(distDir string, relativePath string) bool {
+	cleanPath := filepath.Clean(relativePath)
+	if cleanPath == "." || cleanPath == string(filepath.Separator) {
+		return true
+	}
+	if strings.HasPrefix(cleanPath, "..") {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(distDir, cleanPath))
+	if err != nil {
+		return strings.HasPrefix(cleanPath, "assets"+string(filepath.Separator))
+	}
+	return !info.IsDir()
 }
 
 func buildCommandHandler(cfg Config, coreStore *storage.CoreStore) *command.Handler {
