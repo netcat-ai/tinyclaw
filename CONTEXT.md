@@ -108,9 +108,17 @@ _Avoid_: Channel adapter, sandbox backend
 An external service that translates a third-party platform into TinyClaw's inbound and outbound API.
 _Avoid_: Core protocol, runtime logic
 
+**Channel Raw Message**:
+A provider-shaped message object consumed by a **Channel Adapter** before it is registered as a TinyClaw **Message**.
+_Avoid_: Message, Delivery, normalized envelope
+
 **Message**:
-An append-only raw fact that has entered one **Room** through its channel.
+An append-only channel-shaped fact that has been resolved into one **Room** by a **Channel Adapter**.
 _Avoid_: Channel cursor, WeCom seq, Delivery
+
+**Message Body**:
+The message-type-specific content of a **Message**, interpreted according to the channel message type.
+_Avoid_: Normalized payload, runner input, Delivery body
 
 **Command**:
 A user-authored **Message** that requests a specific Clawman-owned action instead of ordinary agent conversation.
@@ -189,12 +197,16 @@ _Avoid_: Clawman state, Message id, processing seq
 - In the first version, each **Channel Room** maps to exactly one **Room**, and each **Room** belongs to exactly one **Channel Room**.
 - A **Registered Room** is required before a **Channel Adapter** may process inbound messages for agent execution.
 - A **Channel Adapter** may register a **Room** when it can provide the required **Channel Room** identity and outbound targeting information.
+- A **Channel Adapter** may derive the **Channel Room** for a **Channel Raw Message** before registering a **Room**.
 - After registration, inbound **Messages** are addressed to the **Room** rather than creating the **Room** as an inbound side effect.
+- A **Channel Adapter** may admit a **Channel Raw Message** because it involves a target channel user; **Trigger Policy** decides whether that **Message** advances an **Agent Session**.
 - A **Channel Room Display Name** belongs to one **Channel Room** and may change over time.
 - An **Outbound Target Alias** belongs to one **Channel Room** and may differ from the **Channel Room Display Name**.
 - A **Send-Ready Room** has enough outbound targeting information for a **Channel Adapter** to send a **Delivery**.
 - An **Agent-Enabled Session** may be auto-registered by a **Channel Adapter** when the adapter can provide a **Channel Room Display Name** and **Outbound Target Alias**.
 - A **Message** belongs to exactly one **Room**.
+- A **Message** keeps channel-shaped header facts separately from its **Message Body**.
+- A **Message Body** contains only the content specific to the **Message** type.
 - A **Command** is a **Message**.
 - A **Draw Command** is a **Command**.
 - A **Command** may produce **Deliveries** without triggering ordinary agent conversation.

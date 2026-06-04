@@ -4,7 +4,7 @@
 
 - Core Model 已收敛为 `Room -> Message -> Agent Session -> Delivery -> Ack`。
 - 每个 Room 只有一个长期 Agent Session；多个用户可配置 Agent 作为 run-scoped Subagents 被 `@key` / `@display_name` 寻址。
-- Message 是原始 append-only 事实；是否触发、是否进入上下文由 Trigger Policy、Command handler 和 runner 选择决定。
+- Message 是 channel-shaped append-only 事实；是否触发、是否进入上下文由 Trigger Policy、Command handler 和 runner 选择决定。
 - Delivery 是 outbound intent；ack 只表示 consumer 已处理成功，不要求写回 Message。
 - Room Memory 归属于 Room；Codex run 通过短期 token 做 Memory Search，通过 Memory Write Jobs 异步写入。
 - `/draw <prompt>` 是 Clawman-owned Command，不进入普通 Agent Run。
@@ -15,6 +15,7 @@
 
 1. 真实联调：
    - 企业微信 / 微信 adapter 按新 `source` contract 写入 Message。
+   - WOC 微信入口优先采用 instance-side push hook：`woc-watch` 负责 cursor、解密缓存和 batch retry，TinyClaw adapter 只接收 raw-style message batch 并写入 Clawman。
    - MobileClaw 发送成功后 ack Delivery。
    - consumer 若主动写回 agent 消息，使用 `source_message_id = "delivery:<delivery_id>"` 保证幂等。
 
@@ -26,8 +27,9 @@
    - 为 room registration、message ingestion、agent run、delivery、ack、memory write 增加基础指标。
    - Agent Run 日志记录 selected subagent keys/ids、memory search count、memory write job count。
 
-4. Schema 管理：
+4. Message schema 管理：
    - 当前可清库，`InitSchema` 直接应用最新表结构。
+   - 下一步把 `messages.payload` 中的 raw-style header 拆成 `msgid/action/from_id/tolist/roomid/msgtime/msgtype/body`，同时保持 adapter-local cursor 不进入 Clawman。
    - 后续生产数据需要保留时，再引入显式 migrations。
 
 5. QA：

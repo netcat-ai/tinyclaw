@@ -6,8 +6,6 @@ metadata:
 data:
   CONTROL_API_ADDR: ":8081"
   METRICS_ADDR: ":9090"
-  WECOM_CORP_ID: "replace-me"
-  WECOM_BOT_ID: "replace-me"
   AGENT_RUNNER: "codex"
   CODEX_WORKDIR: "/tmp"
   CODEX_MODEL: "gpt-5.5"
@@ -22,8 +20,3 @@ data:
   GENERATED_MEDIA_S3_REGION: "ap-guangzhou"
   GENERATED_MEDIA_S3_FORCE_PATH_STYLE: "false"
   GENERATED_MEDIA_URL_TTL: "24h"
-  WECOM_ENABLED: "true"
-  WECOM_POLL_INTERVAL: "3s"
-  WECOM_POLL_LIMIT: "100"
-  WECOM_SDK_TIMEOUT: "30"
-  WECOM_START_SEQ: "0"

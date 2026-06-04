@@ -1,0 +1,3 @@
+[submodule "tinybridge"]
+	path = tinybridge
+	url = https://github.com/netcat-ai/tinybridge.git

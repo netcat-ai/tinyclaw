@@ -39,39 +39,10 @@ type Config struct {
 	GeneratedMediaS3SecretAccessKey string
 	GeneratedMediaS3ForcePathStyle  bool
 	GeneratedMediaURLTTL            time.Duration
-
-	WeComEnabled       bool
-	WeComCorpID        string
-	WeComCorpSecret    string
-	WeComContactSecret string
-	WeComRSAPrivateKey string
-	WeComBotID         string
-	WeComProxy         string
-	WeComProxyPassword string
-	WeComPollInterval  time.Duration
-	WeComPollLimit     int64
-	WeComSDKTimeout    int
-	WeComStartSeq      int64
 }
 
 func LoadConfig() (Config, error) {
 	timeout, err := time.ParseDuration(envOrDefault("CODEX_RUNNER_TIMEOUT", "5m"))
-	if err != nil {
-		return Config{}, err
-	}
-	wecomPollInterval, err := time.ParseDuration(envOrDefault("WECOM_POLL_INTERVAL", "3s"))
-	if err != nil {
-		return Config{}, err
-	}
-	wecomPollLimit, err := parseInt64Env("WECOM_POLL_LIMIT", 100)
-	if err != nil {
-		return Config{}, err
-	}
-	wecomSDKTimeout, err := parseIntEnv("WECOM_SDK_TIMEOUT", 30)
-	if err != nil {
-		return Config{}, err
-	}
-	wecomStartSeq, err := parseInt64Env("WECOM_START_SEQ", 0)
 	if err != nil {
 		return Config{}, err
 	}
@@ -117,19 +88,6 @@ func LoadConfig() (Config, error) {
 		GeneratedMediaS3SecretAccessKey: os.Getenv("GENERATED_MEDIA_S3_SECRET_ACCESS_KEY"),
 		GeneratedMediaS3ForcePathStyle:  parseBoolEnv("GENERATED_MEDIA_S3_FORCE_PATH_STYLE"),
 		GeneratedMediaURLTTL:            generatedMediaURLTTL,
-
-		WeComEnabled:       parseBoolEnv("WECOM_ENABLED"),
-		WeComCorpID:        os.Getenv("WECOM_CORP_ID"),
-		WeComCorpSecret:    os.Getenv("WECOM_CORP_SECRET"),
-		WeComContactSecret: os.Getenv("WECOM_CONTACT_SECRET"),
-		WeComRSAPrivateKey: os.Getenv("WECOM_RSA_PRIVATE_KEY"),
-		WeComBotID:         os.Getenv("WECOM_BOT_ID"),
-		WeComProxy:         os.Getenv("WECOM_PROXY"),
-		WeComProxyPassword: os.Getenv("WECOM_PROXY_PASSWORD"),
-		WeComPollInterval:  wecomPollInterval,
-		WeComPollLimit:     wecomPollLimit,
-		WeComSDKTimeout:    wecomSDKTimeout,
-		WeComStartSeq:      wecomStartSeq,
 	}
 
 	return cfg, nil

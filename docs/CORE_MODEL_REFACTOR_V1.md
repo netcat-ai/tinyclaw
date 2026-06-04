@@ -38,9 +38,11 @@ Room 重新注册时允许更新 `display_name`、`outbound_alias`，以及该 R
 
 ### Message
 
-`Message` 是已经通过某个 channel 进入 Room 的原始 append-only 事实，可来自本地用户、agent、系统或外部 Channel。
+`Message` 是已经由 Channel Adapter 解析到某个 Room 的 channel-shaped append-only 事实，可来自本地用户、agent、系统或外部 Channel。
 
 Message 不再使用企业微信 archive `seq` 作为身份。第三方平台消息身份由 adapter 提供 `source_message_id`，用于幂等插入。
+
+Message 应保留 channel header facts 和 type-specific Message Body 的边界。对企业微信/微信归档风格消息，header facts 包括 `msgid`、`action`、`from`、`tolist`、`roomid`、`msgtime`、`msgtype`；Message Body 是与 `msgtype` 对应的 typed field，例如 `text`、`file`、`image`。当前实现仍用 `payload jsonb` 承载这些字段；后续 schema refactor 再把高频 header 提升为列。
 
 Message 不保存全局可见性状态。是否触发 agent、是否进入某次 Agent Run 上下文，由 Trigger Policy、Command handler 和 Agent Session 的读取策略决定。
 
@@ -111,6 +113,27 @@ unique(room_id, source_message_id)
 ```
 
 Message 是已进入 Room channel 的 append-only 原始事实。`source` 表达来源标识，例如 `wecom`、`wechat`、`admin`、`agent`、`system`。`sender_id` 和 `sender_name` 保存来源内的发言者身份。
+
+下一次 Message schema refactor 的目标形态：
+
+```text
+id bigint primary key
+room_id bigint not null references rooms(id)
+source text not null
+msgid text not null
+action text not null
+from_id text not null
+tolist jsonb not null
+roomid text not null
+msgtime bigint not null
+msgtype text not null
+body jsonb not null
+created_at timestamptz not null
+
+unique(room_id, source, msgid)
+```
+
+该目标形态只改变 TinyClaw 内部存储和 API 字段命名，不改变核心语义：Message 仍属于一个 Room，Channel Cursor 仍由 Channel Adapter 持有，重复外部消息仍通过 provider message id 幂等。
 
 ### agent_sessions
 
@@ -310,6 +333,30 @@ Authorization: Basic base64(client_id:client_secret)
   "payload": {
     "type": "text",
     "text": "hello"
+  }
+}
+```
+
+微信/WOC raw-style 请求在当前 API 中应放入 `payload`，并把 provider `msgid` 映射到 `source_message_id`：
+
+```json
+{
+  "room_id": 123,
+  "source_message_id": "wechat-msg-123",
+  "source": "wechat",
+  "sender_id": "wxid_peer",
+  "message_time": "2026-06-05T10:00:00Z",
+  "payload": {
+    "msgid": "wechat-msg-123",
+    "action": "send",
+    "from": "wxid_peer",
+    "tolist": ["wxid_self"],
+    "roomid": "",
+    "msgtime": 1780653600,
+    "msgtype": "text",
+    "text": {
+      "content": "hello"
+    }
   }
 }
 ```
@@ -537,3 +584,4 @@ Control Plane UI 第一版提供只读 Room Memory 查看能力。Room Memory ta
 - vector / hybrid memory ranking
 - explicit send capability
 - channel adapter 自身 cursor / offset / reconnect state
+- WOC decrypted database cache, key scanning, and WeChat watcher lifecycle
