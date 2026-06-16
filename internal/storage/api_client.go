@@ -53,11 +53,3 @@ func (s *CoreStore) AuthenticateAPIClient(ctx context.Context, clientID string, 
 	}
 	return client, nil
 }
-
-func hashAPIClientSecret(secret string) (string, error) {
-	hash, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
-	if err != nil {
-		return "", fmt.Errorf("hash api client secret: %w", err)
-	}
-	return string(hash), nil
-}

@@ -26,12 +26,15 @@ export type AgentSession = {
 export type Message = {
   id: number
   room_id: number
-  source_message_id: string
   source: string
-  sender_id: string
-  sender_name?: string
-  payload: Record<string, unknown>
-  message_time: string
+  msgid: string
+  action: string
+  from: string
+  tolist: string[]
+  roomid: string
+  msgtime: number
+  msgtype: string
+  body: Record<string, unknown>
   created_at: string
 }
 
@@ -87,7 +90,6 @@ export type RegisterRoomInput = {
 
 export type InjectMessageInput = {
   sender_id: string
-  sender_name: string
   text: string
   suppress_agent_trigger: boolean
 }
@@ -97,6 +99,8 @@ export type Agent = {
   key: string
   display_name: string
   description?: string
+  owner_id: string
+  visibility?: 'private' | 'shared'
   prompt: string
   allowed_tools: unknown
   enabled: boolean
@@ -108,6 +112,8 @@ export type UpsertAgentInput = {
   key: string
   display_name: string
   description: string
+  owner_id: string
+  visibility: 'private' | 'shared'
   prompt: string
   allowed_tools: unknown
   enabled: boolean

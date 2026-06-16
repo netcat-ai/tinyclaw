@@ -473,6 +473,9 @@ fi
 	if result.FinalOutput != "中文回复" {
 		t.Fatalf("output = %q, want 中文回复", result.FinalOutput)
 	}
+	if result.MemorySearchCount != 1 {
+		t.Fatalf("memory search count = %d, want 1", result.MemorySearchCount)
+	}
 }
 
 func TestCodexRunnerContinuesWhenMemorySearchFails(t *testing.T) {
@@ -530,6 +533,9 @@ fi
 	}
 	if result.FinalOutput != "暂时无法读取记忆，我先继续回答。" {
 		t.Fatalf("output = %q", result.FinalOutput)
+	}
+	if result.MemorySearchCount != 1 {
+		t.Fatalf("memory search count = %d, want 1", result.MemorySearchCount)
 	}
 }
 

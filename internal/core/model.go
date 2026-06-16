@@ -67,13 +67,22 @@ type AgentSession struct {
 type Message struct {
 	ID              int64
 	RoomID          int64
-	SourceMessageID string
 	Source          string
+	MsgID           string
+	Action          string
+	FromID          string
+	FromName        string
+	ToList          json.RawMessage
+	RoomIDRaw       string
+	MsgTime         int64
+	MsgType         string
+	Body            json.RawMessage
+	CreatedAt       time.Time
+	SourceMessageID string
 	SenderID        string
 	SenderName      string
 	Payload         json.RawMessage
 	MessageTime     time.Time
-	CreatedAt       time.Time
 }
 
 type Delivery struct {
@@ -93,6 +102,8 @@ type Agent struct {
 	Key          string          `json:"key"`
 	DisplayName  string          `json:"display_name"`
 	Description  string          `json:"description,omitempty"`
+	OwnerID      string          `json:"owner_id"`
+	Visibility   string          `json:"visibility"`
 	Prompt       string          `json:"prompt"`
 	AllowedTools json.RawMessage `json:"allowed_tools"`
 	Enabled      bool            `json:"enabled"`
@@ -200,6 +211,8 @@ type UpsertAgentInput struct {
 	Key          string          `json:"key"`
 	DisplayName  string          `json:"display_name"`
 	Description  string          `json:"description"`
+	OwnerID      string          `json:"owner_id"`
+	Visibility   string          `json:"visibility"`
 	Prompt       string          `json:"prompt"`
 	AllowedTools json.RawMessage `json:"allowed_tools"`
 	Enabled      bool            `json:"enabled"`
@@ -221,14 +234,24 @@ type RegisterRoomResult struct {
 }
 
 type CreateMessageInput struct {
-	RoomID               int64           `json:"room_id"`
-	SourceMessageID      string          `json:"source_message_id"`
-	Source               string          `json:"source"`
-	SenderID             string          `json:"sender_id"`
-	SenderName           string          `json:"sender_name"`
-	MessageTime          time.Time       `json:"message_time"`
-	Payload              json.RawMessage `json:"payload"`
-	SuppressAgentTrigger bool            `json:"-"`
+	RoomID    int64           `json:"room_id"`
+	Source    string          `json:"source"`
+	MsgID     string          `json:"msgid"`
+	Action    string          `json:"action"`
+	FromID    string          `json:"from"`
+	ToList    []string        `json:"tolist"`
+	RoomIDRaw string          `json:"roomid"`
+	MsgTime   int64           `json:"msgtime"`
+	MsgType   string          `json:"msgtype"`
+	Body      json.RawMessage `json:"body"`
+
+	SourceMessageID string          `json:"source_message_id,omitempty"`
+	SenderID        string          `json:"sender_id,omitempty"`
+	SenderName      string          `json:"sender_name,omitempty"`
+	MessageTime     time.Time       `json:"message_time,omitempty"`
+	Payload         json.RawMessage `json:"payload,omitempty"`
+
+	SuppressAgentTrigger bool `json:"-"`
 }
 
 type CreateMessageResult struct {
@@ -242,6 +265,7 @@ type AgentRunResult struct {
 	MemorySearchRequests []MemorySearchInput   `json:"memory_search_requests,omitempty"`
 	MemoryWriteProposals []MemoryWriteProposal `json:"memory_write_proposals,omitempty"`
 	CodexSessionID       string                `json:"-"`
+	MemorySearchCount    int                   `json:"-"`
 }
 
 type AgentRun struct {

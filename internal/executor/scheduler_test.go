@@ -199,3 +199,27 @@ func TestRunOnceSelectsMentionedAgents(t *testing.T) {
 		t.Fatalf("selected agents = %+v, want product and qa", runner.lastRun.SelectedAgents)
 	}
 }
+
+func TestRunOnceDoesNotSelectPrivateMentionedAgents(t *testing.T) {
+	store := &fakeStore{
+		contextMessages: []core.Message{
+			{ID: 1, Payload: []byte(`{"text":"@private @shared 帮忙看下"}`)},
+		},
+		agents: []core.Agent{
+			{ID: 1, Key: "private", DisplayName: "Private", Prompt: "Private prompt.", Visibility: "private", Enabled: true},
+			{ID: 2, Key: "shared", DisplayName: "Shared", Prompt: "Shared prompt.", Visibility: "shared", Enabled: true},
+		},
+	}
+	runner := &contextRunner{}
+	scheduler := NewScheduler(context.Background(), store, runner)
+
+	if !scheduler.RunOnce(context.Background()) {
+		t.Fatal("RunOnce = false, want true")
+	}
+	if len(runner.lastRun.SelectedAgents) != 1 {
+		t.Fatalf("selected agents = %+v, want shared only", runner.lastRun.SelectedAgents)
+	}
+	if runner.lastRun.SelectedAgents[0].Key != "shared" {
+		t.Fatalf("selected agents = %+v, want shared only", runner.lastRun.SelectedAgents)
+	}
+}

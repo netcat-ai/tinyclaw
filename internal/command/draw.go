@@ -99,16 +99,29 @@ func IsDrawPayload(payload json.RawMessage) bool {
 
 func DrawPrompt(payload json.RawMessage) (string, bool) {
 	var parsed struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type    string `json:"type"`
+		Text    any    `json:"text"`
+		Content string `json:"content"`
 	}
 	if err := json.Unmarshal(payload, &parsed); err != nil {
 		return "", false
 	}
-	if parsed.Type != "text" {
+	if parsed.Type != "" && parsed.Type != "text" {
 		return "", false
 	}
-	text := strings.TrimSpace(parsed.Text)
+	text := strings.TrimSpace(parsed.Content)
+	switch value := parsed.Text.(type) {
+	case string:
+		if text == "" {
+			text = strings.TrimSpace(value)
+		}
+	case map[string]any:
+		if text == "" {
+			if content, ok := value["content"].(string); ok {
+				text = strings.TrimSpace(content)
+			}
+		}
+	}
 	if !strings.HasPrefix(text, "/draw") {
 		return "", false
 	}

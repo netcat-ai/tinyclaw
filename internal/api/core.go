@@ -132,11 +132,19 @@ type coreAgentSessionResponse struct {
 type coreMessageResponse struct {
 	ID              int64           `json:"id"`
 	RoomID          int64           `json:"room_id"`
-	SourceMessageID string          `json:"source_message_id"`
 	Source          string          `json:"source"`
+	MsgID           string          `json:"msgid"`
+	Action          string          `json:"action"`
+	FromID          string          `json:"from"`
+	ToList          json.RawMessage `json:"tolist"`
+	RoomIDRaw       string          `json:"roomid"`
+	MsgTime         int64           `json:"msgtime"`
+	MsgType         string          `json:"msgtype"`
+	Body            json.RawMessage `json:"body"`
+	SourceMessageID string          `json:"source_message_id,omitempty"`
 	SenderID        string          `json:"sender_id"`
 	SenderName      string          `json:"sender_name,omitempty"`
-	Payload         json.RawMessage `json:"payload"`
+	Payload         json.RawMessage `json:"payload,omitempty"`
 }
 
 type coreDeliveryResponse struct {
@@ -180,12 +188,20 @@ type adminTimelineResponse struct {
 type adminMessageResponse struct {
 	ID              int64           `json:"id"`
 	RoomID          int64           `json:"room_id"`
-	SourceMessageID string          `json:"source_message_id"`
 	Source          string          `json:"source"`
+	MsgID           string          `json:"msgid"`
+	Action          string          `json:"action"`
+	FromID          string          `json:"from"`
+	ToList          json.RawMessage `json:"tolist"`
+	RoomIDRaw       string          `json:"roomid"`
+	MsgTime         int64           `json:"msgtime"`
+	MsgType         string          `json:"msgtype"`
+	Body            json.RawMessage `json:"body"`
+	SourceMessageID string          `json:"source_message_id,omitempty"`
 	SenderID        string          `json:"sender_id"`
 	SenderName      string          `json:"sender_name,omitempty"`
-	Payload         json.RawMessage `json:"payload"`
-	MessageTime     time.Time       `json:"message_time"`
+	Payload         json.RawMessage `json:"payload,omitempty"`
+	MessageTime     time.Time       `json:"message_time,omitempty"`
 	CreatedAt       time.Time       `json:"created_at"`
 }
 
@@ -567,21 +583,21 @@ func (s *Server) handleAdminInjectMessage(w http.ResponseWriter, r *http.Request
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	payload := input.Payload
-	if len(payload) == 0 {
-		payload = mustMarshalJSON(map[string]string{
-			"type": "text",
-			"text": strings.TrimSpace(input.Text),
+	body := input.Payload
+	if len(body) == 0 {
+		body = mustMarshalJSON(map[string]string{
+			"content": strings.TrimSpace(input.Text),
 		})
 	}
 	result, err := s.messages.IngestMessage(r.Context(), core.CreateMessageInput{
 		RoomID:               roomID,
-		SourceMessageID:      "admin:" + uuid.NewString(),
 		Source:               "admin",
-		SenderID:             strings.TrimSpace(input.SenderID),
-		SenderName:           strings.TrimSpace(input.SenderName),
-		MessageTime:          time.Now().UTC(),
-		Payload:              payload,
+		MsgID:                "admin:" + uuid.NewString(),
+		Action:               "send",
+		FromID:               firstNonEmpty(strings.TrimSpace(input.SenderID), "admin"),
+		MsgTime:              time.Now().UTC().Unix(),
+		MsgType:              "text",
+		Body:                 body,
 		SuppressAgentTrigger: input.SuppressAgentTrigger,
 	})
 	if err != nil {
@@ -706,7 +722,7 @@ func bearerToken(r *http.Request) string {
 }
 
 func readJSONBody(r *http.Request, target any) error {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		return err
@@ -835,11 +851,19 @@ func messageToResponse(message core.Message) coreMessageResponse {
 	return coreMessageResponse{
 		ID:              message.ID,
 		RoomID:          message.RoomID,
-		SourceMessageID: message.SourceMessageID,
 		Source:          message.Source,
+		MsgID:           message.MsgID,
+		Action:          message.Action,
+		FromID:          message.FromID,
+		ToList:          message.ToList,
+		RoomIDRaw:       message.RoomIDRaw,
+		MsgTime:         message.MsgTime,
+		MsgType:         message.MsgType,
+		Body:            message.Body,
+		SourceMessageID: message.MsgID,
 		SenderID:        message.SenderID,
 		SenderName:      message.SenderName,
-		Payload:         message.Payload,
+		Payload:         message.Body,
 	}
 }
 
@@ -891,11 +915,19 @@ func adminMessageToResponse(message core.Message) adminMessageResponse {
 	return adminMessageResponse{
 		ID:              message.ID,
 		RoomID:          message.RoomID,
-		SourceMessageID: message.SourceMessageID,
 		Source:          message.Source,
+		MsgID:           message.MsgID,
+		Action:          message.Action,
+		FromID:          message.FromID,
+		ToList:          message.ToList,
+		RoomIDRaw:       message.RoomIDRaw,
+		MsgTime:         message.MsgTime,
+		MsgType:         message.MsgType,
+		Body:            message.Body,
+		SourceMessageID: message.MsgID,
 		SenderID:        message.SenderID,
 		SenderName:      message.SenderName,
-		Payload:         message.Payload,
+		Payload:         message.Body,
 		MessageTime:     message.MessageTime,
 		CreatedAt:       message.CreatedAt,
 	}

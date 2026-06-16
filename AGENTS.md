@@ -6,6 +6,7 @@
 - `docs/adr/`: architecture decision records.
 - `docs/NEXT_STEPS.md`: execution roadmap.
 - `docs/CONVERSATION_LOG.md`: decision history.
+- `tinybridge/`: submodule containing current external Channel Adapters.
 
 Prefer updating an existing document over creating overlapping files.
 

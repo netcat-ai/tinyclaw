@@ -6,7 +6,7 @@
 
 TinyClaw core 不再直接持有企业微信、微信、斗鱼等第三方平台协议逻辑。
 
-第三方平台由外挂 Channel Adapter 负责：
+第三方平台由外挂 Channel Adapter 负责，当前具体实现位于 `tinybridge` 子模块：
 - 拉取或接收平台消息
 - 持有平台凭据、cursor、offset、重连状态
 - 标准化 inbound message 后调用 clawman
@@ -40,9 +40,9 @@ Room 重新注册时允许更新 `display_name`、`outbound_alias`，以及该 R
 
 `Message` 是已经由 Channel Adapter 解析到某个 Room 的 channel-shaped append-only 事实，可来自本地用户、agent、系统或外部 Channel。
 
-Message 不再使用企业微信 archive `seq` 作为身份。第三方平台消息身份由 adapter 提供 `source_message_id`，用于幂等插入。
+Message 不再使用企业微信 archive `seq` 作为身份。第三方平台消息身份由 adapter 提供 `source + msgid`，用于幂等插入。
 
-Message 应保留 channel header facts 和 type-specific Message Body 的边界。对企业微信/微信归档风格消息，header facts 包括 `msgid`、`action`、`from`、`tolist`、`roomid`、`msgtime`、`msgtype`；Message Body 是与 `msgtype` 对应的 typed field，例如 `text`、`file`、`image`。当前实现仍用 `payload jsonb` 承载这些字段；后续 schema refactor 再把高频 header 提升为列。
+Message 保留 channel header facts 和 type-specific Message Body 的边界。对企业微信/微信归档风格消息，header facts 包括 `msgid`、`action`、`from`、`tolist`、`roomid`、`msgtime`、`msgtype`；Message Body 是与 `msgtype` 对应的 typed field，例如 `text`、`file`、`image`。
 
 Message 不保存全局可见性状态。是否触发 agent、是否进入某次 Agent Run 上下文，由 Trigger Policy、Command handler 和 Agent Session 的读取策略决定。
 
@@ -94,27 +94,9 @@ unique(tenant_id, channel, channel_room_id)
 
 第一版 `tenant_id = default`。后续可由 API token 绑定 tenant。
 
-`outbound_alias` 是 Channel Adapter 执行真实外发时用于定位目标会话的名称。WeCom adapter 能从接口获取 name 时，默认使用该 name 作为 `display_name` 和 `outbound_alias`。
+`outbound_alias` 是 Channel Adapter 执行真实外发时用于定位目标会话的名称。WeCom adapter 位于 `tinybridge`，能从接口获取 name 时，默认使用该 name 作为 `display_name` 和 `outbound_alias`。
 
 ### messages
-
-```text
-id bigint primary key
-room_id bigint not null references rooms(id)
-source_message_id text not null
-source text not null
-sender_id text not null
-sender_name text null
-payload jsonb not null
-message_time timestamptz not null
-created_at timestamptz not null
-
-unique(room_id, source_message_id)
-```
-
-Message 是已进入 Room channel 的 append-only 原始事实。`source` 表达来源标识，例如 `wecom`、`wechat`、`admin`、`agent`、`system`。`sender_id` 和 `sender_name` 保存来源内的发言者身份。
-
-下一次 Message schema refactor 的目标形态：
 
 ```text
 id bigint primary key
@@ -133,7 +115,7 @@ created_at timestamptz not null
 unique(room_id, source, msgid)
 ```
 
-该目标形态只改变 TinyClaw 内部存储和 API 字段命名，不改变核心语义：Message 仍属于一个 Room，Channel Cursor 仍由 Channel Adapter 持有，重复外部消息仍通过 provider message id 幂等。
+Message 是已进入 Room channel 的 append-only 原始事实。`source` 表达来源标识，例如 `wecom`、`wechat`、`admin`、`agent`、`system`。`from_id` 保存来源内的发言者身份。Channel Cursor 仍由 Channel Adapter 持有，重复外部消息通过 `(room_id, source, msgid)` 幂等。
 
 ### agent_sessions
 
@@ -205,7 +187,7 @@ Adapter 使用 `deliveries.id` 作为轮询游标。
 
 Delivery 不冗余保存 `channel` / `channel_room_id`；外发时通过 `room_id` join `rooms`。
 
-Delivery 消费成功后，consumer ack Delivery。若真实外发失败，Delivery 可失败或重试，但不会污染 Room 的 Message 时间线。Delivery 与后续 Message 的关联由 `source_message_id`、平台消息 id 或结构化日志 best-effort 追踪，不在 Delivery 核心表中保存强关联字段。
+Delivery 消费成功后，consumer ack Delivery。若真实外发失败，Delivery 可失败或重试，但不会污染 Room 的 Message 时间线。Delivery 与后续 Message 的关联由 `source + msgid`、平台消息 id 或结构化日志 best-effort 追踪，不在 Delivery 核心表中保存强关联字段。
 
 `source_message_from_id` 和 `source_message_to_id` 记录产生该 Delivery 的 Message 闭区间，语义等同于 `source_message_from_id <= message.id AND message.id <= source_message_to_id`。普通 Agent Run 使用本次处理窗口的第一条 Message 和触发边界；Command Delivery 使用命令 Message 自身作为单点闭区间，即 `source_message_from_id = source_message_to_id = command_message.id`。
 
@@ -325,35 +307,34 @@ Authorization: Basic base64(client_id:client_secret)
 ```json
 {
   "room_id": 123,
-  "source_message_id": "external-msg-123",
   "source": "wecom",
-  "sender_id": "user-1",
-  "sender_name": "Alice",
-  "message_time": "2026-05-19T10:00:00Z",
-  "payload": {
-    "type": "text",
-    "text": "hello"
+  "msgid": "external-msg-123",
+  "action": "send",
+  "from": "user-1",
+  "tolist": ["bot-1"],
+  "roomid": "",
+  "msgtime": 1779175200,
+  "msgtype": "text",
+  "body": {
+    "content": "hello"
   }
 }
 ```
 
-微信/WOC raw-style 请求在当前 API 中应放入 `payload`，并把 provider `msgid` 映射到 `source_message_id`：
+微信/WOC raw-style 请求应把 provider header facts 放在顶层字段，把 typed content 放在 `body`：
 
 ```json
 {
   "room_id": 123,
-  "source_message_id": "wechat-msg-123",
   "source": "wechat",
-  "sender_id": "wxid_peer",
-  "message_time": "2026-06-05T10:00:00Z",
-  "payload": {
-    "msgid": "wechat-msg-123",
-    "action": "send",
-    "from": "wxid_peer",
-    "tolist": ["wxid_self"],
-    "roomid": "",
-    "msgtime": 1780653600,
-    "msgtype": "text",
+  "msgid": "wechat-msg-123",
+  "action": "send",
+  "from": "wxid_peer",
+  "tolist": ["wxid_self"],
+  "roomid": "",
+  "msgtime": 1780653600,
+  "msgtype": "text",
+  "body": {
     "text": {
       "content": "hello"
     }
@@ -366,7 +347,7 @@ clawman 行为：
 1. 使用 `tenant_id = default`。
 2. `POST /api/rooms` 按 `(tenant_id, channel, channel_room_id)` upsert Room。
 3. `POST /api/messages` 只接受已存在的 `room_id`；找不到时返回 `404 room_not_found`。
-4. 按 `(room_id, source_message_id)` 幂等插入 Message。
+4. 按 `(room_id, source, msgid)` 幂等插入 Message。
 5. 如果 Message 已存在，返回已有结果，不重复触发。
 6. 对 Room 的 Agent Session 应用 Trigger Policy；为空时使用 channel default rule。
 7. 命中 trigger 时更新该 Agent Session 的 `pending_trigger_message_id`。
@@ -423,7 +404,7 @@ empty output     -> no delivery
 failure          -> create failure delivery(status=pending)
 ```
 
-Agent Run 成功不会直接追加 agent Message。Message 只在 channel consumer 或后续平台回流通过 `POST /api/messages` 写入后出现。若 consumer 主动写回，建议使用 `source_message_id = "delivery:<delivery_id>"` 保证幂等；若等待外部平台 self echo，则由 Channel Adapter 使用平台消息 id 写入并按需关联 Delivery。
+Agent Run 成功不会直接追加 agent Message。Message 只在 channel consumer 或后续平台回流通过 `POST /api/messages` 写入后出现。若 consumer 主动写回，建议使用 `source = agent` 且 `msgid = "delivery:<delivery_id>"` 保证幂等；若等待外部平台 self echo，则由 Channel Adapter 使用平台消息 id 写入并按需关联 Delivery。
 
 第一版 `/draw <prompt>` 作为 Clawman-owned Command 处理，不进入 Codex Agent Run，也不更新 Agent Session trigger boundary。Command 是有效 Room Message，但由 Command handler 消费。
 
@@ -569,7 +550,7 @@ Timeline 按 Room Message ID 组织主轴；Delivery 通过 `source_message_from
 
 第一版不提供删除 Room、删除 Message、直接修改 Message、直接修改 Room Memory。Room 是 Message、Delivery、Room Memory 和 Agent Session 的归属边界；删除会破坏历史排障和审计。需要停止处理时，优先停用 Agent Session；需要隐藏历史时，后续再单独设计 archive 语义。
 
-Control Plane UI 可提供 `Inject Message` 调试操作。该操作写入的是 TinyClaw 入站 Message，不是向外部 Channel Room 发送消息，因此不得命名为 `send`。第一版由 admin API 生成 `source_message_id = admin:<uuid>`，operator 填写 `sender_id`、`sender_name` 和 text payload。默认允许触发 Agent Session，也可显式选择 `suppress_agent_trigger`。注入的 Message 必须进入 Room Timeline，作为可审计的 Room history。
+Control Plane UI 可提供 `Inject Message` 调试操作。该操作写入的是 TinyClaw 入站 Message，不是向外部 Channel Room 发送消息，因此不得命名为 `send`。第一版由 admin API 生成 `source = admin`、`msgid = admin:<uuid>`、`from = admin` 和 text body。默认允许触发 Agent Session，也可显式选择 `suppress_agent_trigger`。注入的 Message 必须进入 Room Timeline，作为可审计的 Room history。
 
 Control Plane UI 第一版提供只读 Room Memory 查看能力。Room Memory tab 支持按 `status=active|inactive|all` 和 `type=fact|preference|todo` 过滤，展示 `key`、`content`、`status`、`source_message_from_id`、`source_message_to_id` 和 `updated_at`。第一版不允许新增、修改、关闭或删除 Memory Item，避免绕过 Memory Write Proposal 和 Memory Write Job 的治理链路。
 

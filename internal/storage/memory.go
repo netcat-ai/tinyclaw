@@ -108,7 +108,7 @@ func (s *CoreStore) SearchRoomMemory(ctx context.Context, input core.MemorySearc
 	if err != nil {
 		return nil, fmt.Errorf("search room memory: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanMemoryItems(rows)
 }
 
@@ -176,7 +176,7 @@ func (s *CoreStore) ApplyNextMemoryWriteJob(ctx context.Context) (core.MemoryWri
 	if err != nil {
 		return core.MemoryWriteJob{}, false, fmt.Errorf("begin memory write job tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	job, ok, err := claimMemoryWriteJobTx(ctx, tx)
 	if err != nil || !ok {
@@ -233,7 +233,7 @@ func (s *CoreStore) EnqueueMemoryWriteJobs(ctx context.Context, run core.AgentRu
 	if err != nil {
 		return fmt.Errorf("begin enqueue memory write jobs tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if err := enqueueMemoryWriteJobsTx(ctx, tx, run, proposals); err != nil {
 		return err
 	}

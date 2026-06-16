@@ -33,7 +33,7 @@ func OpenStore(ctx context.Context, dsn string) (*Store, error) {
 	pingCtx, cancel := context.WithTimeout(ctx, dbStartupTimeout)
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 

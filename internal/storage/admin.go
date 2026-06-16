@@ -38,7 +38,7 @@ func (s *CoreStore) ListAdminRooms(ctx context.Context, limit int) ([]core.Admin
 			  AND d.status = $1
 		) pending ON TRUE
 		LEFT JOIN LATERAL (
-			SELECT MAX(message_time) AS last_message_time
+			SELECT MAX(to_timestamp(msgtime)) AS last_message_time
 			FROM messages m
 			WHERE m.room_id = r.id
 		) last_message ON TRUE
@@ -48,7 +48,7 @@ func (s *CoreStore) ListAdminRooms(ctx context.Context, limit int) ([]core.Admin
 	if err != nil {
 		return nil, fmt.Errorf("list admin rooms: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var summaries []core.AdminRoomSummary
 	for rows.Next() {
@@ -78,7 +78,7 @@ func (s *CoreStore) GetAdminRoomTimeline(ctx context.Context, roomID int64, befo
 	if err != nil {
 		return core.AdminRoomTimeline{}, fmt.Errorf("begin admin timeline tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	room, err := getCoreRoomByIDTx(ctx, tx, roomID)
 	if err != nil {
@@ -154,7 +154,7 @@ func (s *CoreStore) ListAdminRoomMemory(ctx context.Context, input core.AdminMem
 	if err != nil {
 		return nil, fmt.Errorf("list admin room memory: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanMemoryItems(rows)
 }
 
@@ -168,7 +168,7 @@ func listAgentSessionsForRoomTx(ctx context.Context, tx *sql.Tx, roomID int64) (
 	if err != nil {
 		return nil, fmt.Errorf("list room agent sessions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var sessions []core.AgentSession
 	for rows.Next() {
@@ -193,7 +193,7 @@ func listAdminTimelineMessagesTx(ctx context.Context, tx *sql.Tx, roomID int64, 
 	}
 	args = append(args, limit+1)
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, room_id, source_message_id, source, sender_id, sender_name, payload, message_time, created_at
+		SELECT id, room_id, source, msgid, action, from_id, tolist, roomid, msgtime, msgtype, body, created_at
 		FROM messages
 		WHERE room_id = $1
 		`+condition+`
@@ -202,7 +202,7 @@ func listAdminTimelineMessagesTx(ctx context.Context, tx *sql.Tx, roomID int64, 
 	if err != nil {
 		return nil, false, fmt.Errorf("list admin timeline messages: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	messages, err := scanCoreMessages(rows)
 	if err != nil {
@@ -236,7 +236,7 @@ func listAdminTimelineDeliveriesTx(ctx context.Context, tx *sql.Tx, roomID int64
 	if err != nil {
 		return nil, fmt.Errorf("list admin timeline deliveries: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var deliveries []core.Delivery
 	for rows.Next() {

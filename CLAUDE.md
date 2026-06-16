@@ -20,7 +20,7 @@ go test ./...
 go build -o tinyclaw .
 ```
 
-Channel adapters live in the `tinybridge` submodule.
+Channel adapters live outside the Clawman service. The `tinybridge` submodule contains the current WeChat and WeCom adapters.
 
 ## Key Files
 

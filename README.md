@@ -4,7 +4,7 @@ TinyClaw is a room-scoped agent runtime control plane. The current implementatio
 
 - **Room**: shared collaboration space over one append-only Message timeline.
 - **Agent Session**: one Room-scoped default orchestrator runtime state, with trigger and caught-up boundaries.
-- **Agent**: configurable agent definition that may be addressed in a Room or executed as a run-scoped Subagent.
+- **Agent**: user-owned configurable agent definition. Private Agents are editable user assets; shared Agents may be addressed in Rooms and injected as run-scoped Subagents.
 - **Message**: append-only channel-shaped fact resolved into exactly one Room.
 - **Room Memory**: durable Room-owned knowledge searched during Agent Runs.
 - **Delivery**: channel-bound outbound intent produced by an agent run or command.
@@ -42,7 +42,7 @@ Kubernetes deployment pins `api.openai.com` and `chatgpt.com` through `hostAlias
 
 `POST /api/inbound` has been removed; adapters must register a Room first, then submit Messages with `room_id`.
 
-TinyClaw currently stores inbound content as `messages.payload`; the next message-schema refactor should keep provider-shaped headers (`msgid`, `from`, `tolist`, `roomid`, `msgtime`, `msgtype`) separate from the type-specific Message Body. Until that schema lands, Channel Adapters should preserve provider raw fields inside `payload` and use `source_message_id` for idempotency.
+TinyClaw stores provider-shaped Message headers as first-class columns: `source`, `msgid`, `action`, `from_id`, `tolist`, `roomid`, `msgtime`, and `msgtype`. Type-specific content lives in `messages.body`. Channel Adapters must use `(room_id, source, msgid)` as the idempotency key and keep adapter-local cursors outside TinyClaw.
 
 API requests use `Authorization: Bearer $CLAWMAN_API_TOKEN`.
 Admin API requests use HTTP Basic auth with `client_id=admin` and `client_secret=$CLAWMAN_ADMIN_SECRET`.
@@ -81,6 +81,53 @@ go test ./...
 go build -o tinyclaw .
 ```
 
+CI builds the Clawman service image from a static Linux binary and the Control Plane build output. WeCom and WeChat adapters are not packaged into the Clawman image; deploy them from `tinybridge` as separate adapter processes when validating real channels.
+
+## Local Run
+
+Enterprise WeChat archive ingestion depends on the WeCom finance SDK and is best validated on Linux. For macOS local validation, run Clawman with PostgreSQL and use `local` or `wechat` channel messages.
+
+```bash
+./scripts/local_start.sh
+```
+
+Open the Control Plane at `http://127.0.0.1:8081/admin/` and log in with `admin` / `dev-admin`.
+The local process writes its PID and log to `.local/tinyclaw.pid` and `.local/tinyclaw.log`. Agent Run logs include run boundaries, selected run-scoped Subagents, Memory Search count, Memory Write count, and Delivery id. For foreground debugging, run:
+
+```bash
+TINYCLAW_FOREGROUND=true ./scripts/local_start.sh
+```
+
+Minimal local smoke:
+
+```bash
+./scripts/local_smoke.sh
+./scripts/local_admin_smoke.sh
+./scripts/local_wechat_adapter_smoke.sh
+```
+
+The core smoke script registers a temporary local Room, submits a Message, waits for an `agent_output` Delivery, prints it, and acks it. The admin smoke script checks Control Plane API credentials, Agent create/update, Admin Room registration, Inject Message, Timeline, and Memory endpoints. The WeChat adapter smoke script runs `tinybridge/cmd/wechat-adapter` against a temporary fake `wx` CLI and verifies it registers a `wechat` Room plus a provider-shaped Message without requiring a real WeChat client. Set `AGENT_RUNNER=codex` when you want triggered Agent Sessions to call `codex exec`; otherwise triggered runs intentionally produce an `agent_failure` Delivery.
+
+Check local dependencies, Postgres health, Clawman health, the Admin UI, and metrics with:
+
+```bash
+./scripts/local_status.sh
+```
+
+Run local verification with:
+
+```bash
+./scripts/local_verify.sh
+```
+
+Set `TINYCLAW_VERIFY_FULL=true` to include PostgreSQL-backed E2E tests. Full verification resets the local test database before the final smoke repopulates a demo Room.
+
+Stop the local Clawman process with:
+
+```bash
+./scripts/local_stop.sh
+```
+
 ## Configuration
 
 Main service:
@@ -106,65 +153,12 @@ Draw command and generated media:
 - `GENERATED_MEDIA_S3_FORCE_PATH_STYLE`: set for S3-compatible providers that require path-style addressing.
 - `GENERATED_MEDIA_URL_TTL`: presigned URL lifetime, defaults to `24h`.
 
-Channel adapters own provider-specific configuration and live in the `tinybridge` submodule.
+Channel adapters own provider-specific configuration and live outside the Clawman service. The checked-in `tinybridge` submodule contains the current WeChat and WeCom adapters:
 
-Local WeChat adapter:
+- `tinybridge/cmd/wechat-adapter`
+- `tinybridge/cmd/wecom-archive-adapter`
 
-- Run with `cd tinybridge && go run ./cmd/wechat-adapter`.
-- It is a local-only process because it depends on the local `wx` CLI and local WeChat data.
-- By default it tries `wx history <chat> --json`, then falls back to filtered `wx new-messages --json`.
-- Set `WECHAT_READ_MODE=new-messages` to let wx-cli provide the local "new message" feed.
-- Do not deploy it inside the Clawman service or container.
-- It does not send WeChat messages directly; MobileClaw should poll `GET /api/deliveries?channels=wecom,wechat` and send/ack on the phone.
-- Incoming WeChat image messages are currently ingested as image metadata (`type=image`, `text=[图片]`, `wechat_local_id`) because `wx` exposes `local_id` but not the image file path through `history` or `new-messages`.
-- For WOC-based WeChat ingestion, prefer an instance-side push hook that sends new-message batches to the adapter; TinyClaw should not own WOC cursors or decrypted database state.
-- `CLAWMAN_API_TOKEN`: required, same bearer token used by Clawman.
-- `CLAWMAN_BASE_URL`: defaults to `http://127.0.0.1:8081`.
-- `WECHAT_WX_BIN`: defaults to `wx`.
-- `WECHAT_TARGET_CHATS`: comma-separated allowed WeChat room ids or names. Defaults to empty. Prefer stable ids such as `wxid_...` or `...@chatroom`; display names can collide between WeChat and OpenIM/WeCom contacts.
-- `WECHAT_TARGET_MEMBERS`: comma-separated WeChat member ids such as `wxid_...`. A direct chat with that id is ingested; a group chat is ingested when `wx members <group> --json` contains that id. Group membership checks are cached in memory for the adapter process.
-- `WECHAT_GROUP_ID`: fallback chat room id for `history` mode and legacy tests, defaults to `50261801724@chatroom`.
-- `WECHAT_GROUP_NAME`: fallback chat display name for `history` mode and legacy tests, defaults to `测试群`.
-- `WECHAT_HISTORY_CHAT`: optional chat lookup override for `wx history`.
-- `WECHAT_READ_MODE`: defaults to `auto`; optional `history` or `new-messages`.
-- `WECHAT_TRIGGER_POLICY`: defaults to `{"mode":"always"}` for test-group validation.
-- `WECHAT_POLL_INTERVAL`: defaults to `3s`.
-- `WECHAT_POLL_LIMIT`: defaults to `200`.
-- `WECHAT_ONCE`: set to `true` to register the Room, run one poll, submit matching Messages, and exit.
-- `WECHAT_SELF_SENDERS`: comma-separated sender display names used by the adapter to avoid triggering on self-sent messages, defaults to `私云虾虾`.
-
-Test-group smoke flow:
-
-```bash
-export CLAWMAN_API_TOKEN=...
-export CLAWMAN_BASE_URL=http://127.0.0.1:8081
-export WECHAT_GROUP_ID=50261801724@chatroom
-export WECHAT_GROUP_NAME=测试群
-export WECHAT_TARGET_CHATS=50261801724@chatroom
-export WECHAT_TARGET_MEMBERS=
-cd tinybridge
-WECHAT_ONCE=true go run ./cmd/wechat-adapter
-curl -H "Authorization: Bearer $CLAWMAN_API_TOKEN" \
-  "$CLAWMAN_BASE_URL/api/deliveries?channels=wechat"
-```
-
-WeCom archive adapter:
-
-- Run with `cd tinybridge && go run ./cmd/wecom-archive-adapter`.
-- `WECOM_CORP_ID`
-- `WECOM_CORP_SECRET`
-- `WECOM_CONTACT_SECRET`: secret used for WeCom contact/group metadata lookups; falls back to `WECOM_CORP_SECRET`.
-- `WECOM_RSA_PRIVATE_KEY`
-- `WECOM_BOT_ID`: used to skip self-sent messages and identify direct chat peers.
-- `WECOM_POLL_INTERVAL`: defaults to `3s`.
-- `WECOM_POLL_LIMIT`: defaults to `100`.
-- `WECOM_SDK_TIMEOUT`: defaults to `30`.
-- `WECOM_START_SEQ`: initial archive seq when no adapter cursor exists, defaults to `0`.
-- `TINYBRIDGE_CURSOR_PATH`: adapter cursor state file, defaults to `.tinybridge/cursors.json`.
-
-The adapter stores archive progress in its own state file. WeCom archive `seq` remains an adapter-local cursor and is not used as the TinyClaw Message identity.
-
-Mobile delivery uses `rooms.outbound_alias` as `recipient_alias`, falling back to `display_name` and then `channel_room_id`. For WeCom, TinyBridge resolves a room/contact name before registering the Room.
+Run adapter commands from the `tinybridge` module. TinyClaw only exposes the adapter-facing Core Model APIs and Delivery polling endpoints.
 
 ## Design Docs
 

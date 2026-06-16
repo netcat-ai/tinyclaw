@@ -36,10 +36,13 @@ If pending deliveries exist, TinyClaw already produced outbound work. Continue w
 SELECT
   m.id,
   m.room_id,
-  m.source_message_id,
   m.source,
-  m.sender_id,
-  m.payload,
+  m.msgid,
+  m.action,
+  m.from_id,
+  m.msgtype,
+  m.body,
+  to_timestamp(m.msgtime) AS message_time,
   m.created_at
 FROM messages m
 ORDER BY m.id DESC

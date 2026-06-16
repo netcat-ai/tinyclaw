@@ -25,14 +25,17 @@ CREATE TABLE IF NOT EXISTS rooms (
 CREATE TABLE IF NOT EXISTS messages (
 	id BIGSERIAL PRIMARY KEY,
 	room_id BIGINT NOT NULL REFERENCES rooms(id),
-	source_message_id TEXT NOT NULL,
 	source TEXT NOT NULL,
-	sender_id TEXT NOT NULL,
-	sender_name TEXT,
-	payload JSONB NOT NULL,
-	message_time TIMESTAMPTZ NOT NULL,
+	msgid TEXT NOT NULL,
+	action TEXT NOT NULL,
+	from_id TEXT NOT NULL,
+	tolist JSONB NOT NULL,
+	roomid TEXT NOT NULL,
+	msgtime BIGINT NOT NULL,
+	msgtype TEXT NOT NULL,
+	body JSONB NOT NULL,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-	UNIQUE (room_id, source_message_id)
+	UNIQUE (room_id, source, msgid)
 );
 
 CREATE TABLE IF NOT EXISTS agent_sessions (
@@ -55,12 +58,19 @@ CREATE TABLE IF NOT EXISTS agents (
 	key TEXT NOT NULL UNIQUE,
 	display_name TEXT NOT NULL,
 	description TEXT,
+	owner_id TEXT NOT NULL DEFAULT 'system',
+	visibility TEXT NOT NULL DEFAULT 'shared',
 	prompt TEXT NOT NULL,
 	allowed_tools JSONB NOT NULL,
 	enabled BOOLEAN NOT NULL DEFAULT TRUE,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT 'system';
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'shared';
+ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_visibility_check;
+ALTER TABLE agents ADD CONSTRAINT agents_visibility_check CHECK (visibility IN ('private', 'shared'));
 
 CREATE TABLE IF NOT EXISTS deliveries (
 	id BIGSERIAL PRIMARY KEY,

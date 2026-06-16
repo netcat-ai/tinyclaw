@@ -29,9 +29,15 @@ func NewMessageIngestor(store MessageStore, commands CommandHandler) *MessageIng
 }
 
 func (i *MessageIngestor) IngestMessage(ctx context.Context, input core.CreateMessageInput) (core.CreateMessageResult, error) {
-	if command.IsDrawPayload(input.Payload) {
+	body := input.Body
+	if len(body) == 0 {
+		body = input.Payload
+	}
+	if command.IsDrawPayload(body) {
 		input.SuppressAgentTrigger = true
-		input.Payload = markCommandPayload(input.Payload, "draw")
+		body = markCommandPayload(body, "draw")
+		input.Body = body
+		input.Payload = body
 	}
 	result, err := i.store.CreateMessage(ctx, input)
 	if err != nil {

@@ -69,7 +69,7 @@ func (c OpenAIImageClient) GenerateImage(ctx context.Context, input ImageGenerat
 	if err != nil {
 		return GeneratedImage{}, fmt.Errorf("call image provider: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
 		return GeneratedImage{}, fmt.Errorf("read image provider response: %w", err)

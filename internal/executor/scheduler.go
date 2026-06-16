@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"tinyclaw/internal/core"
+	"tinyclaw/internal/telemetry"
 )
 
 const (
@@ -116,6 +117,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) bool {
 	}
 	run, ok, err := s.store.ClaimNextAgentRun(ctx, s.owner, s.lockTTL)
 	if err != nil {
+		telemetry.IncAgentRun("claim_error")
 		slog.Error("claim agent run failed", "err", err)
 		return false
 	}
@@ -125,6 +127,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) bool {
 
 	contextMessages, err := s.store.ListAgentRunMessages(ctx, run)
 	if err != nil {
+		telemetry.IncAgentRun("context_error")
 		s.failAgentRun(ctx, run, err)
 		return true
 	}
@@ -135,6 +138,16 @@ func (s *Scheduler) RunOnce(ctx context.Context) bool {
 		SelectedAgents:  s.selectedAgentsForRun(ctx, contextMessages),
 		MemorySearchURL: s.memorySearchURL,
 	}
+	selectedAgentIDs, selectedAgentKeys := selectedAgentLogFields(request.SelectedAgents)
+	slog.Info("agent run started",
+		"agent_session_id", run.AgentSessionID,
+		"room_id", run.RoomID,
+		"source_message_from_id", run.SourceMessageFromID,
+		"source_message_to_id", run.SourceMessageToID,
+		"context_message_count", len(contextMessages),
+		"selected_agent_ids", selectedAgentIDs,
+		"selected_agent_keys", selectedAgentKeys,
+	)
 	if s.memorySearchURL != "" {
 		if tokenStore, ok := s.store.(MemoryCapabilityTokenStore); ok {
 			token, err := tokenStore.CreateMemoryCapabilityToken(ctx, run, s.memoryTokenTTL)
@@ -147,12 +160,37 @@ func (s *Scheduler) RunOnce(ctx context.Context) bool {
 	}
 	result, err := s.runner.RunAgent(ctx, request)
 	if err != nil {
+		telemetry.IncAgentRun("runner_error")
 		s.failAgentRun(ctx, run, err)
+		slog.Error("agent run failed",
+			"agent_session_id", run.AgentSessionID,
+			"room_id", run.RoomID,
+			"selected_agent_ids", selectedAgentIDs,
+			"selected_agent_keys", selectedAgentKeys,
+			"err", err,
+		)
 		return true
 	}
-	if _, err := s.store.CompleteAgentRun(ctx, run, result); err != nil {
+	delivery, err := s.store.CompleteAgentRun(ctx, run, result)
+	if err != nil {
+		telemetry.IncAgentRun("complete_error")
 		slog.Error("complete agent run failed", "agent_session_id", run.AgentSessionID, "err", err)
+		return true
 	}
+	deliveryID := int64(0)
+	if delivery != nil {
+		deliveryID = delivery.ID
+	}
+	slog.Info("agent run completed",
+		"agent_session_id", run.AgentSessionID,
+		"room_id", run.RoomID,
+		"selected_agent_ids", selectedAgentIDs,
+		"selected_agent_keys", selectedAgentKeys,
+		"memory_search_count", result.MemorySearchCount,
+		"memory_write_job_count", len(result.MemoryWriteProposals),
+		"delivery_id", deliveryID,
+	)
+	telemetry.IncAgentRun("success")
 	return true
 }
 
@@ -179,6 +217,9 @@ func selectMentionedAgents(messages []core.Message, agents []core.Agent) []core.
 		if !agent.Enabled {
 			continue
 		}
+		if agent.Visibility != "" && agent.Visibility != "shared" {
+			continue
+		}
 		key := strings.ToLower(strings.TrimSpace(agent.Key))
 		name := strings.ToLower(strings.TrimSpace(agent.DisplayName))
 		if key != "" && strings.Contains(text, "@"+key) {
@@ -190,6 +231,22 @@ func selectMentionedAgents(messages []core.Message, agents []core.Agent) []core.
 		}
 	}
 	return selected
+}
+
+func selectedAgentLogFields(agents []core.Agent) ([]int64, []string) {
+	ids := make([]int64, 0, len(agents))
+	keys := make([]string, 0, len(agents))
+	for _, agent := range agents {
+		ids = append(ids, agent.ID)
+		key := strings.TrimSpace(agent.Key)
+		if key == "" {
+			key = strings.TrimSpace(agent.DisplayName)
+		}
+		if key != "" {
+			keys = append(keys, key)
+		}
+	}
+	return ids, keys
 }
 
 func (s *Scheduler) failAgentRun(ctx context.Context, run core.AgentRun, err error) {

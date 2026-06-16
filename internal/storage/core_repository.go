@@ -32,15 +32,17 @@ func validateCreateMessage(input core.CreateMessageInput) error {
 	switch {
 	case input.RoomID <= 0:
 		return fmt.Errorf("room_id is required")
-	case input.SourceMessageID == "":
-		return fmt.Errorf("source_message_id is required")
 	case input.Source == "":
 		return fmt.Errorf("source is required")
-	case input.SenderID == "":
-		return fmt.Errorf("sender_id is required")
+	case input.MsgID == "":
+		return fmt.Errorf("msgid is required")
+	case input.FromID == "":
+		return fmt.Errorf("from is required")
+	case input.MsgType == "":
+		return fmt.Errorf("msgtype is required")
 	}
-	if !json.Valid(input.Payload) {
-		return fmt.Errorf("payload must be valid JSON")
+	if !json.Valid(input.Body) {
+		return fmt.Errorf("body must be valid JSON")
 	}
 	return nil
 }
@@ -157,23 +159,26 @@ func insertCoreMessageTx(ctx context.Context, tx *sql.Tx, input core.CreateMessa
 	err := tx.QueryRowContext(ctx, `
 		INSERT INTO messages (
 			room_id,
-			source_message_id,
 			source,
-			sender_id,
-			sender_name,
-			payload,
-			message_time
+			msgid,
+			action,
+			from_id,
+			tolist,
+			roomid,
+			msgtime,
+			msgtype,
+			body
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (room_id, source_message_id) DO NOTHING
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (room_id, source, msgid) DO NOTHING
 		RETURNING id
-	`, input.RoomID, input.SourceMessageID, input.Source, input.SenderID, nullIfEmpty(input.SenderName), input.Payload, input.MessageTime).Scan(&id)
+	`, input.RoomID, input.Source, input.MsgID, input.Action, input.FromID, mustJSON(input.ToList), input.RoomIDRaw, input.MsgTime, input.MsgType, input.Body).Scan(&id)
 	switch {
 	case err == nil:
 		message, getErr := getCoreMessageByIDTx(ctx, tx, id)
 		return true, message, getErr
 	case errors.Is(err, sql.ErrNoRows):
-		message, getErr := getCoreMessageBySourceTx(ctx, tx, input.RoomID, input.SourceMessageID)
+		message, getErr := getCoreMessageBySourceTx(ctx, tx, input.RoomID, input.Source, input.MsgID)
 		return false, message, getErr
 	default:
 		return false, core.Message{}, fmt.Errorf("insert message: %w", err)
@@ -182,20 +187,21 @@ func insertCoreMessageTx(ctx context.Context, tx *sql.Tx, input core.CreateMessa
 
 func getCoreMessageByIDTx(ctx context.Context, tx *sql.Tx, id int64) (core.Message, error) {
 	row := tx.QueryRowContext(ctx, `
-		SELECT id, room_id, source_message_id, source, sender_id, sender_name, payload, message_time, created_at
+		SELECT id, room_id, source, msgid, action, from_id, tolist, roomid, msgtime, msgtype, body, created_at
 		FROM messages
 		WHERE id = $1
 	`, id)
 	return scanCoreMessage(row)
 }
 
-func getCoreMessageBySourceTx(ctx context.Context, tx *sql.Tx, roomID int64, sourceMessageID string) (core.Message, error) {
+func getCoreMessageBySourceTx(ctx context.Context, tx *sql.Tx, roomID int64, source string, msgID string) (core.Message, error) {
 	row := tx.QueryRowContext(ctx, `
-		SELECT id, room_id, source_message_id, source, sender_id, sender_name, payload, message_time, created_at
+		SELECT id, room_id, source, msgid, action, from_id, tolist, roomid, msgtime, msgtype, body, created_at
 		FROM messages
 		WHERE room_id = $1
-		  AND source_message_id = $2
-	`, roomID, sourceMessageID)
+		  AND source = $2
+		  AND msgid = $3
+	`, roomID, source, msgID)
 	return scanCoreMessage(row)
 }
 
@@ -210,7 +216,7 @@ func listEnabledAgentSessionsForRoomTx(ctx context.Context, tx *sql.Tx, roomID i
 	if err != nil {
 		return nil, fmt.Errorf("list agent sessions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var sessions []core.AgentSession
 	for rows.Next() {
@@ -297,7 +303,7 @@ func claimNextAgentRunTx(ctx context.Context, tx *sql.Tx, owner string, ttl time
 
 func listAgentRunMessages(ctx context.Context, db *sql.DB, run core.AgentRun) ([]core.Message, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, room_id, source_message_id, source, sender_id, sender_name, payload, message_time, created_at
+		SELECT id, room_id, source, msgid, action, from_id, tolist, roomid, msgtime, msgtype, body, created_at
 		FROM messages
 		WHERE room_id = $1
 		  AND id >= $2
@@ -307,7 +313,7 @@ func listAgentRunMessages(ctx context.Context, db *sql.DB, run core.AgentRun) ([
 	if err != nil {
 		return nil, fmt.Errorf("list agent run messages: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanCoreMessages(rows)
 }
 
@@ -431,23 +437,27 @@ func scanCoreRoom(row scanner) (core.Room, error) {
 
 func scanCoreMessage(row scanner) (core.Message, error) {
 	var message core.Message
-	var senderName sql.NullString
 	if err := row.Scan(
 		&message.ID,
 		&message.RoomID,
-		&message.SourceMessageID,
 		&message.Source,
-		&message.SenderID,
-		&senderName,
-		&message.Payload,
-		&message.MessageTime,
+		&message.MsgID,
+		&message.Action,
+		&message.FromID,
+		&message.ToList,
+		&message.RoomIDRaw,
+		&message.MsgTime,
+		&message.MsgType,
+		&message.Body,
 		&message.CreatedAt,
 	); err != nil {
 		return core.Message{}, err
 	}
-	if senderName.Valid {
-		message.SenderName = senderName.String
-	}
+	message.SourceMessageID = message.MsgID
+	message.SenderID = message.FromID
+	message.SenderName = message.FromName
+	message.Payload = message.Body
+	message.MessageTime = time.Unix(message.MsgTime, 0).UTC()
 	return message, nil
 }
 

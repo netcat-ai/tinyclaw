@@ -42,7 +42,7 @@ func main() {
 		slog.Error("open postgres store failed", "err", err)
 		os.Exit(1)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	if err := store.InitSchema(ctx); err != nil {
 		cancel()
 		slog.Error("init postgres schema failed", "err", err)

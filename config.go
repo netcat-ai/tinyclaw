@@ -136,22 +136,6 @@ func parseCSVEnv(key string, def []string) []string {
 	return values
 }
 
-func parseIntEnv(key string, def int) (int, error) {
-	raw := os.Getenv(key)
-	if raw == "" {
-		return def, nil
-	}
-	return strconv.Atoi(raw)
-}
-
-func parseInt64Env(key string, def int64) (int64, error) {
-	raw := os.Getenv(key)
-	if raw == "" {
-		return def, nil
-	}
-	return strconv.ParseInt(raw, 10, 64)
-}
-
 func codexAuthOpenAIAPIKey() string {
 	for _, raw := range []string{os.Getenv("CODEX_AUTH_JSON"), readCodexAuthFile()} {
 		raw = strings.TrimSpace(raw)

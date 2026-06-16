@@ -24,8 +24,6 @@ jobs:
 
       - name: Unit Test
         run: go test ./...
-        env:
-          LD_LIBRARY_PATH: ${{ github.workspace }}/channel/wecom/finance/lib
 
   build-image:
     name: Docker Build
@@ -76,9 +74,7 @@ jobs:
       - name: Build Linux Binary
         run: |
           mkdir -p dist
-          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o dist/tinyclaw .
-        env:
-          LD_LIBRARY_PATH: ${{ github.workspace }}/channel/wecom/finance/lib
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/tinyclaw .
 
       - name: Build Service Image
         uses: docker/build-push-action@v6

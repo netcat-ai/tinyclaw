@@ -1,5 +1,6 @@
 tinyclaw
 .env
+.local/
 .playwright-mcp/
 agent/node_modules
 agent/dist

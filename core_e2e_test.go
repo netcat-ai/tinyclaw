@@ -59,10 +59,11 @@ func TestCoreE2EDrawCommandCreatesCommandDeliveries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	if err := store.InitSchema(ctx); err != nil {
 		t.Fatalf("init schema: %v", err)
 	}
+	resetCoreE2EDatabase(t, store)
 
 	coreStore := storage.NewCoreStore(store.DB())
 	image := &drawE2EImage{}
@@ -71,8 +72,10 @@ func TestCoreE2EDrawCommandCreatesCommandDeliveries(t *testing.T) {
 	handler.Async = false
 	api := httpapi.NewServerWithCommandHandler(coreStore, handler, "e2e-token")
 
-	roomName := fmt.Sprintf("draw-e2e-room-%d", time.Now().UnixNano())
-	roomResp := postRoomE2E(t, api, roomName)
+	suffix := time.Now().UnixNano()
+	channel := fmt.Sprintf("draw-e2e-%d", suffix)
+	roomName := fmt.Sprintf("draw-e2e-room-%d", suffix)
+	roomResp := postRoomForChannelE2E(t, api, channel, roomName, roomName, "")
 	drawResp := postMessageE2E(t, api, roomResp.Room.ID, "draw-msg-1", "/draw 一朵花")
 	if drawResp.Triggered {
 		t.Fatalf("draw triggered = true, want false")
@@ -92,7 +95,7 @@ func TestCoreE2EDrawCommandCreatesCommandDeliveries(t *testing.T) {
 		t.Fatalf("duplicate draw side effects image=%d media=%d, want unchanged", image.calls, media.calls)
 	}
 
-	deliveries := listDeliveriesE2E(t, api, "wecom")
+	deliveries := listDeliveriesE2E(t, api, channel)
 	if len(deliveries.Deliveries) != 3 {
 		t.Fatalf("deliveries len = %d, want 3", len(deliveries.Deliveries))
 	}
@@ -136,10 +139,11 @@ func TestCoreE2EWechatTextAndImageDeliveries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	if err := store.InitSchema(ctx); err != nil {
 		t.Fatalf("init schema: %v", err)
 	}
+	resetCoreE2EDatabase(t, store)
 
 	coreStore := storage.NewCoreStore(store.DB())
 	image := &drawE2EImage{}
@@ -148,8 +152,10 @@ func TestCoreE2EWechatTextAndImageDeliveries(t *testing.T) {
 	handler.Async = false
 	api := httpapi.NewServerWithCommandHandler(coreStore, handler, "e2e-token")
 
-	channelRoomID := fmt.Sprintf("wechat-e2e-%d@chatroom", time.Now().UnixNano())
-	roomResp := postRoomForChannelE2E(t, api, "wechat", channelRoomID, "测试群", `{"mode":"always"}`)
+	suffix := time.Now().UnixNano()
+	channel := fmt.Sprintf("wechat-e2e-%d", suffix)
+	channelRoomID := fmt.Sprintf("wechat-e2e-%d@chatroom", suffix)
+	roomResp := postRoomForChannelE2E(t, api, channel, channelRoomID, "测试群", `{"mode":"always"}`)
 	textResp := postMessageE2E(t, api, roomResp.Room.ID, "wechat-msg-1", "虾虾，你好呀")
 	if !textResp.Triggered {
 		t.Fatal("wechat text triggered = false, want true")
@@ -159,7 +165,7 @@ func TestCoreE2EWechatTextAndImageDeliveries(t *testing.T) {
 	if !scheduler.RunOnce(ctx) {
 		t.Fatal("scheduler RunOnce = false, want true")
 	}
-	deliveries := listDeliveriesE2E(t, api, "wechat")
+	deliveries := listDeliveriesE2E(t, api, channel)
 	if len(deliveries.Deliveries) != 1 {
 		t.Fatalf("wechat deliveries len = %d, want 1", len(deliveries.Deliveries))
 	}
@@ -167,7 +173,7 @@ func TestCoreE2EWechatTextAndImageDeliveries(t *testing.T) {
 	if err := json.Unmarshal(deliveries.Deliveries[0].Payload, &textPayload); err != nil {
 		t.Fatalf("decode text delivery: %v", err)
 	}
-	if textPayload["app"] != "wechat" || textPayload["channel"] != "wechat" || textPayload["recipient_alias"] != "测试群" || textPayload["channel_room_id"] != channelRoomID {
+	if textPayload["app"] != channel || textPayload["channel"] != channel || textPayload["recipient_alias"] != "测试群" || textPayload["channel_room_id"] != channelRoomID {
 		t.Fatalf("text delivery route = %+v", textPayload)
 	}
 	if textPayload["type"] != "text" || textPayload["text"] != "收到：你好呀" {
@@ -179,7 +185,7 @@ func TestCoreE2EWechatTextAndImageDeliveries(t *testing.T) {
 	if drawResp.Triggered {
 		t.Fatal("wechat draw triggered = true, want false")
 	}
-	drawDeliveries := listDeliveriesE2E(t, api, "wechat")
+	drawDeliveries := listDeliveriesE2E(t, api, channel)
 	if len(drawDeliveries.Deliveries) != 3 {
 		t.Fatalf("wechat draw deliveries len = %d, want 3", len(drawDeliveries.Deliveries))
 	}
@@ -187,7 +193,7 @@ func TestCoreE2EWechatTextAndImageDeliveries(t *testing.T) {
 	if err := json.Unmarshal(drawDeliveries.Deliveries[2].Payload, &imagePayload); err != nil {
 		t.Fatalf("decode image delivery: %v", err)
 	}
-	if imagePayload["app"] != "wechat" || imagePayload["channel"] != "wechat" || imagePayload["recipient_alias"] != "测试群" {
+	if imagePayload["app"] != channel || imagePayload["channel"] != channel || imagePayload["recipient_alias"] != "测试群" {
 		t.Fatalf("image delivery route = %+v", imagePayload)
 	}
 	if imagePayload["type"] != "image" || imagePayload["media_url_kind"] != "presigned_s3" || imagePayload["media_url"] == "" {
@@ -210,17 +216,20 @@ func TestCoreModelE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	if err := store.InitSchema(ctx); err != nil {
 		t.Fatalf("init schema: %v", err)
 	}
+	resetCoreE2EDatabase(t, store)
 
 	coreStore := storage.NewCoreStore(store.DB())
 	api := httpapi.NewServer(coreStore, "e2e-token")
 	apiServer := httptest.NewServer(api)
 	defer apiServer.Close()
-	roomName := fmt.Sprintf("e2e-room-%d", time.Now().UnixNano())
-	roomResp := postRoomE2E(t, api, roomName)
+	suffix := time.Now().UnixNano()
+	channel := fmt.Sprintf("core-e2e-%d", suffix)
+	roomName := fmt.Sprintf("e2e-room-%d", suffix)
+	roomResp := postRoomForChannelE2E(t, api, channel, roomName, roomName, "")
 
 	contextResp := postMessageE2E(t, api, roomResp.Room.ID, "msg-1", "context message")
 
@@ -288,7 +297,7 @@ func TestCoreModelE2E(t *testing.T) {
 		t.Fatalf("runner memory content = %q, want stored preference", memoryRunner.seenContent)
 	}
 
-	deliveries := listDeliveriesE2E(t, api, "wecom")
+	deliveries := listDeliveriesE2E(t, api, channel)
 	if len(deliveries.Deliveries) != 2 {
 		t.Fatalf("deliveries len = %d, want 2", len(deliveries.Deliveries))
 	}
@@ -310,13 +319,17 @@ func TestCoreModelE2E(t *testing.T) {
 	if err := json.Unmarshal(delivery.Payload, &deliveryPayload); err != nil {
 		t.Fatalf("decode delivery payload: %v", err)
 	}
-	if deliveryPayload.Kind != "agent_output" || deliveryPayload.Text != "done" || deliveryPayload.App != "wecom" || deliveryPayload.RecipientAlias != roomName || deliveryPayload.ChannelRoomID != roomName {
+	if deliveryPayload.Kind != "agent_output" || deliveryPayload.Text != "done" || deliveryPayload.App != channel || deliveryPayload.RecipientAlias != roomName || deliveryPayload.ChannelRoomID != roomName {
 		t.Fatalf("delivery payload = %+v, want routed text payload", deliveryPayload)
 	}
 
 	acked := ackDeliveryE2E(t, api, delivery.ID)
 	if acked.Status != core.DeliveryStatusAcked {
 		t.Fatalf("acked status = %d, want %d", acked.Status, core.DeliveryStatusAcked)
+	}
+	ackedAgain := ackDeliveryE2E(t, api, delivery.ID)
+	if ackedAgain.Status != core.DeliveryStatusAcked {
+		t.Fatalf("second ack status = %d, want %d", ackedAgain.Status, core.DeliveryStatusAcked)
 	}
 }
 
@@ -370,7 +383,7 @@ func (r *memorySearchingRunner) RunAgent(ctx context.Context, run executor.Agent
 	if err != nil {
 		r.t.Fatalf("call memory search: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var payload struct {
 		Items []core.MemoryItem `json:"items"`
 	}
@@ -409,10 +422,6 @@ func searchMemoryE2E(t *testing.T, api http.Handler, token string, query string,
 		t.Fatalf("decode memory search response: %v", err)
 	}
 	return payload.Items
-}
-
-func postRoomE2E(t *testing.T, api http.Handler, roomName string) coreE2ERoomResponse {
-	return postRoomForChannelE2E(t, api, "wecom", roomName, roomName, "")
 }
 
 func postRoomForChannelE2E(t *testing.T, api http.Handler, channel, channelRoomID, outboundAlias, triggerPolicy string) coreE2ERoomResponse {
@@ -497,4 +506,25 @@ func ackDeliveryE2E(t *testing.T, api http.Handler, deliveryID int64) coreE2EDel
 		t.Fatalf("decode ack response: %v", err)
 	}
 	return payload
+}
+
+func resetCoreE2EDatabase(t *testing.T, store *Store) {
+	t.Helper()
+	_, err := store.DB().Exec(`
+		TRUNCATE
+			memory_change_audit,
+			memory_write_jobs,
+			memory_capability_tokens,
+			memory_items,
+			deliveries,
+			agents,
+			agent_sessions,
+			messages,
+			rooms,
+			api_clients
+		RESTART IDENTITY CASCADE
+	`)
+	if err != nil {
+		t.Fatalf("reset e2e database: %v", err)
+	}
 }

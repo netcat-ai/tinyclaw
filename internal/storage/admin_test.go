@@ -164,6 +164,22 @@ func openPostgresStorageTestStore(t *testing.T, ctx context.Context) *CoreStore 
 	if _, err := db.ExecContext(ctx, string(schema)); err != nil {
 		t.Fatalf("init schema: %v", err)
 	}
+	if _, err := db.ExecContext(ctx, `
+		TRUNCATE
+			memory_change_audit,
+			memory_write_jobs,
+			memory_capability_tokens,
+			memory_items,
+			deliveries,
+			agents,
+			agent_sessions,
+			messages,
+			rooms,
+			api_clients
+		RESTART IDENTITY CASCADE
+	`); err != nil {
+		t.Fatalf("reset storage test database: %v", err)
+	}
 	return NewCoreStore(db)
 }
 

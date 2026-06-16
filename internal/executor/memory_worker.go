@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"tinyclaw/internal/core"
+	"tinyclaw/internal/telemetry"
 )
 
 const defaultMemoryWorkerInterval = time.Second
@@ -66,8 +67,12 @@ func (w *MemoryWriteWorker) RunOnce(ctx context.Context) bool {
 	}
 	job, ok, err := w.store.ApplyNextMemoryWriteJob(ctx)
 	if err != nil {
+		telemetry.IncMemoryWrite(job.Op, "error")
 		slog.Error("apply memory write job failed", "memory_write_job_id", job.ID, "err", err)
 		return ok
+	}
+	if ok {
+		telemetry.IncMemoryWrite(job.Op, "applied")
 	}
 	return ok
 }

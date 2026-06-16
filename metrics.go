@@ -14,7 +14,7 @@ func serveMetrics(ctx context.Context, addr string) {
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	})
 
 	srv := &http.Server{Addr: addr, Handler: mux}
@@ -22,7 +22,9 @@ func serveMetrics(ctx context.Context, addr string) {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		srv.Shutdown(shutdownCtx)
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			slog.Warn("metrics server shutdown failed", "err", err)
+		}
 	}()
 
 	slog.Info("metrics server starting", "addr", addr)

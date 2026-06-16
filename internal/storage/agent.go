@@ -13,14 +13,14 @@ import (
 
 func (s *CoreStore) ListAgents(ctx context.Context) ([]core.Agent, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, key, display_name, description, prompt, allowed_tools, enabled, created_at, updated_at
+		SELECT id, key, display_name, description, owner_id, visibility, prompt, allowed_tools, enabled, created_at, updated_at
 		FROM agents
 		ORDER BY key ASC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("list agents: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanAgents(rows)
 }
 
@@ -29,7 +29,7 @@ func (s *CoreStore) GetAgent(ctx context.Context, id int64) (core.Agent, error) 
 		return core.Agent{}, fmt.Errorf("agent id is required")
 	}
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, key, display_name, description, prompt, allowed_tools, enabled, created_at, updated_at
+		SELECT id, key, display_name, description, owner_id, visibility, prompt, allowed_tools, enabled, created_at, updated_at
 		FROM agents
 		WHERE id = $1
 	`, id)
@@ -49,10 +49,10 @@ func (s *CoreStore) CreateAgent(ctx context.Context, input core.UpsertAgentInput
 		return core.Agent{}, err
 	}
 	row := s.db.QueryRowContext(ctx, `
-		INSERT INTO agents (key, display_name, description, prompt, allowed_tools, enabled)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, key, display_name, description, prompt, allowed_tools, enabled, created_at, updated_at
-	`, input.Key, input.DisplayName, nullIfEmpty(input.Description), input.Prompt, input.AllowedTools, input.Enabled)
+		INSERT INTO agents (key, display_name, description, owner_id, visibility, prompt, allowed_tools, enabled)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id, key, display_name, description, owner_id, visibility, prompt, allowed_tools, enabled, created_at, updated_at
+	`, input.Key, input.DisplayName, nullIfEmpty(input.Description), input.OwnerID, input.Visibility, input.Prompt, input.AllowedTools, input.Enabled)
 	agent, err := scanAgent(row)
 	if err != nil {
 		return core.Agent{}, fmt.Errorf("create agent: %w", err)
@@ -73,13 +73,15 @@ func (s *CoreStore) UpdateAgent(ctx context.Context, id int64, input core.Upsert
 		SET key = $2,
 		    display_name = $3,
 		    description = $4,
-		    prompt = $5,
-		    allowed_tools = $6,
-		    enabled = $7,
+		    owner_id = $5,
+		    visibility = $6,
+		    prompt = $7,
+		    allowed_tools = $8,
+		    enabled = $9,
 		    updated_at = NOW()
 		WHERE id = $1
-		RETURNING id, key, display_name, description, prompt, allowed_tools, enabled, created_at, updated_at
-	`, id, input.Key, input.DisplayName, nullIfEmpty(input.Description), input.Prompt, input.AllowedTools, input.Enabled)
+		RETURNING id, key, display_name, description, owner_id, visibility, prompt, allowed_tools, enabled, created_at, updated_at
+	`, id, input.Key, input.DisplayName, nullIfEmpty(input.Description), input.OwnerID, input.Visibility, input.Prompt, input.AllowedTools, input.Enabled)
 	agent, err := scanAgent(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -94,15 +96,27 @@ func normalizeAgentInput(input core.UpsertAgentInput) (core.UpsertAgentInput, er
 	input.Key = strings.TrimSpace(input.Key)
 	input.DisplayName = strings.TrimSpace(input.DisplayName)
 	input.Description = strings.TrimSpace(input.Description)
+	input.OwnerID = strings.TrimSpace(input.OwnerID)
+	input.Visibility = strings.TrimSpace(input.Visibility)
 	input.Prompt = strings.TrimSpace(input.Prompt)
 	if len(input.AllowedTools) == 0 {
 		input.AllowedTools = json.RawMessage(`[]`)
+	}
+	if input.OwnerID == "" {
+		input.OwnerID = "system"
+	}
+	if input.Visibility == "" {
+		input.Visibility = "private"
 	}
 	switch {
 	case input.Key == "":
 		return core.UpsertAgentInput{}, fmt.Errorf("key is required")
 	case input.DisplayName == "":
 		return core.UpsertAgentInput{}, fmt.Errorf("display_name is required")
+	case input.OwnerID == "":
+		return core.UpsertAgentInput{}, fmt.Errorf("owner_id is required")
+	case input.Visibility != "private" && input.Visibility != "shared":
+		return core.UpsertAgentInput{}, fmt.Errorf("visibility must be private or shared")
 	case input.Prompt == "":
 		return core.UpsertAgentInput{}, fmt.Errorf("prompt is required")
 	case !json.Valid(input.AllowedTools):
@@ -134,6 +148,8 @@ func scanAgent(row scanner) (core.Agent, error) {
 		&agent.Key,
 		&agent.DisplayName,
 		&description,
+		&agent.OwnerID,
+		&agent.Visibility,
 		&agent.Prompt,
 		&agent.AllowedTools,
 		&agent.Enabled,

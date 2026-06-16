@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: tinyclaw-postgres-local
+    environment:
+      POSTGRES_USER: tinyclaw
+      POSTGRES_PASSWORD: tinyclaw
+      POSTGRES_DB: tinyclaw
+    ports:
+      - "54329:5432"
+    volumes:
+      - tinyclaw-postgres-local:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tinyclaw -d tinyclaw"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  tinyclaw-postgres-local:

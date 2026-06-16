@@ -275,6 +275,72 @@ func TestHandleMessagesDoesNotHandleDuplicateDrawCommand(t *testing.T) {
 	}
 }
 
+func TestHandleMessagesAcceptsCoreMessageContract(t *testing.T) {
+	now := time.Unix(1779175200, 0).UTC()
+	api := NewServer(fakeCoreStore{
+		messageFn: func(_ context.Context, input core.CreateMessageInput) (core.CreateMessageResult, error) {
+			if input.RoomID != 10 ||
+				input.Source != "wechat" ||
+				input.MsgID != "wechat-msg-1" ||
+				input.Action != "send" ||
+				input.FromID != "wxid_alice" ||
+				input.RoomIDRaw != "room-1@chatroom" ||
+				input.MsgTime != now.Unix() ||
+				input.MsgType != "text" ||
+				string(input.Body) != `{"content":"虾虾 hello"}` ||
+				len(input.ToList) != 1 ||
+				input.ToList[0] != "wxid_bot" {
+				t.Fatalf("unexpected input: %+v", input)
+			}
+			return core.CreateMessageResult{
+				Message: core.Message{
+					ID:        20,
+					RoomID:    input.RoomID,
+					Source:    input.Source,
+					MsgID:     input.MsgID,
+					Action:    input.Action,
+					FromID:    input.FromID,
+					ToList:    json.RawMessage(`["wxid_bot"]`),
+					RoomIDRaw: input.RoomIDRaw,
+					MsgTime:   input.MsgTime,
+					MsgType:   input.MsgType,
+					Body:      input.Body,
+					CreatedAt: now,
+				},
+				Triggered: true,
+			}, nil
+		},
+	}, "api-secret")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/messages", strings.NewReader(`{
+		"room_id":10,
+		"source":"wechat",
+		"msgid":"wechat-msg-1",
+		"action":"send",
+		"from":"wxid_alice",
+		"tolist":["wxid_bot"],
+		"roomid":"room-1@chatroom",
+		"msgtime":1779175200,
+		"msgtype":"text",
+		"body":{"content":"虾虾 hello"}
+	}`))
+	req.Header.Set("Authorization", "Bearer api-secret")
+	rec := httptest.NewRecorder()
+
+	api.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload createMessageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !payload.Triggered || payload.Message.MsgID != "wechat-msg-1" || payload.Message.FromID != "wxid_alice" {
+		t.Fatalf("payload = %+v, want core message response", payload)
+	}
+}
+
 func TestHandleRoomsRequiresAPIToken(t *testing.T) {
 	api := NewServer(fakeCoreStore{
 		registerFn: func(context.Context, core.RegisterRoomInput) (core.RegisterRoomResult, error) {
@@ -509,7 +575,7 @@ func TestHandleAdminRoomMemoryReturnsEmptyArray(t *testing.T) {
 func TestHandleAdminAgentsCreatesMutableAgent(t *testing.T) {
 	api := NewServerWithCommandHandler(fakeCoreStore{
 		createAgentFn: func(_ context.Context, input core.UpsertAgentInput) (core.Agent, error) {
-			if input.Key != "product" || input.DisplayName != "产品" || input.Prompt != "You are product." {
+			if input.Key != "product" || input.DisplayName != "产品" || input.OwnerID != "alice" || input.Visibility != "shared" || input.Prompt != "You are product." {
 				t.Fatalf("unexpected input: %+v", input)
 			}
 			if string(input.AllowedTools) != `["memory_search"]` {
@@ -519,6 +585,8 @@ func TestHandleAdminAgentsCreatesMutableAgent(t *testing.T) {
 				ID:           7,
 				Key:          input.Key,
 				DisplayName:  input.DisplayName,
+				OwnerID:      input.OwnerID,
+				Visibility:   input.Visibility,
 				Prompt:       input.Prompt,
 				AllowedTools: input.AllowedTools,
 				Enabled:      input.Enabled,
@@ -529,6 +597,8 @@ func TestHandleAdminAgentsCreatesMutableAgent(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/admin/api/agents", strings.NewReader(`{
 		"key":"product",
 		"display_name":"产品",
+		"owner_id":"alice",
+		"visibility":"shared",
 		"prompt":"You are product.",
 		"allowed_tools":["memory_search"],
 		"enabled":true
@@ -544,7 +614,7 @@ func TestHandleAdminAgentsCreatesMutableAgent(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if payload.Agent.ID != 7 || payload.Agent.Key != "product" || !payload.Agent.Enabled {
+	if payload.Agent.ID != 7 || payload.Agent.Key != "product" || payload.Agent.OwnerID != "alice" || payload.Agent.Visibility != "shared" || !payload.Agent.Enabled {
 		t.Fatalf("agent = %+v, want product", payload.Agent)
 	}
 }
@@ -555,13 +625,15 @@ func TestHandleAdminAgentsUpdatesAgentWithoutVersioning(t *testing.T) {
 			if id != 7 {
 				t.Fatalf("id = %d, want 7", id)
 			}
-			if input.Key != "product" || input.Prompt != "Updated prompt." || input.Enabled {
+			if input.Key != "product" || input.OwnerID != "bob" || input.Visibility != "private" || input.Prompt != "Updated prompt." || input.Enabled {
 				t.Fatalf("unexpected input: %+v", input)
 			}
 			return core.Agent{
 				ID:           id,
 				Key:          input.Key,
 				DisplayName:  input.DisplayName,
+				OwnerID:      input.OwnerID,
+				Visibility:   input.Visibility,
 				Prompt:       input.Prompt,
 				AllowedTools: input.AllowedTools,
 				Enabled:      input.Enabled,
@@ -572,6 +644,8 @@ func TestHandleAdminAgentsUpdatesAgentWithoutVersioning(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/admin/api/agents/7", strings.NewReader(`{
 		"key":"product",
 		"display_name":"产品",
+		"owner_id":"bob",
+		"visibility":"private",
 		"prompt":"Updated prompt.",
 		"allowed_tools":[],
 		"enabled":false

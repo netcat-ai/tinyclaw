@@ -71,6 +71,7 @@ func (r *CodexRunner) RunAgent(ctx context.Context, run AgentRunRequest) (core.A
 			run.AgentRun.CodexSessionID = strings.TrimSpace(result.CodexSessionID)
 		}
 		if len(result.MemorySearchRequests) == 0 {
+			result.MemorySearchCount = len(run.MemorySearchResults)
 			return result, nil
 		}
 		if strings.TrimSpace(run.MemorySearchURL) == "" || strings.TrimSpace(run.MemorySearchToken) == "" {
@@ -571,11 +572,26 @@ func extractMessageCommandKind(payload json.RawMessage) string {
 
 func extractMessageText(payload json.RawMessage) string {
 	var parsed struct {
-		Text string `json:"text"`
-		Type string `json:"type"`
+		Text    any    `json:"text"`
+		Type    string `json:"type"`
+		Content string `json:"content"`
 	}
-	if err := json.Unmarshal(payload, &parsed); err == nil && strings.TrimSpace(parsed.Text) != "" {
-		return strings.TrimSpace(parsed.Text)
+	if err := json.Unmarshal(payload, &parsed); err == nil {
+		if text := strings.TrimSpace(parsed.Content); text != "" {
+			return text
+		}
+		switch value := parsed.Text.(type) {
+		case string:
+			if text := strings.TrimSpace(value); text != "" {
+				return text
+			}
+		case map[string]any:
+			if content, ok := value["content"].(string); ok {
+				if text := strings.TrimSpace(content); text != "" {
+					return text
+				}
+			}
+		}
 	}
 	return strings.TrimSpace(string(payload))
 }

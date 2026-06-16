@@ -8,6 +8,7 @@ import {
   DoorOpen,
   KeyRound,
   Loader2,
+  MessageCircle,
   MessageSquarePlus,
   Plus,
   RefreshCw,
@@ -38,6 +39,8 @@ const savedCredentials = useStorage<Credentials>('tinyclaw.control.credentials',
 const clientId = ref(savedCredentials.value.clientId)
 const clientSecret = ref(savedCredentials.value.clientSecret)
 const rememberCredentials = useStorage('tinyclaw.control.remember_credentials', true)
+const editingCredentials = ref(false)
+const chatUserId = useStorage('tinyclaw.control.chat_user_id', 'guest')
 const rooms = ref<RoomSummary[]>([])
 const agents = ref<Agent[]>([])
 const selectedRoomId = useStorage<number | null>('tinyclaw.control.selected_room_id', null)
@@ -46,6 +49,7 @@ const timeline = ref<Timeline | null>(null)
 const memoryItems = ref<MemoryItem[]>([])
 const activeTab = ref<Tab>('timeline')
 const query = ref('')
+const agentQuery = ref('')
 const roomLoading = ref(false)
 const detailLoading = ref(false)
 const memoryLoading = ref(false)
@@ -54,10 +58,7 @@ const agentLoading = ref(false)
 const savingAgent = ref(false)
 const authError = ref('')
 const actionError = ref('')
-const senderId = ref('admin')
-const senderName = ref('Admin')
 const injectText = ref('')
-const suppressAgentTrigger = ref(false)
 const injecting = ref(false)
 const ackingDeliveryId = ref<number | null>(null)
 const memoryStatus = ref('active')
@@ -72,6 +73,8 @@ const settingsTriggerPolicy = ref('')
 const agentKey = ref('')
 const agentDisplayName = ref('')
 const agentDescription = ref('')
+const agentOwnerId = ref('')
+const agentShared = ref(false)
 const agentPrompt = ref('')
 const agentAllowedTools = ref('[]')
 const agentEnabled = ref(true)
@@ -103,6 +106,16 @@ const filteredRooms = computed(() => {
   )
 })
 
+const filteredAgents = computed(() => {
+  const value = agentQuery.value.trim().toLowerCase()
+  if (!value) return agents.value
+  return agents.value.filter((agent) =>
+    [agent.key, agent.display_name, agent.description, agent.owner_id, agent.visibility]
+      .filter(Boolean)
+      .some((part) => String(part).toLowerCase().includes(value)),
+  )
+})
+
 const sortedMessages = computed(() =>
   [...(timeline.value?.messages ?? [])].sort((a, b) => a.id - b.id),
 )
@@ -124,6 +137,7 @@ const messageDeliveries = computed(() => {
 })
 
 const canUseAPI = computed(() => credentials.value.clientId.length > 0 && credentials.value.clientSecret.length > 0)
+const showCredentialForm = computed(() => !canUseAPI.value || authError.value !== '' || editingCredentials.value)
 
 const canShowWorkspace = computed(() => selectedRoom.value !== null || activeTab.value === 'agents' || activeTab.value === 'settings')
 
@@ -137,11 +151,36 @@ const formatDate = (value?: string) => {
   }).format(new Date(value))
 }
 
-const textFromPayload = (payload: Record<string, unknown>) => {
-  const text = payload.text
-  if (typeof text === 'string' && text.trim()) return text
-  return JSON.stringify(payload)
+const formatMessageTime = (message: Message) => {
+  if (message.msgtime > 0) return formatDate(new Date(message.msgtime * 1000).toISOString())
+  return formatDate(message.created_at)
 }
+
+const textFromBody = (body: Record<string, unknown>) => {
+  const content = body.content
+  if (typeof content === 'string' && content.trim()) return content
+  const textObject = body.text
+  if (textObject && typeof textObject === 'object' && 'content' in textObject) {
+    const textContent = (textObject as { content?: unknown }).content
+    if (typeof textContent === 'string' && textContent.trim()) return textContent
+  }
+  const text = body.text
+  if (typeof text === 'string' && text.trim()) return text
+  return JSON.stringify(body)
+}
+
+const textFromDelivery = (delivery: Delivery) => {
+  const text = delivery.payload.text
+  if (typeof text === 'string' && text.trim()) return text
+  const content = delivery.payload.content
+  if (typeof content === 'string' && content.trim()) return content
+  return JSON.stringify(delivery.payload)
+}
+
+const isSharedAgent = (agent: Agent) => agent.visibility !== 'private'
+
+const isOutboundMessage = (message: Message) =>
+  message.from === chatUserId.value || ['admin', 'agent'].includes(message.source)
 
 const deliveryStatusLabel = (status: number) => {
   if (status === 0) return 'Pending'
@@ -259,6 +298,15 @@ const openAgents = async () => {
   await loadAgents()
 }
 
+const openRooms = async () => {
+  activeTab.value = selectedRoom.value ? 'timeline' : 'settings'
+  if (!selectedRoomId.value && rooms.value[0]) {
+    selectedRoomId.value = rooms.value[0].room.id
+    activeTab.value = 'timeline'
+  }
+  if (selectedRoomId.value) await loadTimeline()
+}
+
 const refreshCurrent = async () => {
   await loadRooms()
   await loadAgents()
@@ -273,6 +321,7 @@ const saveCredentials = async () => {
     savedCredentials.value = { clientId: 'admin', clientSecret: '' }
   }
   await refreshCurrent()
+  if (!authError.value) editingCredentials.value = false
 }
 
 const injectMessage = async () => {
@@ -281,10 +330,9 @@ const injectMessage = async () => {
   actionError.value = ''
   try {
     const input: InjectMessageInput = {
-      sender_id: senderId.value.trim() || 'admin',
-      sender_name: senderName.value.trim() || 'Admin',
+      sender_id: chatUserId.value.trim() || 'guest',
       text: injectText.value.trim(),
-      suppress_agent_trigger: suppressAgentTrigger.value,
+      suppress_agent_trigger: false,
     }
     await api.injectMessage(credentials.value, selectedRoomId.value, input)
     injectText.value = ''
@@ -322,12 +370,13 @@ const saveRoomSettings = async () => {
       channel_room_id: settingsChannelRoomId.value.trim(),
       channel_room_type: settingsChannelRoomType.value.trim(),
       display_name: settingsDisplayName.value.trim(),
-      outbound_alias: settingsOutboundAlias.value.trim(),
+      outbound_alias: settingsOutboundAlias.value.trim() || settingsChannelRoomId.value.trim(),
       agent_enabled: settingsAgentEnabled.value,
       trigger_policy: triggerPolicy,
     }
     const result = await api.registerRoom(credentials.value, input)
     selectedRoomId.value = result.room.id
+    activeTab.value = 'timeline'
     await Promise.all([loadRooms(), loadTimeline()])
   } catch (error) {
     actionError.value = error instanceof Error ? error.message : 'Failed to save room settings'
@@ -342,6 +391,8 @@ const syncAgentForm = () => {
     agentKey.value = ''
     agentDisplayName.value = ''
     agentDescription.value = ''
+    agentOwnerId.value = chatUserId.value.trim() || 'guest'
+    agentShared.value = false
     agentPrompt.value = ''
     agentAllowedTools.value = '[]'
     agentEnabled.value = true
@@ -350,6 +401,8 @@ const syncAgentForm = () => {
   agentKey.value = agent.key
   agentDisplayName.value = agent.display_name
   agentDescription.value = agent.description ?? ''
+  agentOwnerId.value = agent.owner_id || chatUserId.value.trim() || 'guest'
+  agentShared.value = isSharedAgent(agent)
   agentPrompt.value = agent.prompt
   agentAllowedTools.value = JSON.stringify(agent.allowed_tools ?? [], null, 2)
   agentEnabled.value = agent.enabled
@@ -373,6 +426,8 @@ const saveAgent = async () => {
       key: agentKey.value.trim(),
       display_name: agentDisplayName.value.trim(),
       description: agentDescription.value.trim(),
+      owner_id: agentOwnerId.value.trim() || chatUserId.value.trim() || 'guest',
+      visibility: agentShared.value ? 'shared' : 'private',
       prompt: agentPrompt.value.trim(),
       allowed_tools: agentAllowedTools.value.trim() ? JSON.parse(agentAllowedTools.value) : [],
       enabled: agentEnabled.value,
@@ -412,22 +467,8 @@ onMounted(async () => {
 </script>
 
 <template>
-  <main class="min-h-screen flex flex-col bg-panel text-ink">
-    <header class="h-14 flex items-center justify-between border-b border-line bg-surface px-5">
-      <div class="flex items-center gap-3">
-        <ShieldCheck class="h-5 w-5 text-accent" />
-        <div>
-          <h1 class="text-base font-700">TinyClaw Control</h1>
-          <p class="text-xs text-muted">Clawman admin read models and operator actions</p>
-        </div>
-      </div>
-      <button class="icon-button" title="Refresh" :disabled="roomLoading || detailLoading" @click="refreshCurrent">
-        <Loader2 v-if="roomLoading || detailLoading" class="h-4 w-4 animate-spin" />
-        <RefreshCw v-else class="h-4 w-4" />
-      </button>
-    </header>
-
-    <section v-if="!canUseAPI || authError" class="border-b border-line bg-surface px-5 py-3">
+  <main class="min-h-screen bg-panel text-ink">
+    <section v-if="showCredentialForm" class="auth-overlay">
       <form class="auth-form grid grid-cols-[minmax(120px,180px)_minmax(180px,1fr)_auto_auto] items-end gap-3" @submit.prevent="saveCredentials">
         <label class="grid gap-1 text-xs text-muted">
           Client ID
@@ -449,91 +490,185 @@ onMounted(async () => {
       <p v-if="authError" class="mt-2 text-sm text-danger">{{ authError }}</p>
     </section>
 
-    <section class="app-shell grid min-h-0 flex-1 grid-cols-[340px_minmax(0,1fr)]">
+    <section class="app-shell grid min-h-screen grid-cols-[64px_340px_minmax(0,1fr)]">
+      <nav class="global-nav border-r border-line bg-[#e9eef3]" aria-label="Primary">
+        <div class="global-brand" title="TinyClaw Chat">
+          <ShieldCheck class="h-5 w-5" />
+        </div>
+        <button
+          class="global-nav-button"
+          :class="{ 'global-nav-button-active': activeTab !== 'agents' }"
+          type="button"
+          title="Channels"
+          :disabled="!canUseAPI"
+          @click="openRooms"
+        >
+          <MessageCircle class="h-5 w-5" />
+          <span>Channels</span>
+        </button>
+        <div class="global-nav-spacer"></div>
+        <button
+          class="global-nav-button"
+          :class="{ 'global-nav-button-active': activeTab === 'agents' }"
+          type="button"
+          title="Agent config"
+          :disabled="!canUseAPI"
+          @click="openAgents"
+        >
+          <Bot class="h-5 w-5" />
+          <span>Agent config</span>
+        </button>
+        <button
+          class="global-nav-button"
+          type="button"
+          title="Identity and API"
+          @click="editingCredentials = true"
+        >
+          <KeyRound class="h-5 w-5" />
+          <span>{{ chatUserId || credentials.clientId || 'Account' }}</span>
+        </button>
+        <button class="global-nav-button" title="Refresh" :disabled="roomLoading || detailLoading" @click="refreshCurrent">
+          <Loader2 v-if="roomLoading || detailLoading" class="h-5 w-5 animate-spin" />
+          <RefreshCw v-else class="h-5 w-5" />
+          <span>Refresh</span>
+        </button>
+      </nav>
+
       <aside class="min-h-0 border-r border-line bg-surface">
-        <div class="border-b border-line p-4">
-          <div class="mb-3 flex items-center justify-between">
-            <h2 class="text-sm font-700">Rooms</h2>
-            <div class="flex items-center gap-2">
-              <span class="text-xs text-muted">{{ filteredRooms.length }} / {{ rooms.length }}</span>
-              <button class="icon-button" title="New room" @click="newRoom">
-                <Plus class="h-4 w-4" />
-              </button>
+        <template v-if="activeTab === 'agents'">
+          <div class="border-b border-line p-4">
+            <div class="mb-3 flex items-center justify-between">
+              <h2 class="text-sm font-700">Agents</h2>
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-muted">{{ filteredAgents.length }} / {{ agents.length }}</span>
+                <button class="icon-button" title="New agent" @click="newAgent">
+                  <Plus class="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+            <label class="flex items-center gap-2 rounded-6px border border-line bg-white px-3 py-2">
+              <Search class="h-4 w-4 text-muted" />
+              <input v-model="agentQuery" class="min-w-0 flex-1 bg-transparent text-sm outline-none" placeholder="Search agents" />
+            </label>
+          </div>
+
+          <div class="room-list h-[calc(100vh-173px)] overflow-y-auto">
+            <div v-if="agentLoading" class="empty-state m-4">
+              <Loader2 class="h-4 w-4 animate-spin" />
+              Loading agents
+            </div>
+            <button
+              v-for="agent in filteredAgents"
+              v-else
+              :key="agent.id"
+              class="room-row"
+              :class="{ 'room-row-active': agent.id === selectedAgentId }"
+              @click="selectAgent(agent.id)"
+            >
+              <span class="min-w-0">
+                <span class="block truncate text-sm font-650">{{ agent.display_name }}</span>
+                <span class="mt-1 block truncate text-xs text-muted">@{{ agent.key }} · {{ agent.owner_id || 'system' }}</span>
+              </span>
+              <span class="grid justify-items-end gap-1">
+                <span class="badge-muted">{{ isSharedAgent(agent) ? 'Shared' : 'Private' }}</span>
+                <span class="text-xs text-muted">{{ agent.enabled ? 'Enabled' : 'Disabled' }}</span>
+              </span>
+            </button>
+            <div v-if="!agentLoading && !filteredAgents.length" class="p-4 text-sm text-muted">
+              No agents loaded.
             </div>
           </div>
-          <label class="flex items-center gap-2 rounded-6px border border-line bg-white px-3 py-2">
-            <Search class="h-4 w-4 text-muted" />
-            <input v-model="query" class="min-w-0 flex-1 bg-transparent text-sm outline-none" placeholder="Search rooms" />
-          </label>
-          <button class="mt-3 w-full small-button justify-center" type="button" @click="openAgents">
-            <Bot class="h-3.5 w-3.5" />
-            Manage Agents
-          </button>
-        </div>
+        </template>
 
-        <div class="room-list h-[calc(100vh-150px)] overflow-y-auto">
-          <button
-            v-for="summary in filteredRooms"
-            :key="summary.room.id"
-            class="room-row"
-            :class="{ 'room-row-active': summary.room.id === selectedRoomId }"
-            @click="selectRoom(summary.room.id)"
-          >
-            <span class="min-w-0">
-              <span class="block truncate text-sm font-650">
-                {{ summary.room.display_name || summary.room.channel_room_id }}
-              </span>
-              <span class="mt-1 block truncate text-xs text-muted">
-                {{ summary.room.channel }} / {{ summary.room.channel_room_type }} / {{ summary.room.outbound_alias }}
-              </span>
-            </span>
-            <span class="grid justify-items-end gap-1">
-              <span v-if="summary.pending_delivery_count" class="badge-warn">{{ summary.pending_delivery_count }}</span>
-              <span class="text-xs text-muted">{{ formatDate(summary.last_message_time) }}</span>
-            </span>
-          </button>
-
-          <div v-if="!filteredRooms.length" class="p-4 text-sm text-muted">
-            No rooms loaded.
+        <template v-else>
+          <div class="border-b border-line p-4">
+            <div class="mb-3 flex items-center justify-between">
+              <h2 class="text-sm font-700">Channels</h2>
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-muted">{{ filteredRooms.length }} / {{ rooms.length }}</span>
+                <button class="icon-button" title="Join channel" @click="newRoom">
+                  <Plus class="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+            <label class="flex items-center gap-2 rounded-6px border border-line bg-white px-3 py-2">
+              <Search class="h-4 w-4 text-muted" />
+              <input v-model="query" class="min-w-0 flex-1 bg-transparent text-sm outline-none" placeholder="Search channels" />
+            </label>
+            <label class="mt-3 grid gap-1 text-xs text-muted">
+              Chat identity
+              <input v-model="chatUserId" class="field text-sm" placeholder="guest" />
+            </label>
           </div>
-        </div>
+
+          <div class="room-list h-[calc(100vh-173px)] overflow-y-auto">
+            <button
+              v-for="summary in filteredRooms"
+              :key="summary.room.id"
+              class="room-row"
+              :class="{ 'room-row-active': summary.room.id === selectedRoomId }"
+              @click="selectRoom(summary.room.id)"
+            >
+              <span class="min-w-0">
+                <span class="block truncate text-sm font-650">
+                  {{ summary.room.display_name || summary.room.channel_room_id }}
+                </span>
+                <span class="mt-1 block truncate text-xs text-muted">
+                  #{{ summary.room.channel_room_id }} · {{ summary.room.channel }} · {{ summary.room.channel_room_type }}
+                </span>
+              </span>
+              <span class="grid justify-items-end gap-1">
+                <span v-if="summary.room.id === selectedRoomId" class="badge-muted">Joined</span>
+                <span v-if="summary.pending_delivery_count" class="badge-warn">{{ summary.pending_delivery_count }}</span>
+                <span class="text-xs text-muted">{{ formatDate(summary.last_message_time) }}</span>
+              </span>
+            </button>
+
+            <div v-if="!filteredRooms.length" class="p-4 text-sm text-muted">
+              No channels available.
+            </div>
+          </div>
+        </template>
       </aside>
 
       <section class="min-w-0 min-h-0">
-        <div v-if="canShowWorkspace" class="grid h-full grid-rows-[auto_auto_minmax(0,1fr)]">
-          <div class="border-b border-line bg-surface px-5 py-4">
-            <div class="flex items-start justify-between gap-4">
+        <div v-if="canShowWorkspace" class="workspace-body grid h-full grid-rows-[auto_auto_minmax(0,1fr)]">
+          <div class="workspace-header border-b border-line bg-surface px-5 py-4">
+            <div class="workspace-heading flex items-start justify-between gap-4">
               <div class="min-w-0">
-                <h2 class="truncate text-xl font-750">
-                  <template v-if="selectedRoom">
+                <h2 class="workspace-title truncate text-xl font-750">
+                  <template v-if="activeTab === 'agents'">Agent Config</template>
+                  <template v-else-if="selectedRoom">
                     {{ selectedRoom.room.display_name || selectedRoom.room.channel_room_id }}
                   </template>
-                  <template v-else-if="activeTab === 'agents'">Agents</template>
-                  <template v-else>New Room</template>
+                  <template v-else>Join Channel</template>
                 </h2>
-                <p v-if="selectedRoom" class="mt-1 text-sm text-muted">
-                  #{{ selectedRoom.room.id }} · {{ selectedRoom.room.channel }} · {{ selectedRoom.room.channel_room_id }}
+                <p v-if="activeTab === 'agents'" class="workspace-subtitle mt-1 text-sm text-muted">
+                  Configure bot definitions used by channels.
                 </p>
-                <p v-else class="mt-1 text-sm text-muted">
-                  Create and edit admin-managed TinyClaw records
+                <p v-else-if="selectedRoom" class="workspace-subtitle mt-1 text-sm text-muted">
+                  Joined as {{ chatUserId || 'guest' }} · #{{ selectedRoom.room.channel_room_id }} · {{ selectedRoom.room.channel }}
+                </p>
+                <p v-else class="workspace-subtitle mt-1 text-sm text-muted">
+                  Join an existing channel or register a new one.
                 </p>
               </div>
-              <div v-if="selectedRoom" class="flex gap-2 text-xs">
-                <span class="status-pill">{{ selectedRoom.agent_session?.enabled ? 'Agent enabled' : 'Agent disabled' }}</span>
+              <div v-if="selectedRoom && activeTab !== 'agents'" class="workspace-status flex gap-2 text-xs">
+                <span class="status-pill">{{ selectedRoom.agent_session?.enabled ? 'Bot online' : 'Bot muted' }}</span>
                 <span class="status-pill">{{ pendingDeliveries.length }} pending</span>
               </div>
             </div>
           </div>
 
-          <div class="border-b border-line bg-surface px-5">
-            <nav class="flex gap-1">
+          <div v-if="activeTab !== 'agents'" class="border-b border-line bg-surface px-5">
+            <nav class="workspace-tabs flex gap-1">
               <button
                 class="tab-button"
                 :class="{ 'tab-button-active': activeTab === 'timeline' }"
                 :disabled="!selectedRoom"
                 @click="activeTab = 'timeline'"
               >
-                Timeline
+                Chat
               </button>
               <button
                 class="tab-button"
@@ -543,11 +678,8 @@ onMounted(async () => {
               >
                 Memory
               </button>
-              <button class="tab-button" :class="{ 'tab-button-active': activeTab === 'agents' }" @click="activeTab = 'agents'">
-                Agents
-              </button>
               <button class="tab-button" :class="{ 'tab-button-active': activeTab === 'settings' }" @click="activeTab = 'settings'">
-                Settings
+                Channel settings
               </button>
             </nav>
           </div>
@@ -557,88 +689,84 @@ onMounted(async () => {
               {{ actionError }}
             </p>
 
-            <section v-if="activeTab === 'timeline'" class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-              <div class="grid gap-3">
+            <section v-if="activeTab === 'timeline'" class="chat-layout">
+              <div class="chat-thread">
                 <div v-if="detailLoading" class="empty-state">
                   <Loader2 class="h-4 w-4 animate-spin" />
-                  Loading timeline
+                  Loading messages
                 </div>
 
-                <article v-for="message in sortedMessages" :key="message.id" class="message-row">
-                  <div class="flex items-start justify-between gap-3">
-                    <div class="min-w-0">
-                      <div class="flex flex-wrap items-center gap-2">
-                        <span class="text-sm font-700">{{ message.sender_name || message.sender_id }}</span>
-                        <span class="text-xs text-muted">#{{ message.id }}</span>
-                        <span class="badge-muted">{{ message.source }}</span>
-                      </div>
-                      <p class="mt-2 whitespace-pre-wrap break-words text-sm leading-6">{{ textFromPayload(message.payload) }}</p>
-                      <p class="mt-2 text-xs text-muted">{{ formatDate(message.message_time) }} · {{ message.source_message_id }}</p>
+                <article
+                  v-for="message in sortedMessages"
+                  :key="message.id"
+                  class="chat-row"
+                  :class="{ 'chat-row-outbound': isOutboundMessage(message) }"
+                >
+                  <div class="chat-avatar">{{ message.from.slice(0, 1).toUpperCase() || '?' }}</div>
+                  <div class="chat-stack">
+                    <div class="chat-meta">
+                      <span>{{ message.from }}</span>
+                      <span>{{ formatMessageTime(message) }}</span>
+                      <span>{{ message.msgtype }}</span>
                     </div>
-                  </div>
+                    <div class="chat-bubble">
+                      <p>{{ textFromBody(message.body) }}</p>
+                    </div>
+                    <p class="chat-id">{{ message.msgid }}</p>
 
-                  <div v-if="messageDeliveries.get(message.id)?.length" class="mt-3 grid gap-2">
-                    <div v-for="delivery in messageDeliveries.get(message.id)" :key="delivery.id" class="delivery-row">
-                      <div class="min-w-0">
-                        <span class="text-xs font-700">Delivery #{{ delivery.id }}</span>
-                        <span class="ml-2 text-xs text-muted">{{ deliveryStatusLabel(delivery.status) }}</span>
+                    <div
+                      v-for="delivery in messageDeliveries.get(message.id)"
+                      :key="delivery.id"
+                      class="chat-delivery"
+                    >
+                      <div class="chat-bubble chat-bubble-agent">
+                        <p>{{ textFromDelivery(delivery) }}</p>
                       </div>
-                      <button
-                        v-if="delivery.status === 0"
-                        class="small-button"
-                        :disabled="ackingDeliveryId === delivery.id"
-                        title="Ack delivery"
-                        @click="ackDelivery(delivery.id)"
-                      >
-                        <Loader2 v-if="ackingDeliveryId === delivery.id" class="h-3.5 w-3.5 animate-spin" />
-                        <Check v-else class="h-3.5 w-3.5" />
-                        Ack
-                      </button>
+                      <div class="chat-delivery-actions">
+                        <span>Delivery #{{ delivery.id }} · {{ deliveryStatusLabel(delivery.status) }}</span>
+                        <button
+                          v-if="delivery.status === 0"
+                          class="small-button"
+                          :disabled="ackingDeliveryId === delivery.id"
+                          title="Ack delivery"
+                          @click="ackDelivery(delivery.id)"
+                        >
+                          <Loader2 v-if="ackingDeliveryId === delivery.id" class="h-3.5 w-3.5 animate-spin" />
+                          <Check v-else class="h-3.5 w-3.5" />
+                          Ack
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </article>
 
-                <div v-if="!detailLoading && !sortedMessages.length" class="empty-state">No messages in this room.</div>
+                <div v-if="!detailLoading && !sortedMessages.length" class="empty-state">No messages in this channel.</div>
               </div>
 
-              <aside class="side-panel">
-                <div class="mb-3 flex items-center gap-2">
-                  <MessageSquarePlus class="h-4 w-4 text-accent" />
-                  <h3 class="text-sm font-700">Inject Message</h3>
-                </div>
-                <form class="grid gap-3" @submit.prevent="injectMessage">
-                  <div class="grid grid-cols-2 gap-2">
-                    <label class="grid gap-1 text-xs text-muted">
-                      Sender ID
-                      <input v-model="senderId" class="field" />
-                    </label>
-                    <label class="grid gap-1 text-xs text-muted">
-                      Sender Name
-                      <input v-model="senderName" class="field" />
-                    </label>
-                  </div>
-                  <label class="grid gap-1 text-xs text-muted">
-                    Text
-                    <textarea v-model="injectText" class="field min-h-28 resize-y" />
-                  </label>
-                  <label class="flex items-center gap-2 text-sm text-muted">
-                    <input v-model="suppressAgentTrigger" type="checkbox" />
-                    Suppress agent trigger
-                  </label>
-                  <button class="primary-button justify-center" :disabled="injecting || !injectText.trim()">
+              <form class="chat-composer" @submit.prevent="injectMessage">
+                <label class="chat-identity">
+                  <span>as</span>
+                  <input v-model="chatUserId" placeholder="guest" />
+                </label>
+                <textarea
+                  v-model="injectText"
+                  class="chat-composer-input"
+                  :placeholder="selectedRoom ? `Message #${selectedRoom.room.channel_room_id}` : 'Choose a channel first'"
+                  rows="1"
+                />
+                <button class="chat-send-button" :disabled="injecting || !injectText.trim()" title="Send message">
                     <Loader2 v-if="injecting" class="h-4 w-4 animate-spin" />
                     <MessageSquarePlus v-else class="h-4 w-4" />
-                    Inject
+                    Send
                   </button>
-                </form>
-              </aside>
+              </form>
             </section>
 
             <section v-else-if="activeTab === 'memory'" class="grid gap-4">
               <div class="flex items-center justify-between gap-3">
                 <div class="flex items-center gap-2">
                   <Database class="h-4 w-4 text-accent" />
-                  <h3 class="text-sm font-700">Room Memory</h3>
+                  <h3 class="text-sm font-700">Channel Memory</h3>
                 </div>
                 <select v-model="memoryStatus" class="field text-sm">
                   <option value="active">Active</option>
@@ -664,39 +792,8 @@ onMounted(async () => {
               <div v-if="!memoryLoading && !memoryItems.length" class="empty-state">No memory items.</div>
             </section>
 
-            <section v-else-if="activeTab === 'agents'" class="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
-              <aside class="side-panel">
-                <div class="mb-3 flex items-center justify-between gap-2">
-                  <div class="flex items-center gap-2">
-                    <Bot class="h-4 w-4 text-accent" />
-                    <h3 class="text-sm font-700">Agents</h3>
-                  </div>
-                  <button class="icon-button" title="New agent" @click="newAgent">
-                    <Plus class="h-4 w-4" />
-                  </button>
-                </div>
-                <div v-if="agentLoading" class="empty-state">
-                  <Loader2 class="h-4 w-4 animate-spin" />
-                  Loading agents
-                </div>
-                <button
-                  v-for="agent in agents"
-                  v-else
-                  :key="agent.id"
-                  class="room-row"
-                  :class="{ 'room-row-active': agent.id === selectedAgentId }"
-                  @click="selectAgent(agent.id)"
-                >
-                  <span class="min-w-0">
-                    <span class="block truncate text-sm font-650">{{ agent.display_name }}</span>
-                    <span class="mt-1 block truncate text-xs text-muted">@{{ agent.key }}</span>
-                  </span>
-                  <span class="badge-muted">{{ agent.enabled ? 'Enabled' : 'Disabled' }}</span>
-                </button>
-                <div v-if="!agentLoading && !agents.length" class="empty-state">No agents.</div>
-              </aside>
-
-              <form class="side-panel grid gap-3" @submit.prevent="saveAgent">
+            <section v-else-if="activeTab === 'agents'" class="grid gap-4">
+              <form class="side-panel agent-detail grid gap-3" @submit.prevent="saveAgent">
                 <h3 class="text-sm font-700">{{ selectedAgentId ? 'Edit Agent' : 'New Agent' }}</h3>
                 <div class="grid grid-cols-2 gap-2">
                   <label class="grid gap-1 text-xs text-muted">
@@ -706,6 +803,16 @@ onMounted(async () => {
                   <label class="grid gap-1 text-xs text-muted">
                     Display Name
                     <input v-model="agentDisplayName" class="field" placeholder="Product" />
+                  </label>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                  <label class="grid gap-1 text-xs text-muted">
+                    Creator
+                    <input v-model="agentOwnerId" class="field" placeholder="guest" />
+                  </label>
+                  <label class="flex items-end gap-2 pb-2 text-sm text-muted">
+                    <input v-model="agentShared" type="checkbox" />
+                    Share with channels
                   </label>
                 </div>
                 <label class="grid gap-1 text-xs text-muted">
@@ -727,14 +834,14 @@ onMounted(async () => {
                 <button class="primary-button justify-center" :disabled="savingAgent || !agentKey.trim() || !agentDisplayName.trim() || !agentPrompt.trim()">
                   <Loader2 v-if="savingAgent" class="h-4 w-4 animate-spin" />
                   <Check v-else class="h-4 w-4" />
-                  Save Agent
+                  {{ agentShared ? 'Save Shared Agent' : 'Save Private Agent' }}
                 </button>
               </form>
             </section>
 
             <section v-else-if="activeTab === 'settings'" class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
               <form class="side-panel grid gap-3" @submit.prevent="saveRoomSettings">
-                <h3 class="text-sm font-700">Room Settings</h3>
+                <h3 class="text-sm font-700">Channel Settings</h3>
                 <div class="grid grid-cols-2 gap-2">
                   <label class="grid gap-1 text-xs text-muted">
                     Channel
@@ -749,7 +856,7 @@ onMounted(async () => {
                   </label>
                 </div>
                 <label class="grid gap-1 text-xs text-muted">
-                  Channel Room ID
+                    Channel ID
                   <input v-model="settingsChannelRoomId" class="field" />
                 </label>
                 <label class="grid gap-1 text-xs text-muted">
@@ -757,7 +864,7 @@ onMounted(async () => {
                   <input v-model="settingsDisplayName" class="field" />
                 </label>
                 <label class="grid gap-1 text-xs text-muted">
-                  Outbound Alias
+                  Display Alias
                   <input v-model="settingsOutboundAlias" class="field" />
                 </label>
                 <label class="flex items-center gap-2 text-sm text-muted">
@@ -770,17 +877,17 @@ onMounted(async () => {
                 </label>
                 <button
                   class="primary-button justify-center"
-                  :disabled="savingRoom || !settingsChannel.trim() || !settingsChannelRoomId.trim() || !settingsChannelRoomType.trim() || !settingsOutboundAlias.trim()"
+                  :disabled="savingRoom || !settingsChannel.trim() || !settingsChannelRoomId.trim() || !settingsChannelRoomType.trim()"
                 >
                   <Loader2 v-if="savingRoom" class="h-4 w-4 animate-spin" />
                   <Check v-else class="h-4 w-4" />
-                  {{ selectedRoom ? 'Save Room' : 'Create Room' }}
+                  {{ selectedRoom ? 'Save Channel' : 'Join Channel' }}
                 </button>
               </form>
 
               <div v-if="selectedRoom" class="settings-grid">
                 <div class="settings-row">
-                  <span>Room ID</span>
+                  <span>Internal ID</span>
                   <code>{{ selectedRoom.room.id }}</code>
                 </div>
                 <div class="settings-row">
@@ -802,7 +909,7 @@ onMounted(async () => {
               </div>
               <div v-else class="empty-state">
                 <DoorOpen class="h-4 w-4" />
-                Fill the form to register a send-ready room.
+                Fill the form to join a channel.
               </div>
             </section>
           </div>
@@ -810,11 +917,11 @@ onMounted(async () => {
 
         <div v-else class="grid h-full place-items-center p-6">
           <div class="grid justify-items-center gap-3">
-            <div class="empty-state px-8">Connect with admin credentials or create the first room.</div>
+            <div class="empty-state px-8">Connect, then join a channel to start chatting.</div>
             <div class="flex gap-2">
               <button class="primary-button" type="button" :disabled="!canUseAPI" @click="newRoom">
                 <Plus class="h-4 w-4" />
-                New Room
+                Join Channel
               </button>
               <button class="small-button" type="button" :disabled="!canUseAPI" @click="openAgents">
                 <Bot class="h-3.5 w-3.5" />
