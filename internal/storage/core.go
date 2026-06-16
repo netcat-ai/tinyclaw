@@ -132,6 +132,20 @@ func (s *CoreStore) GetCoreMessageByID(ctx context.Context, id int64) (core.Mess
 	return message, nil
 }
 
+func (s *CoreStore) LatestImageMessageBefore(ctx context.Context, roomID int64, beforeMessageID int64) (core.Message, error) {
+	if roomID <= 0 {
+		return core.Message{}, fmt.Errorf("room id is required")
+	}
+	if beforeMessageID <= 0 {
+		return core.Message{}, fmt.Errorf("before message id is required")
+	}
+	message, err := latestImageMessageBefore(ctx, s.db, roomID, beforeMessageID)
+	if err != nil {
+		return core.Message{}, err
+	}
+	return message, nil
+}
+
 func normalizeCreateMessageInput(input core.CreateMessageInput) core.CreateMessageInput {
 	input.Source = strings.TrimSpace(input.Source)
 	input.MsgID = strings.TrimSpace(input.MsgID)

@@ -380,6 +380,7 @@ func BuildCodexPrompt(run AgentRunRequest) string {
 	builder.WriteString("Each proposal must include op, type, key, and content; use an empty string for unused content. ")
 	builder.WriteString("Only propose durable Room Memory changes for stable facts, preferences, or todos. Prefer an empty memory_write_proposals array when unsure.\n\n")
 	builder.WriteString("Handled command messages are room history events already processed by TinyClaw. Use them only as context; do not answer, repeat, or execute those commands again.\n\n")
+	builder.WriteString("Messages may include image_url. If the user asks about image content, download the URL with curl -L before answering. If the download fails, say the image is temporarily unavailable instead of guessing.\n\n")
 	if strings.TrimSpace(run.MemorySearchURL) != "" && strings.TrimSpace(run.MemorySearchToken) != "" {
 		builder.WriteString("Room Memory Search:\n")
 		builder.WriteString("- Request Memory Search by returning memory_search_requests in Agent Run Result.\n")

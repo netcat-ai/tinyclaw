@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -10,12 +11,32 @@ import (
 )
 
 type fakeDeliveryStore struct {
-	deliveries []json.RawMessage
+	deliveries  []json.RawMessage
+	latestImage core.Message
+	latestErr   error
+	latestCalls int
 }
 
 func (s *fakeDeliveryStore) CreateCommandDelivery(_ context.Context, _ core.Message, payload json.RawMessage) (*core.Delivery, error) {
 	s.deliveries = append(s.deliveries, append(json.RawMessage(nil), payload...))
 	return &core.Delivery{ID: int64(len(s.deliveries))}, nil
+}
+
+func (s *fakeDeliveryStore) LatestImageMessageBefore(_ context.Context, roomID int64, beforeMessageID int64) (core.Message, error) {
+	s.latestCalls++
+	if s.latestErr != nil {
+		return core.Message{}, s.latestErr
+	}
+	if s.latestImage.ID == 0 {
+		return core.Message{}, fmt.Errorf("not found")
+	}
+	if s.latestImage.RoomID != roomID {
+		return core.Message{}, fmt.Errorf("room mismatch")
+	}
+	if s.latestImage.ID >= beforeMessageID {
+		return core.Message{}, fmt.Errorf("image is not before message")
+	}
+	return s.latestImage, nil
 }
 
 type fakeImageGenerator struct {
@@ -52,6 +73,22 @@ func (s *fakeMediaStore) StoreGeneratedMedia(_ context.Context, input StoreMedia
 	}, nil
 }
 
+type fakeMediaFetcher struct {
+	calls   int
+	message core.Message
+	image   SourceImage
+	err     error
+}
+
+func (f *fakeMediaFetcher) FetchMessageMedia(_ context.Context, message core.Message) (SourceImage, error) {
+	f.calls++
+	f.message = message
+	if f.err != nil {
+		return SourceImage{}, f.err
+	}
+	return f.image, nil
+}
+
 func TestDrawPromptParsesSingleAndMultiLinePrompt(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -68,6 +105,27 @@ func TestDrawPromptParsesSingleAndMultiLinePrompt(t *testing.T) {
 			}
 			if got != test.want {
 				t.Fatalf("prompt = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestDrawSourceImagePrompt(t *testing.T) {
+	tests := []struct {
+		name       string
+		prompt     string
+		wantPrompt string
+		wantSource bool
+	}{
+		{name: "plain draw", prompt: "一朵花", wantPrompt: "一朵花"},
+		{name: "marker", prompt: "图生图 赛博朋克风格", wantPrompt: "赛博朋克风格", wantSource: true},
+		{name: "reference phrase", prompt: "把上图改成水彩", wantPrompt: "把上图改成水彩", wantSource: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gotPrompt, gotSource := drawSourceImagePrompt(test.prompt)
+			if gotPrompt != test.wantPrompt || gotSource != test.wantSource {
+				t.Fatalf("drawSourceImagePrompt = (%q, %v), want (%q, %v)", gotPrompt, gotSource, test.wantPrompt, test.wantSource)
 			}
 		})
 	}
@@ -167,6 +225,55 @@ func TestHandlerCreatesSuccessDeliveries(t *testing.T) {
 	}
 	if imagePayload["kind"] != KindCommandOutput || imagePayload["type"] != "image" || imagePayload["media_url_kind"] != "presigned_s3" {
 		t.Fatalf("image payload = %+v", imagePayload)
+	}
+}
+
+func TestHandlerCreatesImageEditFromLatestImage(t *testing.T) {
+	store := &fakeDeliveryStore{
+		latestImage: core.Message{ID: 9, RoomID: 10, MsgType: "image"},
+	}
+	image := &fakeImageGenerator{}
+	media := &fakeMediaStore{}
+	fetcher := &fakeMediaFetcher{image: SourceImage{
+		Bytes:    []byte{0xff, 0xd8, 0xff},
+		MIMEType: "image/jpeg",
+		Filename: "source.jpg",
+	}}
+	handler := NewHandler(store, image, media)
+	handler.MediaFetcher = fetcher
+	handler.Async = false
+
+	if !handler.HandleMessage(context.Background(), core.Message{ID: 12, RoomID: 10, Payload: []byte(`{"type":"text","text":"/draw 把上图改成水彩风格"}`)}) {
+		t.Fatal("handled = false, want true")
+	}
+	if store.latestCalls != 1 || fetcher.calls != 1 || fetcher.message.ID != 9 {
+		t.Fatalf("latestCalls=%d fetchCalls=%d fetchMessage=%+v, want source message 9", store.latestCalls, fetcher.calls, fetcher.message)
+	}
+	if image.calls != 1 {
+		t.Fatalf("image calls = %d, want 1", image.calls)
+	}
+	if image.input.Prompt != "把上图改成水彩风格" || len(image.input.SourceImages) != 1 {
+		t.Fatalf("image input = %+v, want prompt with one source image", image.input)
+	}
+	if string(image.input.SourceImages[0].Bytes) != "\xff\xd8\xff" || image.input.SourceImages[0].MIMEType != "image/jpeg" {
+		t.Fatalf("source image = %+v", image.input.SourceImages[0])
+	}
+}
+
+func TestHandlerFailsImageEditWhenNoLatestImage(t *testing.T) {
+	store := &fakeDeliveryStore{}
+	handler := NewHandler(store, &fakeImageGenerator{}, &fakeMediaStore{})
+	handler.Async = false
+
+	if !handler.HandleMessage(context.Background(), core.Message{ID: 12, RoomID: 10, Payload: []byte(`{"type":"text","text":"/draw 图生图 水彩"}`)}) {
+		t.Fatal("handled = false, want true")
+	}
+	if len(store.deliveries) != 2 {
+		t.Fatalf("deliveries = %d, want progress and failure", len(store.deliveries))
+	}
+	payload := decodeDeliveryPayload(t, store.deliveries[1])
+	if payload["kind"] != KindCommandFailure || payload["text"] != "没有找到可编辑的图片" {
+		t.Fatalf("payload = %+v, want no image failure", payload)
 	}
 }
 

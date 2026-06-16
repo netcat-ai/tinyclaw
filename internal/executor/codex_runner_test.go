@@ -61,6 +61,7 @@ func TestBuildCodexPromptIncludesImageMediaURL(t *testing.T) {
 	for _, want := range []string{
 		"id=42 sender=Alice text=\"[图片]\"",
 		"image_url=http://127.0.0.1:8081/internal/media?msgid=42",
+		"download the URL with curl -L",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)

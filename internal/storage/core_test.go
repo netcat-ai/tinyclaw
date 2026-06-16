@@ -91,3 +91,76 @@ func TestAgentRunDoesNotExpandWindowWhenNewMessageArrivesDuringRun(t *testing.T)
 		t.Fatalf("second run window = [%d,%d], want second message %d", secondRun.SourceMessageFromID, secondRun.SourceMessageToID, secondMessage.Message.ID)
 	}
 }
+
+func TestLatestImageMessageBeforeReturnsPreviousImage(t *testing.T) {
+	ctx := context.Background()
+	store := openPostgresStorageTestStore(t, ctx)
+	suffix := time.Now().UnixNano()
+
+	roomResult, err := store.RegisterRoom(ctx, core.RegisterRoomInput{
+		Channel:         "storage-core-test",
+		ChannelRoomID:   fmt.Sprintf("image-room-%d", suffix),
+		ChannelRoomType: core.RoomChatTypeGroup,
+		DisplayName:     "Storage Core Image Test",
+		OutboundAlias:   "storage-core-test",
+		AgentEnabled:    false,
+		TriggerPolicy:   json.RawMessage(`{"mode":"always"}`),
+	})
+	if err != nil {
+		t.Fatalf("register room: %v", err)
+	}
+
+	firstImage, err := store.CreateMessage(ctx, core.CreateMessageInput{
+		RoomID:    roomResult.Room.ID,
+		Source:    "storage-core-test",
+		MsgID:     fmt.Sprintf("image-1-%d", suffix),
+		Action:    "send",
+		FromID:    "alice",
+		MsgTime:   time.Now().UTC().Unix(),
+		MsgType:   "image",
+		Body:      json.RawMessage(`{"content":"[图片]"}`),
+		ToList:    []string{"tinyclaw"},
+		RoomIDRaw: "room",
+	})
+	if err != nil {
+		t.Fatalf("create image message: %v", err)
+	}
+	commandMessage, err := store.CreateMessage(ctx, core.CreateMessageInput{
+		RoomID:    roomResult.Room.ID,
+		Source:    "storage-core-test",
+		MsgID:     fmt.Sprintf("command-%d", suffix),
+		Action:    "send",
+		FromID:    "bob",
+		MsgTime:   time.Now().UTC().Unix(),
+		MsgType:   "text",
+		Body:      json.RawMessage(`{"content":"/draw 把上图改成水彩"}`),
+		ToList:    []string{"tinyclaw"},
+		RoomIDRaw: "room",
+	})
+	if err != nil {
+		t.Fatalf("create command message: %v", err)
+	}
+	_, err = store.CreateMessage(ctx, core.CreateMessageInput{
+		RoomID:    roomResult.Room.ID,
+		Source:    "storage-core-test",
+		MsgID:     fmt.Sprintf("image-2-%d", suffix),
+		Action:    "send",
+		FromID:    "carol",
+		MsgTime:   time.Now().UTC().Unix(),
+		MsgType:   "image",
+		Body:      json.RawMessage(`{"content":"[图片]"}`),
+		ToList:    []string{"tinyclaw"},
+		RoomIDRaw: "room",
+	})
+	if err != nil {
+		t.Fatalf("create later image message: %v", err)
+	}
+
+	got, err := store.LatestImageMessageBefore(ctx, roomResult.Room.ID, commandMessage.Message.ID)
+	if err != nil {
+		t.Fatalf("latest image before: %v", err)
+	}
+	if got.ID != firstImage.Message.ID {
+		t.Fatalf("latest image id = %d, want %d", got.ID, firstImage.Message.ID)
+	}
+}

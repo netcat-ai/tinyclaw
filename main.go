@@ -141,10 +141,19 @@ func buildCommandHandler(cfg Config, coreStore *storage.CoreStore) *command.Hand
 	handler.Enabled = cfg.DrawCommandEnabled
 	handler.ImageSize = cfg.DrawImageSize
 	handler.MediaURLTTL = cfg.GeneratedMediaURLTTL
+	handler.MediaFetcher = command.HTTPMediaFetcher{BaseURL: controlAPIBaseURL(cfg.ControlAPIAddr)}
 	return handler
 }
 
 func memorySearchEndpoint(addr string) string {
+	baseURL := controlAPIBaseURL(addr)
+	if baseURL == "" {
+		return ""
+	}
+	return strings.TrimRight(baseURL, "/") + "/internal/memory/search"
+}
+
+func controlAPIBaseURL(addr string) string {
 	addr = strings.TrimSpace(addr)
 	if addr == "" {
 		return ""
@@ -154,7 +163,7 @@ func memorySearchEndpoint(addr string) string {
 		if err != nil {
 			return ""
 		}
-		parsed.Path = strings.TrimRight(parsed.Path, "/") + "/internal/memory/search"
+		parsed.Path = strings.TrimRight(parsed.Path, "/")
 		parsed.RawQuery = ""
 		parsed.Fragment = ""
 		return parsed.String()
@@ -166,7 +175,7 @@ func memorySearchEndpoint(addr string) string {
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
 	}
-	return "http://" + net.JoinHostPort(host, port) + "/internal/memory/search"
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 func buildAgentRunner(cfg Config) executor.Runner {

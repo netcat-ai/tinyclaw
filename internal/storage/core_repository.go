@@ -221,6 +221,26 @@ func getCoreMessageBySourceTx(ctx context.Context, tx *sql.Tx, roomID int64, sou
 	return scanCoreMessage(row)
 }
 
+func latestImageMessageBefore(ctx context.Context, db *sql.DB, roomID int64, beforeMessageID int64) (core.Message, error) {
+	row := db.QueryRowContext(ctx, `
+		SELECT id, room_id, source, msgid, action, from_id, tolist, roomid, msgtime, msgtype, body, created_at
+		FROM messages
+		WHERE room_id = $1
+		  AND id < $2
+		  AND msgtype = 'image'
+		ORDER BY id DESC
+		LIMIT 1
+	`, roomID, beforeMessageID)
+	message, err := scanCoreMessage(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return core.Message{}, fmt.Errorf("previous image message not found")
+		}
+		return core.Message{}, fmt.Errorf("get previous image message: %w", err)
+	}
+	return message, nil
+}
+
 func listEnabledAgentSessionsForRoomTx(ctx context.Context, tx *sql.Tx, roomID int64) ([]core.AgentSession, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, room_id, enabled, trigger_policy, pending_trigger_message_id, caught_up_message_id, codex_session_id, lock_owner, lock_expires_at, created_at, updated_at

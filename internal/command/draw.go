@@ -34,9 +34,24 @@ type MediaStore interface {
 	StoreGeneratedMedia(ctx context.Context, input StoreMediaInput) (StoredMedia, error)
 }
 
+type ImageReferenceStore interface {
+	LatestImageMessageBefore(ctx context.Context, roomID int64, beforeMessageID int64) (core.Message, error)
+}
+
+type SourceMediaFetcher interface {
+	FetchMessageMedia(ctx context.Context, message core.Message) (SourceImage, error)
+}
+
 type ImageGenerationInput struct {
-	Prompt string
-	Size   string
+	Prompt       string
+	Size         string
+	SourceImages []SourceImage
+}
+
+type SourceImage struct {
+	Bytes    []byte
+	MIMEType string
+	Filename string
 }
 
 type GeneratedImage struct {
@@ -59,25 +74,32 @@ type StoredMedia struct {
 }
 
 type Handler struct {
-	Store       DeliveryStore
-	Image       ImageGenerator
-	Media       MediaStore
-	Enabled     bool
-	ImageSize   string
-	MediaURLTTL time.Duration
-	Async       bool
+	Store          DeliveryStore
+	ReferenceStore ImageReferenceStore
+	Image          ImageGenerator
+	Media          MediaStore
+	MediaFetcher   SourceMediaFetcher
+	Enabled        bool
+	ImageSize      string
+	MediaURLTTL    time.Duration
+	Async          bool
 }
 
 func NewHandler(store DeliveryStore, image ImageGenerator, media MediaStore) *Handler {
-	return &Handler{
-		Store:       store,
-		Image:       image,
-		Media:       media,
-		Enabled:     true,
-		ImageSize:   defaultDrawImageSize,
-		MediaURLTTL: defaultMediaURLTTL,
-		Async:       true,
+	handler := &Handler{
+		Store:        store,
+		Image:        image,
+		Media:        media,
+		MediaFetcher: HTTPMediaFetcher{},
+		Enabled:      true,
+		ImageSize:    defaultDrawImageSize,
+		MediaURLTTL:  defaultMediaURLTTL,
+		Async:        true,
 	}
+	if referenceStore, ok := store.(ImageReferenceStore); ok {
+		handler.ReferenceStore = referenceStore
+	}
+	return handler
 }
 
 func (h *Handler) HandleMessage(ctx context.Context, message core.Message) bool {
@@ -133,6 +155,7 @@ func (h *Handler) run(ctx context.Context, message core.Message, prompt string) 
 	if h == nil || h.Store == nil {
 		return
 	}
+	prompt, sourceImageRequested := drawSourceImagePrompt(prompt)
 	if strings.TrimSpace(prompt) == "" {
 		h.createTextDelivery(ctx, message, KindCommandFailure, "请在 /draw 后面描述要画什么")
 		return
@@ -162,7 +185,11 @@ func (h *Handler) run(ctx context.Context, message core.Message, prompt string) 
 	if size == "" {
 		size = defaultDrawImageSize
 	}
-	image, err := h.Image.GenerateImage(ctx, ImageGenerationInput{Prompt: prompt, Size: size})
+	sourceImages, ok := h.sourceImages(ctx, message, sourceImageRequested)
+	if !ok {
+		return
+	}
+	image, err := h.Image.GenerateImage(ctx, ImageGenerationInput{Prompt: prompt, Size: size, SourceImages: sourceImages})
 	if err != nil {
 		slog.Error("draw image generation failed", "message_id", message.ID, "media_id", mediaID, "err", err)
 		h.createTextDelivery(ctx, message, KindCommandFailure, "画图失败，请稍后再试")
@@ -189,6 +216,54 @@ func (h *Handler) run(ctx context.Context, message core.Message, prompt string) 
 	}
 	h.createTextDelivery(ctx, message, KindCommandOutput, "图片已生成："+mediaID)
 	h.createImageDelivery(ctx, message, mediaID, mimeType, stored)
+}
+
+func drawSourceImagePrompt(prompt string) (string, bool) {
+	text := strings.TrimSpace(prompt)
+	for _, marker := range []string{"图生图", "基于上图", "参考上图", "编辑上图", "修改上图"} {
+		if text == marker {
+			return "", true
+		}
+		if strings.HasPrefix(text, marker) {
+			return strings.TrimSpace(strings.TrimPrefix(text, marker)), true
+		}
+	}
+	for _, phrase := range []string{"上图", "这张图", "这个图", "原图", "参考图"} {
+		if strings.Contains(text, phrase) {
+			return text, true
+		}
+	}
+	return text, false
+}
+
+func (h *Handler) sourceImages(ctx context.Context, message core.Message, requested bool) ([]SourceImage, bool) {
+	if !requested {
+		return nil, true
+	}
+	if h.ReferenceStore == nil {
+		h.createTextDelivery(ctx, message, KindCommandFailure, "图生图功能未配置")
+		return nil, false
+	}
+	if h.MediaFetcher == nil {
+		h.createTextDelivery(ctx, message, KindCommandFailure, "图片下载未配置")
+		return nil, false
+	}
+	sourceMessage, err := h.ReferenceStore.LatestImageMessageBefore(ctx, message.RoomID, message.ID)
+	if err != nil {
+		h.createTextDelivery(ctx, message, KindCommandFailure, "没有找到可编辑的图片")
+		return nil, false
+	}
+	image, err := h.MediaFetcher.FetchMessageMedia(ctx, sourceMessage)
+	if err != nil {
+		slog.Error("fetch source image failed", "message_id", message.ID, "source_message_id", sourceMessage.ID, "err", err)
+		h.createTextDelivery(ctx, message, KindCommandFailure, "图片暂时无法下载，请稍后再试")
+		return nil, false
+	}
+	if len(image.Bytes) == 0 {
+		h.createTextDelivery(ctx, message, KindCommandFailure, "图片内容为空")
+		return nil, false
+	}
+	return []SourceImage{image}, true
 }
 
 func (h *Handler) createTextDelivery(ctx context.Context, message core.Message, kind string, text string) {
