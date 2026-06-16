@@ -48,6 +48,7 @@ type StoreMediaInput struct {
 	MediaID  string
 	Bytes    []byte
 	MIMEType string
+	Filename string
 	TTL      time.Duration
 }
 
@@ -213,6 +214,22 @@ func (h *Handler) createImageDelivery(ctx context.Context, message core.Message,
 	})
 	if _, err := h.Store.CreateCommandDelivery(ctx, message, payload); err != nil {
 		slog.Error("create command image delivery failed", "message_id", message.ID, "media_id", mediaID, "err", err)
+	}
+}
+
+func (h *Handler) createFileDelivery(ctx context.Context, message core.Message, mediaID string, mimeType string, filename string, media StoredMedia) {
+	payload := mustJSON(map[string]any{
+		"kind":           KindCommandOutput,
+		"type":           "file",
+		"media_id":       mediaID,
+		"media_url":      media.URL,
+		"media_url_kind": media.URLKind,
+		"mime_type":      mimeType,
+		"filename":       filename,
+		"expires_at":     media.ExpiresAt.UTC().Format(time.RFC3339),
+	})
+	if _, err := h.Store.CreateCommandDelivery(ctx, message, payload); err != nil {
+		slog.Error("create command file delivery failed", "message_id", message.ID, "media_id", mediaID, "err", err)
 	}
 }
 

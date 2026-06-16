@@ -8,8 +8,24 @@ import (
 )
 
 func TestGeneratedMediaObjectKeyUsesDateAndMediaID(t *testing.T) {
-	got := generatedMediaObjectKey(time.Date(2026, 5, 22, 1, 2, 3, 0, time.UTC), "gm_20260522_7f3a9c")
+	got := generatedMediaObjectKey(time.Date(2026, 5, 22, 1, 2, 3, 0, time.UTC), "gm_20260522_7f3a9c", "", "image/png")
 	want := "generated-media/2026/05/22/gm_20260522_7f3a9c.png"
+	if got != want {
+		t.Fatalf("key = %q, want %q", got, want)
+	}
+}
+
+func TestGeneratedMediaObjectKeyUsesMediaExtension(t *testing.T) {
+	got := generatedMediaObjectKey(time.Date(2026, 5, 22, 1, 2, 3, 0, time.UTC), "gm_20260522_7f3a9c", "", "video/mp4")
+	want := "generated-media/2026/05/22/gm_20260522_7f3a9c.mp4"
+	if got != want {
+		t.Fatalf("key = %q, want %q", got, want)
+	}
+}
+
+func TestGeneratedMediaObjectKeyPrefersFilenameExtension(t *testing.T) {
+	got := generatedMediaObjectKey(time.Date(2026, 5, 22, 1, 2, 3, 0, time.UTC), "gm_20260522_7f3a9c", "clip.webm", "video/mp4")
+	want := "generated-media/2026/05/22/gm_20260522_7f3a9c.webm"
 	if got != want {
 		t.Fatalf("key = %q, want %q", got, want)
 	}

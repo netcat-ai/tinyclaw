@@ -26,6 +26,7 @@ type fakeCoreStore struct {
 	getAgentFn    func(context.Context, int64) (core.Agent, error)
 	createAgentFn func(context.Context, core.UpsertAgentInput) (core.Agent, error)
 	updateAgentFn func(context.Context, int64, core.UpsertAgentInput) (core.Agent, error)
+	getMsgFn      func(context.Context, int64) (core.Message, error)
 }
 
 func (f fakeCoreStore) RegisterRoom(ctx context.Context, input core.RegisterRoomInput) (core.RegisterRoomResult, error) {
@@ -78,6 +79,10 @@ func (f fakeCoreStore) CreateAgent(ctx context.Context, input core.UpsertAgentIn
 
 func (f fakeCoreStore) UpdateAgent(ctx context.Context, id int64, input core.UpsertAgentInput) (core.Agent, error) {
 	return f.updateAgentFn(ctx, id, input)
+}
+
+func (f fakeCoreStore) GetCoreMessageByID(ctx context.Context, id int64) (core.Message, error) {
+	return f.getMsgFn(ctx, id)
 }
 
 type fakeCommandHandler struct {
@@ -190,6 +195,110 @@ func TestHandleDeliveryAckUsesDeliveryID(t *testing.T) {
 	}
 	if payload.ID != 42 || payload.Status != core.DeliveryStatusAcked {
 		t.Fatalf("payload = %+v, want acked delivery 42", payload)
+	}
+}
+
+func TestHandleInternalMediaRedirectsWOCImageByInternalMessageID(t *testing.T) {
+	api := NewServer(fakeCoreStore{
+		getMsgFn: func(_ context.Context, id int64) (core.Message, error) {
+			if id != 42 {
+				t.Fatalf("message id = %d, want 42", id)
+			}
+			return core.Message{
+				ID:        id,
+				Source:    "wechat",
+				MsgID:     "woc:17964",
+				RoomIDRaw: "room-1",
+				MsgType:   "image",
+				Body:      json.RawMessage(`{"woc_instance":"inst-1","woc_room_id":"woc-room"}`),
+			}, nil
+		},
+	}, "api-secret")
+	api.SetMediaRedirectConfig("http://panel.local", "fixed-token")
+
+	req := httptest.NewRequest(http.MethodGet, "/internal/media?msgid=42", nil)
+	rec := httptest.NewRecorder()
+	api.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusFound, rec.Body.String())
+	}
+	location := rec.Header().Get("Location")
+	for _, want := range []string{
+		"http://panel.local/api/agent/media?",
+		"instanceid=inst-1",
+		"roomid=woc-room",
+		"msgid=17964",
+		"token=fixed-token",
+	} {
+		if !strings.Contains(location, want) {
+			t.Fatalf("location = %q, want contains %q", location, want)
+		}
+	}
+}
+
+func TestHandleInternalMediaRedirectUsesWOCImageLocalIDFromBody(t *testing.T) {
+	api := NewServer(fakeCoreStore{
+		getMsgFn: func(_ context.Context, id int64) (core.Message, error) {
+			if id != 43 {
+				t.Fatalf("message id = %d, want 43", id)
+			}
+			return core.Message{
+				ID:        id,
+				Source:    "wechat",
+				MsgID:     "woc:e0d88e4d0195696e",
+				RoomIDRaw: "room-1",
+				MsgType:   "image",
+				Body:      json.RawMessage(`{"woc_instance":"inst-1","woc_room_id":"woc-room","raw_text":"[图片] local_id=87"}`),
+			}, nil
+		},
+	}, "api-secret")
+	api.SetMediaRedirectConfig("http://panel.local", "fixed-token")
+
+	req := httptest.NewRequest(http.MethodGet, "/internal/media?msgid=43", nil)
+	rec := httptest.NewRecorder()
+	api.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusFound, rec.Body.String())
+	}
+	location := rec.Header().Get("Location")
+	if !strings.Contains(location, "msgid=87") {
+		t.Fatalf("location = %q, want WOC local_id msgid", location)
+	}
+	if strings.Contains(location, "e0d88e4d0195696e") {
+		t.Fatalf("location = %q, should not use hashed message id", location)
+	}
+}
+
+func TestHandleInternalMediaRedirectsUnsupportedWOCMediaByLocalID(t *testing.T) {
+	api := NewServer(fakeCoreStore{
+		getMsgFn: func(_ context.Context, id int64) (core.Message, error) {
+			if id != 44 {
+				t.Fatalf("message id = %d, want 44", id)
+			}
+			return core.Message{
+				ID:        id,
+				Source:    "wechat",
+				MsgID:     "woc:17907",
+				RoomIDRaw: "room-1",
+				MsgType:   "unknown",
+				Body:      json.RawMessage(`{"woc_instance":"inst-1","woc_room_id":"woc-room","woc_type":"link","raw_text":"当前版本不支持展示该内容，请升级至最新版本。"}`),
+			}, nil
+		},
+	}, "api-secret")
+	api.SetMediaRedirectConfig("http://panel.local", "fixed-token")
+
+	req := httptest.NewRequest(http.MethodGet, "/internal/media?msgid=44", nil)
+	rec := httptest.NewRecorder()
+	api.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusFound, rec.Body.String())
+	}
+	location := rec.Header().Get("Location")
+	if !strings.Contains(location, "msgid=17907") {
+		t.Fatalf("location = %q, want WOC local_id msgid", location)
 	}
 }
 

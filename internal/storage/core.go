@@ -121,6 +121,17 @@ func (s *CoreStore) CreateMessage(ctx context.Context, input core.CreateMessageI
 	return result, nil
 }
 
+func (s *CoreStore) GetCoreMessageByID(ctx context.Context, id int64) (core.Message, error) {
+	if id <= 0 {
+		return core.Message{}, fmt.Errorf("message id is required")
+	}
+	message, err := getCoreMessageByID(ctx, s.db, id)
+	if err != nil {
+		return core.Message{}, err
+	}
+	return message, nil
+}
+
 func normalizeCreateMessageInput(input core.CreateMessageInput) core.CreateMessageInput {
 	input.Source = strings.TrimSpace(input.Source)
 	input.MsgID = strings.TrimSpace(input.MsgID)

@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"encoding/base64"
+	"testing"
+)
 
 func TestLoadConfigUsesServiceDefaults(t *testing.T) {
 	t.Setenv("CONTROL_API_ADDR", "")
@@ -44,6 +47,9 @@ func TestLoadConfigUsesServiceDefaults(t *testing.T) {
 	if cfg.GeneratedMediaURLTTL.String() != "24h0m0s" {
 		t.Fatalf("GeneratedMediaURLTTL = %s, want 24h0m0s", cfg.GeneratedMediaURLTTL)
 	}
+	if cfg.WOCMediaToken != "" {
+		t.Fatalf("WOCMediaToken = %q, want empty when WOC_PASSWORD is unset", cfg.WOCMediaToken)
+	}
 }
 
 func TestLoadConfigAllowsDisablingNoCodexFeatures(t *testing.T) {
@@ -79,5 +85,21 @@ func TestLoadConfigReadsImageProviderKeyFromCodexAuthJSON(t *testing.T) {
 	}
 	if cfg.ImageProviderAPIKey != "gateway-key" {
 		t.Fatalf("ImageProviderAPIKey = %q, want gateway-key", cfg.ImageProviderAPIKey)
+	}
+}
+
+func TestLoadConfigBuildsWOCMediaTokenFromBasicCredentials(t *testing.T) {
+	t.Setenv("WOC_USERNAME", "agent")
+	t.Setenv("WOC_PASSWORD", "secret")
+	t.Setenv("CODEX_RUNNER_TIMEOUT", "")
+	t.Setenv("GENERATED_MEDIA_URL_TTL", "")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+	want := base64.StdEncoding.EncodeToString([]byte("agent:secret"))
+	if cfg.WOCMediaToken != want {
+		t.Fatalf("WOCMediaToken = %q, want %q", cfg.WOCMediaToken, want)
 	}
 }

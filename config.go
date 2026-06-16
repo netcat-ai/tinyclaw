@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -15,6 +16,10 @@ type Config struct {
 	ControlAPIAddr     string
 	ClawmanAPIToken    string
 	ClawmanAdminSecret string
+	WOCPanelBaseURL    string
+	WOCUsername        string
+	WOCPassword        string
+	WOCMediaToken      string
 
 	MetricsAddr string
 
@@ -60,6 +65,9 @@ func LoadConfig() (Config, error) {
 		ControlAPIAddr:     envOrDefault("CONTROL_API_ADDR", ":8081"),
 		ClawmanAPIToken:    os.Getenv("CLAWMAN_API_TOKEN"),
 		ClawmanAdminSecret: os.Getenv("CLAWMAN_ADMIN_SECRET"),
+		WOCPanelBaseURL:    envOrDefault("WOC_PANEL_BASE_URL", "http://127.0.0.1:36080"),
+		WOCUsername:        envOrDefault("WOC_USERNAME", "agent"),
+		WOCPassword:        os.Getenv("WOC_PASSWORD"),
 
 		MetricsAddr: envOrDefault("METRICS_ADDR", ":9090"),
 
@@ -89,8 +97,16 @@ func LoadConfig() (Config, error) {
 		GeneratedMediaS3ForcePathStyle:  parseBoolEnv("GENERATED_MEDIA_S3_FORCE_PATH_STYLE"),
 		GeneratedMediaURLTTL:            generatedMediaURLTTL,
 	}
+	cfg.WOCMediaToken = wocBasicQueryToken(cfg.WOCUsername, cfg.WOCPassword)
 
 	return cfg, nil
+}
+
+func wocBasicQueryToken(username string, password string) string {
+	if strings.TrimSpace(password) == "" {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString([]byte(strings.TrimSpace(username) + ":" + password))
 }
 
 func envOrDefault(key, def string) string {

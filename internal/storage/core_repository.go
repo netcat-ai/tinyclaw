@@ -194,6 +194,22 @@ func getCoreMessageByIDTx(ctx context.Context, tx *sql.Tx, id int64) (core.Messa
 	return scanCoreMessage(row)
 }
 
+func getCoreMessageByID(ctx context.Context, db *sql.DB, id int64) (core.Message, error) {
+	row := db.QueryRowContext(ctx, `
+		SELECT id, room_id, source, msgid, action, from_id, tolist, roomid, msgtime, msgtype, body, created_at
+		FROM messages
+		WHERE id = $1
+	`, id)
+	message, err := scanCoreMessage(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return core.Message{}, fmt.Errorf("message %d not found", id)
+		}
+		return core.Message{}, fmt.Errorf("get message: %w", err)
+	}
+	return message, nil
+}
+
 func getCoreMessageBySourceTx(ctx context.Context, tx *sql.Tx, roomID int64, source string, msgID string) (core.Message, error) {
 	row := tx.QueryRowContext(ctx, `
 		SELECT id, room_id, source, msgid, action, from_id, tolist, roomid, msgtime, msgtype, body, created_at

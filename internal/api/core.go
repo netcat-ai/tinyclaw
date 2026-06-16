@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +23,10 @@ type CoreStore interface {
 	CreateMessage(ctx context.Context, input core.CreateMessageInput) (core.CreateMessageResult, error)
 	ListCoreDeliveries(ctx context.Context, channel string, afterID int64) ([]core.Delivery, error)
 	AckCoreDelivery(ctx context.Context, id int64) (core.Delivery, error)
+}
+
+type MediaStore interface {
+	GetCoreMessageByID(ctx context.Context, id int64) (core.Message, error)
 }
 
 type APIClientStore interface {
@@ -51,11 +57,13 @@ type MessageIngestor interface {
 }
 
 type Server struct {
-	core        CoreStore
-	messages    MessageIngestor
-	apiToken    string
-	adminSecret string
-	mux         *http.ServeMux
+	core         CoreStore
+	messages     MessageIngestor
+	apiToken     string
+	adminSecret  string
+	mediaBaseURL string
+	mediaToken   string
+	mux          *http.ServeMux
 }
 
 func NewServer(core CoreStore, apiToken string) *Server {
@@ -64,11 +72,12 @@ func NewServer(core CoreStore, apiToken string) *Server {
 
 func NewServerWithCommandHandler(core CoreStore, commands CommandHandler, apiToken string, adminSecret ...string) *Server {
 	server := &Server{
-		core:        core,
-		messages:    ingest.NewMessageIngestor(core, commands),
-		apiToken:    strings.TrimSpace(apiToken),
-		adminSecret: strings.TrimSpace(firstString(adminSecret)),
-		mux:         http.NewServeMux(),
+		core:         core,
+		messages:     ingest.NewMessageIngestor(core, commands),
+		apiToken:     strings.TrimSpace(apiToken),
+		adminSecret:  strings.TrimSpace(firstString(adminSecret)),
+		mediaBaseURL: "http://127.0.0.1:36080",
+		mux:          http.NewServeMux(),
 	}
 	server.RegisterRoutes(server.mux)
 	return server
@@ -90,12 +99,97 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/api/agents/", s.handleAdminAgentAction)
 	mux.HandleFunc("/admin/api/deliveries/", s.handleAdminDeliveryAction)
 	mux.HandleFunc("/internal/memory/search", s.handleMemorySearch)
+	mux.HandleFunc("/internal/media", s.handleInternalMedia)
+}
+
+func (s *Server) SetMediaRedirectConfig(baseURL string, token string) {
+	if strings.TrimSpace(baseURL) != "" {
+		s.mediaBaseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	}
+	s.mediaToken = strings.TrimSpace(token)
 }
 
 func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+func (s *Server) handleInternalMedia(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+	store, ok := s.core.(MediaStore)
+	if !ok {
+		writeAPIError(w, http.StatusServiceUnavailable, "disabled", "media API is unavailable")
+		return
+	}
+	msgID, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("msgid")), 10, 64)
+	if err != nil || msgID <= 0 {
+		writeAPIError(w, http.StatusBadRequest, "invalid_msgid", "msgid must be an internal message id")
+		return
+	}
+	message, err := store.GetCoreMessageByID(r.Context(), msgID)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "message_not_found", "message not found")
+		return
+	}
+	var body struct {
+		WOCInstance string `json:"woc_instance"`
+		WOCRoomID   string `json:"woc_room_id"`
+		WOCType     string `json:"woc_type"`
+		Content     string `json:"content"`
+		RawText     string `json:"raw_text"`
+	}
+	_ = json.Unmarshal(message.Body, &body)
+	instanceID := strings.TrimSpace(body.WOCInstance)
+	roomID := strings.TrimSpace(firstNonEmpty(body.WOCRoomID, message.RoomIDRaw))
+	agentMsgID := wocAgentMessageID(message.MsgID, body.RawText, body.Content)
+	if strings.TrimSpace(message.Source) != "wechat" || !isWOCMediaMessage(message, body.WOCType, body.RawText, body.Content) {
+		writeAPIError(w, http.StatusBadRequest, "unsupported_media", "message is not a WOC image")
+		return
+	}
+	if instanceID == "" || roomID == "" || agentMsgID == "" {
+		writeAPIError(w, http.StatusBadRequest, "missing_media_locator", "message does not contain WOC media locator")
+		return
+	}
+	values := make(url.Values)
+	values.Set("instanceid", instanceID)
+	values.Set("roomid", roomID)
+	values.Set("msgid", agentMsgID)
+	values.Set("token", s.mediaToken)
+	http.Redirect(w, r, s.mediaBaseURL+"/api/agent/media?"+values.Encode(), http.StatusFound)
+}
+
+func isWOCMediaMessage(message core.Message, wocType string, hints ...string) bool {
+	if strings.TrimSpace(message.MsgType) == "image" {
+		return true
+	}
+	if strings.TrimSpace(wocType) != "link" {
+		return false
+	}
+	for _, hint := range hints {
+		if strings.Contains(hint, "当前版本不支持展示") {
+			return true
+		}
+	}
+	return false
+}
+
+var wocLocalIDPattern = regexp.MustCompile(`\blocal_id=(\d+)\b`)
+
+func wocAgentMessageID(msgID string, hints ...string) string {
+	for _, hint := range hints {
+		if match := wocLocalIDPattern.FindStringSubmatch(hint); len(match) == 2 {
+			return match[1]
+		}
+	}
+	msgID = strings.TrimSpace(msgID)
+	if after, ok := strings.CutPrefix(msgID, "woc:"); ok {
+		return strings.TrimSpace(after)
+	}
+	return msgID
 }
 
 type registerRoomResponse struct {

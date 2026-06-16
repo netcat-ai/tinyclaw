@@ -59,6 +59,7 @@ func main() {
 	memoryWriteWorker := executor.NewMemoryWriteWorker(runCtx, coreStore)
 	commandHandler := buildCommandHandler(cfg, coreStore)
 	coreAPI := httpapi.NewServerWithCommandHandler(coreStore, commandHandler, cfg.ClawmanAPIToken, cfg.ClawmanAdminSecret)
+	coreAPI.SetMediaRedirectConfig(cfg.WOCPanelBaseURL, cfg.WOCMediaToken)
 	controlHandler := withAdminUI(coreAPI, "web/control/dist")
 
 	// Start metrics server

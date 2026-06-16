@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"mime"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -91,7 +93,7 @@ func (s *S3MediaStore) StoreGeneratedMedia(ctx context.Context, input StoreMedia
 	if ttl <= 0 {
 		ttl = defaultMediaURLTTL
 	}
-	objectKey := generatedMediaObjectKey(time.Now().UTC(), mediaID)
+	objectKey := generatedMediaObjectKey(time.Now().UTC(), mediaID, input.Filename, mimeType)
 	_, err := s.client.PutObject(ctx, s.bucket, objectKey, bytes.NewReader(input.Bytes), int64(len(input.Bytes)), minio.PutObjectOptions{
 		ContentType: mimeType,
 	})
@@ -111,8 +113,31 @@ func (s *S3MediaStore) StoreGeneratedMedia(ctx context.Context, input StoreMedia
 	}, nil
 }
 
-func generatedMediaObjectKey(now time.Time, mediaID string) string {
-	return "generated-media/" + now.UTC().Format("2006/01/02") + "/" + strings.TrimSpace(mediaID) + ".png"
+func generatedMediaObjectKey(now time.Time, mediaID string, filename string, mimeType string) string {
+	return "generated-media/" + now.UTC().Format("2006/01/02") + "/" + strings.TrimSpace(mediaID) + mediaFileExtension(filename, mimeType)
+}
+
+func mediaFileExtension(filename string, mimeType string) string {
+	if ext := strings.TrimSpace(filepath.Ext(filename)); ext != "" {
+		return ext
+	}
+	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+	case "image/png":
+		return ".png"
+	case "image/jpeg", "image/jpg":
+		return ".jpg"
+	case "image/webp":
+		return ".webp"
+	case "video/mp4":
+		return ".mp4"
+	case "video/webm":
+		return ".webm"
+	}
+	extensions, err := mime.ExtensionsByType(strings.TrimSpace(mimeType))
+	if err == nil && len(extensions) > 0 {
+		return extensions[0]
+	}
+	return ".bin"
 }
 
 func parseS3Endpoint(raw string) (string, bool, error) {

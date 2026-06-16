@@ -21,7 +21,7 @@ Set `AGENT_RUNNER=codex` to run triggered Agent Sessions through `codex exec`. O
 - `CODEX_BIN`: Codex executable, defaults to `codex`.
 - `CODEX_WORKDIR`: working directory passed to Codex, defaults to `.`.
 - `CODEX_MODEL`: optional model override.
-- `CODEX_SANDBOX`: Codex sandbox mode, defaults to `workspace-write`.
+- `CODEX_SANDBOX`: Codex sandbox mode, defaults to `workspace-write`; use `danger-full-access` when headless runs need external network/DNS from shell tools.
 - `CODEX_DISABLED_FEATURES`: comma-separated Codex CLI features disabled for headless runs, defaults to `apps,tool_suggest,plugins`; set to `none` to disable no features.
 - `CODEX_RUNNER_TIMEOUT`: execution timeout, defaults to `5m`.
 
@@ -92,7 +92,7 @@ Enterprise WeChat archive ingestion depends on the WeCom finance SDK and is best
 ```
 
 Open the Control Plane at `http://127.0.0.1:8081/admin/` and log in with `admin` / `dev-admin`.
-The local process writes its PID and log to `.local/tinyclaw.pid` and `.local/tinyclaw.log`. Agent Run logs include run boundaries, selected run-scoped Subagents, Memory Search count, Memory Write count, and Delivery id. For foreground debugging, run:
+The local process writes its PID and log to `.local/clawman.pid` and `.local/clawman.log`. Agent Run logs include run boundaries, selected run-scoped Subagents, Memory Search count, Memory Write count, and Delivery id. For foreground debugging, run:
 
 ```bash
 TINYCLAW_FOREGROUND=true ./scripts/local_start.sh

@@ -88,7 +88,7 @@ jobs:
           : "${AGENT_RUNNER:=codex}"
           : "${CODEX_WORKDIR:=/tmp}"
           : "${CODEX_MODEL:=gpt-5.5}"
-          : "${CODEX_SANDBOX:=read-only}"
+          : "${CODEX_SANDBOX:=danger-full-access}"
           : "${CODEX_DISABLED_FEATURES:=apps,tool_suggest,plugins}"
           : "${DRAW_COMMAND_ENABLED:=true}"
           : "${IMAGE_PROVIDER_BASE_URL:=https://code.v4.chat}"

@@ -170,6 +170,28 @@ func TestHandlerCreatesSuccessDeliveries(t *testing.T) {
 	}
 }
 
+func TestHandlerCreatesFileDeliveryPayload(t *testing.T) {
+	store := &fakeDeliveryStore{}
+	handler := NewHandler(store, &fakeImageGenerator{}, &fakeMediaStore{})
+
+	handler.createFileDelivery(context.Background(), core.Message{ID: 1, RoomID: 10}, "gm_1", "video/mp4", "gm_1.mp4", StoredMedia{
+		URL:       "https://s3.example/gm_1.mp4",
+		URLKind:   "presigned_s3",
+		ExpiresAt: time.Date(2026, 5, 23, 0, 0, 0, 0, time.UTC),
+	})
+
+	if len(store.deliveries) != 1 {
+		t.Fatalf("deliveries = %d, want 1", len(store.deliveries))
+	}
+	payload := decodeDeliveryPayload(t, store.deliveries[0])
+	if payload["kind"] != KindCommandOutput || payload["type"] != "file" {
+		t.Fatalf("payload = %+v", payload)
+	}
+	if payload["media_id"] != "gm_1" || payload["media_url"] != "https://s3.example/gm_1.mp4" || payload["mime_type"] != "video/mp4" || payload["filename"] != "gm_1.mp4" {
+		t.Fatalf("file payload = %+v", payload)
+	}
+}
+
 func decodeDeliveryPayload(t *testing.T, data json.RawMessage) map[string]any {
 	t.Helper()
 	var payload map[string]any

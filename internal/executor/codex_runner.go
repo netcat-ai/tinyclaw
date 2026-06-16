@@ -557,7 +557,14 @@ func formatCodexPromptMessage(message core.Message) string {
 		return fmt.Sprintf("id=%d sender=%s handled_command=%s text=%q", message.ID, sender, commandKind, text)
 	}
 	text := extractMessageText(message.Payload)
+	if strings.TrimSpace(message.MsgType) == "image" {
+		return fmt.Sprintf("id=%d sender=%s text=%q image_url=%s", message.ID, sender, text, codexPromptMediaURL(message.ID))
+	}
 	return fmt.Sprintf("id=%d sender=%s text=%q", message.ID, sender, text)
+}
+
+func codexPromptMediaURL(messageID int64) string {
+	return fmt.Sprintf("http://127.0.0.1:8081/internal/media?msgid=%d", messageID)
 }
 
 func extractMessageCommandKind(payload json.RawMessage) string {

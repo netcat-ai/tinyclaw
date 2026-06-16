@@ -50,6 +50,24 @@ func TestBuildCodexPromptIncludesContextMessages(t *testing.T) {
 	}
 }
 
+func TestBuildCodexPromptIncludesImageMediaURL(t *testing.T) {
+	prompt := BuildCodexPrompt(AgentRunRequest{
+		AgentRun: testAgentRun,
+		ContextMessages: []core.Message{
+			{ID: 42, SenderName: "Alice", MsgType: "image", Payload: []byte(`{"content":"[图片]"}`)},
+		},
+	})
+
+	for _, want := range []string{
+		"id=42 sender=Alice text=\"[图片]\"",
+		"image_url=http://127.0.0.1:8081/internal/media?msgid=42",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestBuildCodexPromptMarksHandledCommandMessages(t *testing.T) {
 	prompt := BuildCodexPrompt(AgentRunRequest{
 		AgentRun: testAgentRun,

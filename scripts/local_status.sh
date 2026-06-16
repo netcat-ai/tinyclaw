@@ -3,7 +3,8 @@ set -euo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 state_dir="${root_dir}/.local"
-pid_file="${state_dir}/tinyclaw.pid"
+pid_file="${state_dir}/clawman.pid"
+legacy_pid_file="${state_dir}/tinyclaw.pid"
 
 control_addr="${CONTROL_API_ADDR:-127.0.0.1:8081}"
 metrics_addr="${METRICS_ADDR:-127.0.0.1:9090}"
@@ -42,17 +43,21 @@ check_command codex
 check "postgres compose service" docker compose -f "${root_dir}/compose.local.yml" ps postgres --format json
 check "postgres health" bash -c '[[ "$(docker inspect --format "{{.State.Health.Status}}" tinyclaw-postgres-local)" == "healthy" ]]'
 
+if [[ ! -f "${pid_file}" && -f "${legacy_pid_file}" ]]; then
+  pid_file="${legacy_pid_file}"
+fi
+
 if [[ -f "${pid_file}" ]]; then
   pid="$(cat "${pid_file}")"
   if [[ "${pid}" != "" ]] && kill -0 "${pid}" 2>/dev/null; then
-    echo "ok   tinyclaw pid:${pid}"
+    echo "ok   clawman pid:${pid}"
   else
     status=1
-    echo "fail tinyclaw pid:${pid:-empty}"
+    echo "fail clawman pid:${pid:-empty}"
   fi
 else
   status=1
-  echo "fail tinyclaw pid file missing"
+  echo "fail clawman pid file missing"
 fi
 
 check "healthz" curl -fsS "${base_url}/healthz"

@@ -3,10 +3,15 @@ set -euo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 state_dir="${root_dir}/.local"
-pid_file="${state_dir}/tinyclaw.pid"
+pid_file="${state_dir}/clawman.pid"
+legacy_pid_file="${state_dir}/tinyclaw.pid"
+
+if [[ ! -f "${pid_file}" && -f "${legacy_pid_file}" ]]; then
+  pid_file="${legacy_pid_file}"
+fi
 
 if [[ ! -f "${pid_file}" ]]; then
-  echo "tinyclaw pid file not found"
+  echo "clawman pid file not found"
   exit 0
 fi
 
@@ -14,7 +19,7 @@ pid="$(cat "${pid_file}")"
 rm -f "${pid_file}"
 
 if [[ "${pid}" == "" ]] || ! kill -0 "${pid}" 2>/dev/null; then
-  echo "tinyclaw is not running"
+  echo "clawman is not running"
   exit 0
 fi
 
@@ -38,7 +43,7 @@ for _ in $(seq 1 20); do
     done <<<"${child_pids}"
   fi
   if ! kill -0 "${pid}" 2>/dev/null && [[ "${children_alive}" == "false" ]]; then
-    echo "tinyclaw stopped"
+    echo "clawman stopped"
     exit 0
   fi
   sleep 1
@@ -52,4 +57,4 @@ if [[ "${child_pids}" != "" ]]; then
   done <<<"${child_pids}"
 fi
 kill -9 "${pid}" 2>/dev/null || true
-echo "tinyclaw stopped"
+echo "clawman stopped"

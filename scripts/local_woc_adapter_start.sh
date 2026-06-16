@@ -27,7 +27,6 @@ mkdir -p "${state_dir}"
     WOC_USERNAME="${WOC_USERNAME:-admin}" \
     WOC_PASSWORD="${WOC_PASSWORD:-wechat}" \
     WOC_CURSOR_PATH="${WOC_CURSOR_PATH:-${root_dir}/.local/woc-cursors.json}" \
-    WOC_SEND_DELIVERIES="${WOC_SEND_DELIVERIES:-false}" \
     WOC_ONCE="${WOC_ONCE:-false}" \
     python3 - "${bin_file}" "${log_file}" "${pid_file}" <<'PY'
 import os
