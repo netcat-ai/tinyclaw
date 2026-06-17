@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -35,7 +36,10 @@ type AgentImageTool struct {
 }
 
 func (t AgentImageTool) GenerateAgentImage(ctx context.Context, run AgentRunRequest, request core.ImageGenerationRequest) (core.GeneratedMediaOutput, error) {
-	prompt := strings.TrimSpace(request.Prompt)
+	prompt, err := agentImagePrompt(request)
+	if err != nil {
+		return core.GeneratedMediaOutput{}, err
+	}
 	if prompt == "" {
 		return core.GeneratedMediaOutput{}, fmt.Errorf("image prompt is required")
 	}
@@ -95,6 +99,63 @@ func (t AgentImageTool) GenerateAgentImage(ctx context.Context, run AgentRunRequ
 	}, nil
 }
 
+func agentImagePrompt(request core.ImageGenerationRequest) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(request.Mode))
+	if mode != "generate" && mode != "edit" {
+		return "", fmt.Errorf("image mode must be generate or edit")
+	}
+	if strings.ToLower(strings.TrimSpace(request.OutputFormat)) != "jpeg" {
+		return "", fmt.Errorf("image output_format must be jpeg")
+	}
+	prompt := strings.TrimSpace(request.Prompt)
+	if mode == "generate" {
+		if len(request.SourceMessageIDs) > 0 {
+			return "", fmt.Errorf("generate image request must not include source_message_ids")
+		}
+		return prompt, nil
+	}
+	if len(request.SourceMessageIDs) == 0 {
+		return "", fmt.Errorf("edit image request requires source_message_ids")
+	}
+	sourceSummary := strings.TrimSpace(request.SourceImageSummary)
+	editInstruction := strings.TrimSpace(request.EditInstruction)
+	if editInstruction == "" {
+		return "", fmt.Errorf("edit_instruction is required for image edits")
+	}
+	var builder strings.Builder
+	builder.WriteString("Edit the provided source image. Preserve all unrelated details.\n")
+	if sourceSummary != "" {
+		builder.WriteString("Source image summary: ")
+		builder.WriteString(sourceSummary)
+		builder.WriteString("\n")
+	}
+	builder.WriteString("Edit instruction: ")
+	builder.WriteString(editInstruction)
+	if prompt != "" && prompt != editInstruction {
+		builder.WriteString("\nAdditional prompt: ")
+		builder.WriteString(prompt)
+	}
+	if len(request.Preserve) > 0 {
+		builder.WriteString("\nPreserve: ")
+		builder.WriteString(strings.Join(trimNonEmptyStrings(request.Preserve), "; "))
+	}
+	if len(request.Negative) > 0 {
+		builder.WriteString("\nNegative constraints: ")
+		builder.WriteString(strings.Join(trimNonEmptyStrings(request.Negative), "; "))
+	}
+	return strings.TrimSpace(builder.String()), nil
+}
+
+func trimNonEmptyStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
 func (t AgentImageTool) sourceImages(ctx context.Context, run AgentRunRequest, ids []int64) ([]command.SourceImage, error) {
 	if len(ids) == 0 {
 		return nil, nil
@@ -124,9 +185,28 @@ func (t AgentImageTool) sourceImages(ctx context.Context, run AgentRunRequest, i
 		if len(image.Bytes) == 0 {
 			return nil, fmt.Errorf("source image %d is empty", id)
 		}
+		if !isSupportedSourceImageMIME(image.MIMEType) {
+			return nil, fmt.Errorf("source image %d has unsupported mime type %q", id, image.MIMEType)
+		}
+		slog.Info("async agent source image fetched",
+			"agent_session_id", run.AgentRun.AgentSessionID,
+			"room_id", run.AgentRun.RoomID,
+			"source_message_id", id,
+			"mime_type", image.MIMEType,
+			"bytes", len(image.Bytes),
+		)
 		sourceImages = append(sourceImages, image)
 	}
 	return sourceImages, nil
+}
+
+func isSupportedSourceImageMIME(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "image/jpeg", "image/jpg", "image/png", "image/webp":
+		return true
+	default:
+		return false
+	}
 }
 
 func (t AgentImageTool) sourceImageMessage(ctx context.Context, run AgentRunRequest, contextImages map[int64]core.Message, id int64) (core.Message, error) {
@@ -144,7 +224,7 @@ func (t AgentImageTool) sourceImageMessage(ctx context.Context, run AgentRunRequ
 		return core.Message{}, fmt.Errorf("source image message %d is not in the current room", id)
 	}
 	if !isAgentSourceImageMessage(message) {
-		return core.Message{}, fmt.Errorf("source image message %d is not an image or quoted image message", id)
+		return core.Message{}, fmt.Errorf("source image message %d is not an image/emotion or quoted image/emotion message", id)
 	}
 	return message, nil
 }
@@ -166,7 +246,7 @@ func isAgentSourceImageMessage(message core.Message) bool {
 
 func isAgentImageType(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "image", "图片":
+	case "image", "图片", "emotion", "表情":
 		return true
 	default:
 		return false

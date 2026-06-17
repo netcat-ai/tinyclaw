@@ -273,9 +273,15 @@ type AgentRunResult struct {
 }
 
 type ImageGenerationRequest struct {
-	Prompt           string  `json:"prompt"`
-	SourceMessageIDs []int64 `json:"source_message_ids,omitempty"`
-	Size             string  `json:"size,omitempty"`
+	Mode               string   `json:"mode,omitempty"`
+	Prompt             string   `json:"prompt"`
+	SourceMessageIDs   []int64  `json:"source_message_ids,omitempty"`
+	Size               string   `json:"size,omitempty"`
+	SourceImageSummary string   `json:"source_image_summary,omitempty"`
+	EditInstruction    string   `json:"edit_instruction,omitempty"`
+	Preserve           []string `json:"preserve,omitempty"`
+	Negative           []string `json:"negative,omitempty"`
+	OutputFormat       string   `json:"output_format,omitempty"`
 }
 
 type GeneratedMediaOutput struct {

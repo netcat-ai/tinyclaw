@@ -70,13 +70,18 @@ func TestBuildCodexPromptIncludesImageMediaRule(t *testing.T) {
 		`"type":"image"`,
 		`"image":{"content":"[图片]"}`,
 		"Conversation messages are JSON Lines.",
-		"For image/video/emotion/voice messages or text.quote media references",
-		"http://127.0.0.1:8081/internal/media?msgid=<message.id>",
-		"Never use text.quote.msgid in internal media URLs.",
-		"download the internal media URL with curl -L",
+		"If a JSONL message is image, video, emotion, or voice",
+		"Identify media by the top-level JSONL message.id",
+		"Do not download media or call image providers during the main reply.",
 		"Image Generation:",
-		"Before returning an image edit request, inspect the exact source image via curl.",
-		"Image edit prompts must be conservative and specific",
+		"always return image_generation_requests",
+		"Do not only say that you can do it.",
+		`"mode":"generate|edit"`,
+		"set source_image_summary to an empty string",
+		"Do not inspect or download source images in the main agent run.",
+		"edit_instruction",
+		"output_format to jpeg",
+		"Image edit requests must be conservative and specific",
 		"Do not reinterpret, redraw, replace the subject",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -280,8 +285,8 @@ printf "image answer" > "$output"
 	if !strings.Contains(prompt, `"image":{"content":"[图片]"}`) {
 		t.Fatalf("prompt missing image metadata:\n%s", promptData)
 	}
-	if !strings.Contains(prompt, "http://127.0.0.1:8081/internal/media?msgid=<message.id>") {
-		t.Fatalf("prompt missing internal media rule:\n%s", promptData)
+	if strings.Contains(prompt, "http://127.0.0.1:8081/internal/media") {
+		t.Fatalf("prompt exposes internal media URL:\n%s", promptData)
 	}
 }
 
@@ -353,7 +358,7 @@ while [ "$#" -gt 0 ]; do
 done
 cat >/dev/null
 printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
-printf '%s' '{"final_output":"图片已生成","memory_search_requests":[],"memory_write_proposals":[],"image_generation_requests":[{"prompt":"画一朵花","source_message_ids":[],"size":"1024x1024"}]}' > "$output"
+printf '%s' '{"final_output":"图片已生成","memory_search_requests":[],"memory_write_proposals":[],"image_generation_requests":[{"mode":"generate","prompt":"画一朵花","source_message_ids":[],"size":"1024x1024","source_image_summary":"","edit_instruction":"","preserve":[],"negative":[],"output_format":"jpeg"}]}' > "$output"
 `
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake codex: %v", err)
@@ -393,7 +398,7 @@ while [ "$#" -gt 0 ]; do
 done
 cat >/dev/null
 printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
-printf '%s' '{"final_output":"图片已生成","memory_search_requests":[],"memory_write_proposals":[],"image_generation_requests":[{"prompt":"画一朵花","source_message_ids":[],"size":"1024x1024"}]}' > "$output"
+printf '%s' '{"final_output":"图片已生成","memory_search_requests":[],"memory_write_proposals":[],"image_generation_requests":[{"mode":"generate","prompt":"画一朵花","source_message_ids":[],"size":"1024x1024","source_image_summary":"","edit_instruction":"","preserve":[],"negative":[],"output_format":"jpeg"}]}' > "$output"
 `
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake codex: %v", err)

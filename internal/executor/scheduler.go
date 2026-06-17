@@ -278,12 +278,23 @@ func (s *Scheduler) runImageGenerationRequestsAsync(run AgentRunRequest, request
 		ctx, cancel := context.WithTimeout(ctx, defaultCodexRunnerTimeout)
 		defer cancel()
 		for _, request := range requests {
+			slog.Info("async agent image generation started",
+				"agent_session_id", run.AgentRun.AgentSessionID,
+				"room_id", run.AgentRun.RoomID,
+				"mode", request.Mode,
+				"source_message_ids", request.SourceMessageIDs,
+				"prompt", truncateLogValue(request.Prompt, 500),
+				"edit_instruction", truncateLogValue(request.EditInstruction, 500),
+			)
 			output, err := s.imageTool.GenerateAgentImage(ctx, run, request)
 			if err != nil {
 				slog.Error("async agent image generation failed",
 					"agent_session_id", run.AgentRun.AgentSessionID,
 					"room_id", run.AgentRun.RoomID,
+					"mode", request.Mode,
+					"source_message_ids", request.SourceMessageIDs,
 					"prompt", request.Prompt,
+					"edit_instruction", request.EditInstruction,
 					"err", err,
 				)
 				continue

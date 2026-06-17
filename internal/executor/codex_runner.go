@@ -389,16 +389,19 @@ func BuildCodexPrompt(run AgentRunRequest) string {
 	builder.WriteString("Only propose durable Room Memory changes for stable facts, preferences, or todos. Prefer an empty memory_write_proposals array when unsure.\n\n")
 	builder.WriteString("Handled command messages are room history events already processed by TinyClaw. Use them only as context; do not answer, repeat, or execute those commands again.\n\n")
 	builder.WriteString("Conversation messages are JSON Lines. Each line is one normalized message. ")
-	builder.WriteString("For image/video/emotion/voice messages or text.quote media references, use http://127.0.0.1:8081/internal/media?msgid=<message.id> as the media source, where <message.id> is the top-level JSONL message.id. ")
-	builder.WriteString("Never use text.quote.msgid in internal media URLs. ")
-	builder.WriteString("If you need media content, download the internal media URL with curl -L before answering or before choosing source_message_ids. If the download fails, say the media is temporarily unavailable instead of guessing.\n\n")
+	builder.WriteString("If a JSONL message is image, video, emotion, or voice, or its text.quote contains one of these media types, it has media. ")
+	builder.WriteString("Identify media by the top-level JSONL message.id. ")
+	builder.WriteString("Do not download media or call image providers during the main reply. The async image job will fetch and validate source media.\n\n")
 	builder.WriteString("Image Generation:\n")
-	builder.WriteString("- For user requests to generate or edit an image, return image_generation_requests instead of calling image providers or uploading media yourself.\n")
-	builder.WriteString("- Request shape: {\"prompt\":\"...\",\"source_message_ids\":[42],\"size\":\"1024x1024\"}; use source_message_ids only for image edits or references to prior image messages.\n")
-	builder.WriteString("- For image edits, use the top-level message.id of the JSONL line that contains the image/media or text.quote media reference in source_message_ids.\n")
-	builder.WriteString("- Before returning an image edit request, inspect the exact source image via curl. If several images could be intended, ask a brief clarification instead of guessing.\n")
-	builder.WriteString("- Image edit prompts must be conservative and specific: describe the source image, the single intended edit target, preserve constraints, and negative constraints. Preserve identity, subject count, pose, layout, background, and all unrelated details unless the user explicitly asks to change them.\n")
+	builder.WriteString("- For user requests to generate or edit an image, always return image_generation_requests. Do not only say that you can do it.\n")
+	builder.WriteString("- Request shape: {\"mode\":\"generate|edit\",\"prompt\":\"...\",\"source_message_ids\":[42],\"size\":\"1024x1024\",\"source_image_summary\":\"...\",\"edit_instruction\":\"...\",\"preserve\":[\"...\"],\"negative\":[\"...\"],\"output_format\":\"jpeg\"}.\n")
+	builder.WriteString("- Use mode=generate with an empty source_message_ids array for text-to-image. Use mode=edit only when source_message_ids references exact prior image or emotion messages.\n")
+	builder.WriteString("- For image edits, use the top-level message.id of the JSONL line that contains the image/emotion media or text.quote media reference in source_message_ids.\n")
+	builder.WriteString("- Do not inspect or download source images in the main agent run. For image edits, set source_image_summary to an empty string, identify the exact source message, and put the user's requested edit in edit_instruction; the async image job will fetch and validate the source image.\n")
+	builder.WriteString("- If several images could be intended, ask a brief clarification instead of guessing.\n")
+	builder.WriteString("- Image edit requests must be conservative and specific: put the single intended edit in edit_instruction, preserve constraints in preserve, and negative constraints in negative. Preserve identity, subject count, pose, layout, background, and all unrelated details unless the user explicitly asks to change them.\n")
 	builder.WriteString("- For vague edits such as 美化, 更可爱, 精修, or 好看一点, default to a local minimal edit. Do not reinterpret, redraw, replace the subject, change identity, or compose a new scene.\n")
+	builder.WriteString("- Always set output_format to jpeg; Clawman will normalize stored output to JPEG.\n")
 	builder.WriteString("- Clawman will generate, store, and deliver the image. Keep final_output short when image_generation_requests is non-empty.\n\n")
 	if strings.TrimSpace(run.MemorySearchURL) != "" && strings.TrimSpace(run.MemorySearchToken) != "" {
 		builder.WriteString("Room Memory Search:\n")
@@ -553,6 +556,10 @@ const agentRunResultSchema = `{
           "prompt": {
             "type": "string"
           },
+          "mode": {
+            "type": "string",
+            "enum": ["generate", "edit"]
+          },
           "source_message_ids": {
             "type": "array",
             "items": {
@@ -561,9 +568,31 @@ const agentRunResultSchema = `{
           },
           "size": {
             "type": "string"
+          },
+          "source_image_summary": {
+            "type": "string"
+          },
+          "edit_instruction": {
+            "type": "string"
+          },
+          "preserve": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "negative": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "output_format": {
+            "type": "string",
+            "enum": ["jpeg"]
           }
         },
-        "required": ["prompt", "source_message_ids", "size"]
+        "required": ["mode", "prompt", "source_message_ids", "size", "source_image_summary", "edit_instruction", "preserve", "negative", "output_format"]
       }
     }
   },

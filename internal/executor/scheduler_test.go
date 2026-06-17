@@ -218,8 +218,10 @@ func TestRunOnceStartsImageGenerationAsync(t *testing.T) {
 	}
 	runner := imageRequestRunner{
 		requests: []core.ImageGenerationRequest{{
-			Prompt: "draw flower",
-			Size:   "1024x1024",
+			Mode:         "generate",
+			Prompt:       "draw flower",
+			Size:         "1024x1024",
+			OutputFormat: "jpeg",
 		}},
 	}
 	scheduler := NewScheduler(context.Background(), store, runner)

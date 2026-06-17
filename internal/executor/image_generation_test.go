@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,8 +88,14 @@ func TestAgentImageToolGeneratesWithSourceImageFromContext(t *testing.T) {
 			{ID: 42, MsgType: "image"},
 		},
 	}, core.ImageGenerationRequest{
-		Prompt:           "改成水彩",
-		SourceMessageIDs: []int64{42},
+		Mode:               "edit",
+		Prompt:             "改成水彩",
+		SourceMessageIDs:   []int64{42},
+		SourceImageSummary: "一张花朵照片",
+		EditInstruction:    "改成水彩",
+		Preserve:           []string{"composition"},
+		Negative:           []string{"do not replace the subject"},
+		OutputFormat:       "jpeg",
 	})
 	if err != nil {
 		t.Fatalf("GenerateAgentImage error: %v", err)
@@ -96,7 +103,7 @@ func TestAgentImageToolGeneratesWithSourceImageFromContext(t *testing.T) {
 	if fetcher.messageID != 42 {
 		t.Fatalf("fetched message id = %d, want 42", fetcher.messageID)
 	}
-	if image.input.Prompt != "改成水彩" || image.input.Size != "1536x1024" || len(image.input.SourceImages) != 1 {
+	if !strings.Contains(image.input.Prompt, "Source image summary: 一张花朵照片") || !strings.Contains(image.input.Prompt, "Negative constraints: do not replace the subject") || image.input.Size != "1536x1024" || len(image.input.SourceImages) != 1 {
 		t.Fatalf("image input = %+v", image.input)
 	}
 	if media.input.MediaID == "" || media.input.TTL != time.Hour || media.input.MIMEType != "image/jpeg" {
@@ -123,8 +130,12 @@ func TestAgentImageToolGeneratesWithSourceMessageFromSameRoom(t *testing.T) {
 		AgentRun:        core.AgentRun{RoomID: 10, SourceMessageToID: 90},
 		ContextMessages: []core.Message{{ID: 42, RoomID: 10, MsgType: "image"}},
 	}, core.ImageGenerationRequest{
-		Prompt:           "改成水彩",
-		SourceMessageIDs: []int64{99},
+		Mode:               "edit",
+		Prompt:             "改成水彩",
+		SourceMessageIDs:   []int64{99},
+		SourceImageSummary: "一张图片",
+		EditInstruction:    "改成水彩",
+		OutputFormat:       "jpeg",
 	})
 	if err != nil {
 		t.Fatalf("GenerateAgentImage error: %v", err)
@@ -148,14 +159,47 @@ func TestAgentImageToolGeneratesWithQuotedSourceImageFromContext(t *testing.T) {
 			{ID: 42, MsgType: "text", Body: []byte(`{"quote":{"msgtype":"image","msgid":"abc","image":{"content":"[图片]"}}}`)},
 		},
 	}, core.ImageGenerationRequest{
-		Prompt:           "只改发夹",
-		SourceMessageIDs: []int64{42},
+		Mode:               "edit",
+		Prompt:             "只改发夹",
+		SourceMessageIDs:   []int64{42},
+		SourceImageSummary: "头像图",
+		EditInstruction:    "只改发夹",
+		OutputFormat:       "jpeg",
 	})
 	if err != nil {
 		t.Fatalf("GenerateAgentImage error: %v", err)
 	}
 	if fetcher.messageID != 42 || len(image.input.SourceImages) != 1 {
 		t.Fatalf("quoted source image was not used, fetched=%d input=%+v", fetcher.messageID, image.input)
+	}
+}
+
+func TestAgentImageToolGeneratesWithQuotedSourceEmotionFromContext(t *testing.T) {
+	image := &fakeExecutorImageGenerator{}
+	fetcher := &fakeExecutorMediaFetcher{}
+	tool := AgentImageTool{
+		Image:        image,
+		Media:        &fakeExecutorMediaStore{},
+		MediaFetcher: fetcher,
+	}
+
+	_, err := tool.GenerateAgentImage(context.Background(), AgentRunRequest{
+		ContextMessages: []core.Message{
+			{ID: 42, MsgType: "text", Body: []byte(`{"quote":{"msgtype":"emotion","msgid":"abc","emotion":{"content":"[表情]"}}}`)},
+		},
+	}, core.ImageGenerationRequest{
+		Mode:               "edit",
+		Prompt:             "看清这个表情",
+		SourceMessageIDs:   []int64{42},
+		SourceImageSummary: "表情图",
+		EditInstruction:    "提升清晰度",
+		OutputFormat:       "jpeg",
+	})
+	if err != nil {
+		t.Fatalf("GenerateAgentImage error: %v", err)
+	}
+	if fetcher.messageID != 42 || len(image.input.SourceImages) != 1 {
+		t.Fatalf("quoted source emotion was not used, fetched=%d input=%+v", fetcher.messageID, image.input)
 	}
 }
 
@@ -173,8 +217,12 @@ func TestAgentImageToolRejectsSourceImageFromOtherRoom(t *testing.T) {
 		AgentRun:        core.AgentRun{RoomID: 10, SourceMessageToID: 120},
 		ContextMessages: []core.Message{{ID: 42, RoomID: 10, MsgType: "image"}},
 	}, core.ImageGenerationRequest{
-		Prompt:           "改成水彩",
-		SourceMessageIDs: []int64{99},
+		Mode:               "edit",
+		Prompt:             "改成水彩",
+		SourceMessageIDs:   []int64{99},
+		SourceImageSummary: "一张图片",
+		EditInstruction:    "改成水彩",
+		OutputFormat:       "jpeg",
 	})
 	if err == nil {
 		t.Fatal("GenerateAgentImage error = nil, want room validation error")
@@ -194,10 +242,47 @@ func TestAgentImageToolRejectsNonImageSourceMessage(t *testing.T) {
 	_, err := tool.GenerateAgentImage(context.Background(), AgentRunRequest{
 		AgentRun: core.AgentRun{RoomID: 10, SourceMessageToID: 120},
 	}, core.ImageGenerationRequest{
-		Prompt:           "改成水彩",
-		SourceMessageIDs: []int64{99},
+		Mode:               "edit",
+		Prompt:             "改成水彩",
+		SourceMessageIDs:   []int64{99},
+		SourceImageSummary: "一张图片",
+		EditInstruction:    "改成水彩",
+		OutputFormat:       "jpeg",
 	})
 	if err == nil {
 		t.Fatal("GenerateAgentImage error = nil, want non-image validation error")
+	}
+}
+
+func TestAgentImageToolRejectsEditWithoutInstruction(t *testing.T) {
+	tool := AgentImageTool{
+		Image: &fakeExecutorImageGenerator{},
+		Media: &fakeExecutorMediaStore{},
+	}
+
+	_, err := tool.GenerateAgentImage(context.Background(), AgentRunRequest{}, core.ImageGenerationRequest{
+		Mode:               "edit",
+		Prompt:             "只改爪子",
+		SourceMessageIDs:   []int64{42},
+		EditInstruction:    "",
+		SourceImageSummary: "头像图",
+		OutputFormat:       "jpeg",
+	})
+	if err == nil || !strings.Contains(err.Error(), "edit_instruction") {
+		t.Fatalf("error = %v, want edit_instruction validation", err)
+	}
+}
+
+func TestAgentImageToolRejectsLegacyImageRequest(t *testing.T) {
+	tool := AgentImageTool{
+		Image: &fakeExecutorImageGenerator{},
+		Media: &fakeExecutorMediaStore{},
+	}
+
+	_, err := tool.GenerateAgentImage(context.Background(), AgentRunRequest{}, core.ImageGenerationRequest{
+		Prompt: "画一朵花",
+	})
+	if err == nil || !strings.Contains(err.Error(), "image mode") {
+		t.Fatalf("error = %v, want image mode validation", err)
 	}
 }
