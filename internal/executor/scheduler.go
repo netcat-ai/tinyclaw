@@ -188,6 +188,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) bool {
 		"selected_agent_keys", selectedAgentKeys,
 		"memory_search_count", result.MemorySearchCount,
 		"memory_write_job_count", len(result.MemoryWriteProposals),
+		"image_generation_count", result.ImageGenerationCount,
 		"delivery_id", deliveryID,
 	)
 	telemetry.IncAgentRun("success")

@@ -74,7 +74,7 @@ jobs:
       - name: Build Linux Binary
         run: |
           mkdir -p dist
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/tinyclaw .
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/clawman .
 
       - name: Build Service Image
         uses: docker/build-push-action@v6

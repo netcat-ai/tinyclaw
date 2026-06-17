@@ -1,0 +1,11 @@
+.env
+.git
+.local
+.playwright-mcp
+.tinybridge
+dist
+tmp
+web/control/dist
+web/control/node_modules
+scripts/__pycache__
+scripts/output

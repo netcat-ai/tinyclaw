@@ -54,10 +54,11 @@ func main() {
 	runCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	agentScheduler := executor.NewScheduler(runCtx, coreStore, buildAgentRunner(cfg))
+	imageGenerator, mediaStore := buildImageServices(cfg)
+	agentScheduler := executor.NewScheduler(runCtx, coreStore, buildAgentRunner(cfg, coreStore, imageGenerator, mediaStore))
 	agentScheduler.SetMemorySearchURL(memorySearchEndpoint(cfg.ControlAPIAddr))
 	memoryWriteWorker := executor.NewMemoryWriteWorker(runCtx, coreStore)
-	commandHandler := buildCommandHandler(cfg, coreStore)
+	commandHandler := buildCommandHandler(cfg, coreStore, imageGenerator, mediaStore)
 	coreAPI := httpapi.NewServerWithCommandHandler(coreStore, commandHandler, cfg.ClawmanAPIToken, cfg.ClawmanAdminSecret)
 	coreAPI.SetMediaRedirectConfig(cfg.WOCPanelBaseURL, cfg.WOCMediaToken)
 	controlHandler := withAdminUI(coreAPI, "web/control/dist")
@@ -108,7 +109,7 @@ func shouldServeAdminFile(distDir string, relativePath string) bool {
 	return !info.IsDir()
 }
 
-func buildCommandHandler(cfg Config, coreStore *storage.CoreStore) *command.Handler {
+func buildImageServices(cfg Config) (command.ImageGenerator, command.MediaStore) {
 	var image command.ImageGenerator
 	if strings.TrimSpace(cfg.ImageProviderAPIKey) != "" {
 		image = command.OpenAIImageClient{
@@ -137,6 +138,10 @@ func buildCommandHandler(cfg Config, coreStore *storage.CoreStore) *command.Hand
 			media = store
 		}
 	}
+	return image, media
+}
+
+func buildCommandHandler(cfg Config, coreStore *storage.CoreStore, image command.ImageGenerator, media command.MediaStore) *command.Handler {
 	handler := command.NewHandler(coreStore, image, media)
 	handler.Enabled = cfg.DrawCommandEnabled
 	handler.ImageSize = cfg.DrawImageSize
@@ -178,15 +183,29 @@ func controlAPIBaseURL(addr string) string {
 	return "http://" + net.JoinHostPort(host, port)
 }
 
-func buildAgentRunner(cfg Config) executor.Runner {
+func buildAgentRunner(cfg Config, coreStore *storage.CoreStore, image command.ImageGenerator, media command.MediaStore) executor.Runner {
 	switch strings.ToLower(strings.TrimSpace(cfg.AgentRunner)) {
 	case "codex":
+		var imageTool executor.ImageGenerationTool
+		if image != nil || media != nil {
+			imageTool = executor.AgentImageTool{
+				Image:              image,
+				Media:              media,
+				MediaFetcher:       command.HTTPMediaFetcher{BaseURL: controlAPIBaseURL(cfg.ControlAPIAddr)},
+				SourceMessageStore: coreStore,
+				ImageSize:          cfg.DrawImageSize,
+				MediaURLTTL:        cfg.GeneratedMediaURLTTL,
+			}
+		}
 		return executor.NewCodexRunner(executor.CodexRunnerConfig{
 			Bin:              cfg.CodexBin,
 			WorkDir:          executor.AbsoluteCodexWorkDir(cfg.CodexWorkDir),
 			Model:            cfg.CodexModel,
 			Sandbox:          cfg.CodexSandbox,
+			OpenAIBaseURL:    cfg.CodexOpenAIBaseURL,
 			DisabledFeatures: cfg.CodexDisabledFeatures,
+			MediaBaseURL:     controlAPIBaseURL(cfg.ControlAPIAddr),
+			ImageTool:        imageTool,
 			Timeout:          cfg.CodexRunnerTimeout,
 		})
 	default:

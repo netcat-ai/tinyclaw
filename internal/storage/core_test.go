@@ -164,3 +164,27 @@ func TestLatestImageMessageBeforeReturnsPreviousImage(t *testing.T) {
 		t.Fatalf("latest image id = %d, want %d", got.ID, firstImage.Message.ID)
 	}
 }
+
+func TestDeliveryGeneratedMediaPayload(t *testing.T) {
+	payload := deliveryGeneratedMediaPayload(core.Room{
+		Channel:       "wechat",
+		ChannelRoomID: "room-1",
+		DisplayName:   "测试群",
+	}, "agent_output", core.GeneratedMediaOutput{
+		MediaID:      "gm_test",
+		MediaURL:     "https://media.example/gm_test.png",
+		MediaURLKind: "presigned_s3",
+		MIMEType:     "image/png",
+		ExpiresAt:    time.Unix(1700000000, 0).UTC(),
+	})
+	var got map[string]any
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if got["kind"] != "agent_output" || got["type"] != "image" || got["media_id"] != "gm_test" {
+		t.Fatalf("payload media fields = %+v", got)
+	}
+	if got["app"] != "wechat" || got["channel_room_id"] != "room-1" || got["recipient_alias"] != "测试群" {
+		t.Fatalf("payload route fields = %+v", got)
+	}
+}

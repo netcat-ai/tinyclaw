@@ -22,14 +22,15 @@ Set `AGENT_RUNNER=codex` to run triggered Agent Sessions through `codex exec`. O
 - `CODEX_WORKDIR`: working directory passed to Codex, defaults to `.`.
 - `CODEX_MODEL`: optional model override.
 - `CODEX_SANDBOX`: Codex sandbox mode, defaults to `workspace-write`; use `danger-full-access` when headless runs need external network/DNS from shell tools.
+- `CODEX_OPENAI_BASE_URL`: optional OpenAI-compatible API base URL passed to `codex exec` as `openai_base_url`.
 - `CODEX_DISABLED_FEATURES`: comma-separated Codex CLI features disabled for headless runs, defaults to `apps,tool_suggest,plugins`; set to `none` to disable no features.
 - `CODEX_RUNNER_TIMEOUT`: execution timeout, defaults to `5m`.
 
-Codex runs receive a short-lived Room Memory Search capability. The capability calls Clawman's internal memory endpoint with a run-bound token; it does not accept `room_id` from the agent. Runner output is parsed as an Agent Run Result with user-visible final output and optional Memory Write Proposals. Memory Search failures are returned to Codex as error results so the run can continue; memory writes are persisted as background jobs and do not block Delivery creation.
+Codex runs receive a short-lived Room Memory Search capability. The capability calls Clawman's internal memory endpoint with a run-bound token; it does not accept `room_id` from the agent. Runner output is parsed as an Agent Run Result with user-visible final output, optional Memory Write Proposals, and optional image generation requests. Memory Search failures are returned to Codex as error results so the run can continue; memory writes are persisted as background jobs and do not block Delivery creation. For image messages in the run window, Clawman downloads internal media and passes local image files to Codex CLI with `--image`.
 
 The Codex runner reuses one Codex CLI thread per Agent Session. Clawman stores the Codex `thread_id` on `agent_sessions.codex_session_id`; subsequent runs call `codex exec resume <codex_session_id> -`. If the saved thread is stale, the runner falls back to a fresh Codex thread and stores the new id.
 
-First-version `/draw <prompt>` is designed as a Clawman-owned Command rather than ordinary Codex conversation. It saves the Message, does not advance the Agent Session trigger boundary, starts an in-process background draw task for new non-duplicate Messages, calls `gpt-image-2`, uploads the PNG to S3-compatible object storage, and emits command Deliveries. The image Delivery carries a 24h presigned S3 URL instead of embedding image bytes. `/draw 图生图 <prompt>` and `/draw 把上图...` use the latest previous image Message in the same Room as the source image and call the image edit endpoint after downloading that source through Clawman's internal media URL.
+First-version `/draw <prompt>` is a Clawman-owned Command shortcut rather than ordinary Codex conversation. It saves the Message, does not advance the Agent Session trigger boundary, starts an in-process background draw task for new non-duplicate Messages, calls `gpt-image-2`, uploads the PNG to S3-compatible object storage, and emits command Deliveries. The image Delivery carries a 24h presigned S3 URL instead of embedding image bytes. `/draw 图生图 <prompt>` and `/draw 把上图...` use the latest previous image Message in the same Room as the source image and call the image edit endpoint after downloading that source through Clawman's internal media URL. Ordinary Codex Agent Runs can also request generated media through structured `image_generation_requests`; Clawman performs provider calls, storage, and image Deliveries.
 
 Kubernetes deployment pins `api.openai.com` and `chatgpt.com` through `hostAliases` because the current cluster DNS resolves those domains incorrectly. Refresh those IPs if Codex CLI connectivity starts timing out before `thread.started`.
 
@@ -78,7 +79,7 @@ The WeChat path is not verified on the current test phone because the installed 
 
 ```bash
 go test ./...
-go build -o tinyclaw .
+go build -o clawman .
 ```
 
 CI builds the Clawman service image from a static Linux binary and the Control Plane build output. WeCom and WeChat adapters are not packaged into the Clawman image; deploy them from `tinybridge` as separate adapter processes when validating real channels.
@@ -97,6 +98,17 @@ The local process writes its PID and log to `.local/clawman.pid` and `.local/cla
 ```bash
 TINYCLAW_FOREGROUND=true ./scripts/local_start.sh
 ```
+
+Container local run:
+
+```bash
+./scripts/local_stop.sh
+docker compose -f compose.local.yml up -d postgres clawman tinybridge
+```
+
+`compose.local.yml` runs Postgres, Clawman, and `tinybridge/cmd/woc-adapter`. Clawman exposes `8081` and `9090`; `tinybridge` talks to Clawman at `http://clawman:8081` and to a host-local WechatOnCloud Panel through `http://host.docker.internal:36080` by default. Codex sends requests through `CODEX_OPENAI_BASE_URL` which defaults to `https://code.v4.chat`.
+
+For container local run with `AGENT_RUNNER=codex`, put Codex CLI state under `.local/codex/`. At minimum it must contain `auth.json` and `config.toml`; the directory is mounted to `/codex` and is intentionally ignored by Git.
 
 Minimal local smoke:
 
@@ -143,7 +155,7 @@ Draw command and generated media:
 - `DRAW_COMMAND_ENABLED`: enable `/draw`, defaults to true.
 - `IMAGE_PROVIDER_BASE_URL`: image provider endpoint, defaults to `https://code.v4.chat`.
 - `IMAGE_PROVIDER_MODEL`: image model, defaults to `gpt-image-2`.
-- `IMAGE_PROVIDER_API_KEY`: optional image provider key; when empty, first-version `/draw` may read `CODEX_AUTH_JSON.OPENAI_API_KEY`.
+- `IMAGE_PROVIDER_API_KEY`: optional image provider key; when empty, first-version `/draw` may read `OPENAI_API_KEY` from Codex auth JSON via `CODEX_AUTH_JSON` or `CODEX_AUTH_PATH`.
 - `DRAW_IMAGE_SIZE`: image size sent to the provider, defaults to `1024x1024`.
 - `GENERATED_MEDIA_S3_ENDPOINT`
 - `GENERATED_MEDIA_S3_BUCKET`

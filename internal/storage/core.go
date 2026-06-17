@@ -316,17 +316,31 @@ func (s *CoreStore) CompleteAgentRun(ctx context.Context, run core.AgentRun, res
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var payload json.RawMessage
-	if strings.TrimSpace(result.FinalOutput) != "" {
+	var payloads []json.RawMessage
+	if strings.TrimSpace(result.FinalOutput) != "" || len(result.GeneratedMediaOutputs) > 0 {
 		room, err := getCoreRoomByIDTx(ctx, tx, run.RoomID)
 		if err != nil {
 			return nil, err
 		}
-		payload = deliveryTextPayload(room, "agent_output", result.FinalOutput)
+		if strings.TrimSpace(result.FinalOutput) != "" {
+			payloads = append(payloads, deliveryTextPayload(room, "agent_output", result.FinalOutput))
+		}
+		for _, media := range result.GeneratedMediaOutputs {
+			payloads = append(payloads, deliveryGeneratedMediaPayload(room, "agent_output", media))
+		}
 	}
-	delivery, err := finishAgentRunTx(ctx, tx, run, payload)
+	delivery, err := finishAgentRunTx(ctx, tx, run, nil)
 	if err != nil {
 		return nil, err
+	}
+	for _, payload := range payloads {
+		created, err := createCoreDeliveryTx(ctx, tx, run, payload)
+		if err != nil {
+			return nil, err
+		}
+		if delivery == nil {
+			delivery = &created
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit complete agent run: %w", err)
@@ -334,8 +348,8 @@ func (s *CoreStore) CompleteAgentRun(ctx context.Context, run core.AgentRun, res
 	if err := s.EnqueueMemoryWriteJobs(ctx, run, result.MemoryWriteProposals); err != nil {
 		slog.Warn("enqueue memory write jobs failed", "agent_session_id", run.AgentSessionID, "err", err)
 	}
-	if delivery != nil {
-		telemetry.IncDelivery(telemetry.PayloadKind(delivery.Payload), "created")
+	for _, payload := range payloads {
+		telemetry.IncDelivery(telemetry.PayloadKind(payload), "created")
 	}
 	return delivery, nil
 }
@@ -461,6 +475,18 @@ func deliveryTextPayload(room core.Room, kind string, text string) json.RawMessa
 		"kind": kind,
 		"type": "text",
 		"text": text,
+	}))
+}
+
+func deliveryGeneratedMediaPayload(room core.Room, kind string, media core.GeneratedMediaOutput) json.RawMessage {
+	return mustJSON(deliveryRoutePayload(room, map[string]any{
+		"kind":           kind,
+		"type":           "image",
+		"media_id":       strings.TrimSpace(media.MediaID),
+		"media_url":      strings.TrimSpace(media.MediaURL),
+		"media_url_kind": strings.TrimSpace(media.MediaURLKind),
+		"mime_type":      strings.TrimSpace(media.MIMEType),
+		"expires_at":     media.ExpiresAt.UTC().Format(time.RFC3339),
 	}))
 }
 

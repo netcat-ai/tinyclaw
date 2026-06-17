@@ -17,7 +17,7 @@ The old in-repo TypeScript agent runtime, sandbox orchestrator, `RoomChat` gRPC 
 
 ```bash
 go test ./...
-go build -o tinyclaw .
+go build -o clawman .
 ```
 
 Channel adapters live outside the Clawman service. The `tinybridge` submodule contains the current WeChat and WeCom adapters.

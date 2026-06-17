@@ -28,6 +28,7 @@ type Config struct {
 	CodexWorkDir          string
 	CodexModel            string
 	CodexSandbox          string
+	CodexOpenAIBaseURL    string
 	CodexDisabledFeatures []string
 	CodexRunnerTimeout    time.Duration
 
@@ -76,6 +77,10 @@ func LoadConfig() (Config, error) {
 		CodexWorkDir: envOrDefault("CODEX_WORKDIR", "."),
 		CodexModel:   os.Getenv("CODEX_MODEL"),
 		CodexSandbox: envOrDefault("CODEX_SANDBOX", "workspace-write"),
+		CodexOpenAIBaseURL: strings.TrimSpace(envOrDefault(
+			"CODEX_OPENAI_BASE_URL",
+			os.Getenv("OPENAI_BASE_URL"),
+		)),
 		CodexDisabledFeatures: parseCSVEnv("CODEX_DISABLED_FEATURES", []string{
 			"apps",
 			"tool_suggest",

@@ -16,5 +16,78 @@ services:
       timeout: 3s
       retries: 20
 
+  clawman:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    image: tinyclaw/clawman:local
+    container_name: tinyclaw-clawman-local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://tinyclaw:tinyclaw@postgres:5432/tinyclaw?sslmode=disable
+      CLAWMAN_API_TOKEN: ${CLAWMAN_API_TOKEN:-dev-token}
+      CLAWMAN_ADMIN_SECRET: ${CLAWMAN_ADMIN_SECRET:-dev-admin}
+      CONTROL_API_ADDR: :8081
+      METRICS_ADDR: :9090
+      WOC_PANEL_BASE_URL: ${WOC_PANEL_BASE_URL:-http://host.docker.internal:36080}
+      WOC_USERNAME: ${WOC_USERNAME:-admin}
+      WOC_PASSWORD: ${WOC_PASSWORD:-wechat}
+      AGENT_RUNNER: ${AGENT_RUNNER:-codex}
+      CODEX_WORKDIR: /workspace
+      CODEX_HOME: /codex
+      CODEX_AUTH_PATH: /codex/auth.json
+      CODEX_SANDBOX: ${CODEX_SANDBOX:-danger-full-access}
+      CODEX_OPENAI_BASE_URL: ${CODEX_OPENAI_BASE_URL:-https://code.v4.chat}
+      CODEX_RUNNER_TIMEOUT: ${CODEX_RUNNER_TIMEOUT:-5m}
+    ports:
+      - "8081:8081"
+      - "9090:9090"
+    volumes:
+      - .:/workspace
+      - ./.local/codex:/codex
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  tinybridge:
+    build:
+      context: ./tinybridge
+      dockerfile: Dockerfile.local
+    image: tinyclaw/tinybridge-woc-adapter:local
+    container_name: tinyclaw-tinybridge-local
+    depends_on:
+      clawman:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      CLAWMAN_BASE_URL: http://clawman:8081
+      CLAWMAN_API_TOKEN: ${CLAWMAN_API_TOKEN:-dev-token}
+      WOC_BASE_URL: ${WOC_BASE_URL:-http://host.docker.internal:36080}
+      WOC_USERNAME: ${WOC_USERNAME:-admin}
+      WOC_PASSWORD: ${WOC_PASSWORD:-wechat}
+      WOC_CURSOR_PATH: /state/woc-cursors.json
+      WOC_SEND_DELIVERIES: ${WOC_SEND_DELIVERIES:-true}
+      WOC_INGEST_INITIAL: ${WOC_INGEST_INITIAL:-false}
+      WOC_INITIAL_SKIP_PAGES: ${WOC_INITIAL_SKIP_PAGES:-1000}
+      WOC_POLL_INTERVAL: ${WOC_POLL_INTERVAL:-3s}
+      WOC_POLL_LIMIT: ${WOC_POLL_LIMIT:-100}
+    volumes:
+      - tinybridge-local:/state
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
 volumes:
   tinyclaw-postgres-local:
+  tinybridge-local:

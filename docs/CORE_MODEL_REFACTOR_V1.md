@@ -393,20 +393,34 @@ Agent Run Result 包含：
 - user-visible final output
 - Memory Search Requests
 - Memory Write Proposals
+- Image Generation Requests
 
 Codex run 会收到 memory search endpoint 和短期 capability token。Codex 可以在运行中主动调用 Memory Search；Clawman 从 token 绑定 Room，不信任 agent 传入的 `room_id`。Memory Search backend 或 endpoint 短暂失败时，runner 将失败作为带 `error` 字段的 search result 回传给下一轮 Codex，不直接让 Agent Run 失败。
+
+Codex run 的 Message window 中存在图片消息时，Clawman 会先通过内部 media URL 下载图片，并用 `codex exec --image <file>` 注入本轮 Codex。消息文本中仍保留 `image_url` 作为 fallback。Codex 需要生成图片或图生图时，不直接调用 image provider，也不处理对象存储；它在 Agent Run Result 中返回 `image_generation_requests`：
+
+```json
+{
+  "prompt": "把这张图改成水彩风格",
+  "source_message_ids": [42],
+  "size": "1024x1024"
+}
+```
+
+`source_message_ids` 只允许引用当前 Agent Run 上下文中的 image Message。Clawman 负责下载源图、调用 image provider、上传 Generated Media，并创建 image Delivery。
 
 Agent final output 处理：
 
 ```text
-non-empty output -> create delivery(status=pending)
-empty output     -> no delivery
-failure          -> create failure delivery(status=pending)
+non-empty output       -> create text delivery(status=pending)
+image generation output -> create image delivery(status=pending)
+empty output           -> no delivery
+failure                -> create failure delivery(status=pending)
 ```
 
 Agent Run 成功不会直接追加 agent Message。Message 只在 channel consumer 或后续平台回流通过 `POST /api/messages` 写入后出现。若 consumer 主动写回，建议使用 `source = agent` 且 `msgid = "delivery:<delivery_id>"` 保证幂等；若等待外部平台 self echo，则由 Channel Adapter 使用平台消息 id 写入并按需关联 Delivery。
 
-第一版 `/draw <prompt>` 作为 Clawman-owned Command 处理，不进入 Codex Agent Run，也不更新 Agent Session trigger boundary。Command 是有效 Room Message，但由 Command handler 消费。
+第一版 `/draw <prompt>` 作为 Clawman-owned Command shortcut 处理，不进入 Codex Agent Run，也不更新 Agent Session trigger boundary。Command 是有效 Room Message，但由 Command handler 消费。普通 Codex Agent Run 也可以通过 `image_generation_requests` 产生 Generated Media。
 
 第一版 Draw Command 采用轻量执行模型：`POST /api/messages` 只有在插入新 Message 且命中 `/draw` 时，才启动一个 in-process background goroutine 执行生图；重复 Message 不启动副作用。该版本不提供 crash recovery，clawman 重启会丢失正在执行的 `/draw`。
 

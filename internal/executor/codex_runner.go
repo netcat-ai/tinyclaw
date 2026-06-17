@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,7 +27,10 @@ type CodexRunnerConfig struct {
 	WorkDir          string
 	Model            string
 	Sandbox          string
+	OpenAIBaseURL    string
 	DisabledFeatures []string
+	MediaBaseURL     string
+	ImageTool        ImageGenerationTool
 	Timeout          time.Duration
 }
 
@@ -71,6 +75,12 @@ func (r *CodexRunner) RunAgent(ctx context.Context, run AgentRunRequest) (core.A
 			run.AgentRun.CodexSessionID = strings.TrimSpace(result.CodexSessionID)
 		}
 		if len(result.MemorySearchRequests) == 0 {
+			generatedMedia, err := runImageGenerationRequests(runCtx, r.config.ImageTool, run, result.ImageGenerationRequests)
+			if err != nil {
+				return core.AgentRunResult{}, err
+			}
+			result.GeneratedMediaOutputs = generatedMedia
+			result.ImageGenerationCount = len(generatedMedia)
 			result.MemorySearchCount = len(run.MemorySearchResults)
 			return result, nil
 		}
@@ -202,7 +212,8 @@ func attachCodexSessionID(result core.AgentRunResult, events codexEventSummary, 
 func hasAgentRunResultContent(result core.AgentRunResult) bool {
 	return strings.TrimSpace(result.FinalOutput) != "" ||
 		len(result.MemorySearchRequests) > 0 ||
-		len(result.MemoryWriteProposals) > 0
+		len(result.MemoryWriteProposals) > 0 ||
+		len(result.ImageGenerationRequests) > 0
 }
 
 func (r *CodexRunner) codexExecArgs(schemaPath string, outputPath string, codexSessionID string) []string {
@@ -224,6 +235,9 @@ func (r *CodexRunner) codexExecArgs(schemaPath string, outputPath string, codexS
 		"--sandbox", r.config.Sandbox,
 		"--output-last-message", outputPath,
 	)
+	if strings.TrimSpace(r.config.OpenAIBaseURL) != "" {
+		args = append(args, "-c", "openai_base_url="+strconv.Quote(strings.TrimSpace(r.config.OpenAIBaseURL)))
+	}
 	if strings.TrimSpace(r.config.Model) != "" {
 		args = append(args, "--model", r.config.Model)
 	}
@@ -374,13 +388,21 @@ func memorySearchErrorResult(search core.MemorySearchInput, err error) core.Memo
 
 func BuildCodexPrompt(run AgentRunRequest) string {
 	var builder strings.Builder
-	builder.WriteString("Return only one JSON object matching Agent Run Result: {\"final_output\":\"...\",\"memory_write_proposals\":[],\"memory_search_requests\":[]}. ")
-	builder.WriteString("Put the user-visible reply in final_output and durable Room Memory proposals in memory_write_proposals. ")
+	builder.WriteString("Return only one JSON object matching Agent Run Result: {\"final_output\":\"...\",\"memory_write_proposals\":[],\"memory_search_requests\":[],\"image_generation_requests\":[]}. ")
+	builder.WriteString("Put the user-visible reply in final_output, durable Room Memory proposals in memory_write_proposals, and image generation/edit requests in image_generation_requests. ")
 	builder.WriteString("If you need durable Room Memory before answering, put requests in memory_search_requests and leave final_output empty. ")
 	builder.WriteString("Each proposal must include op, type, key, and content; use an empty string for unused content. ")
 	builder.WriteString("Only propose durable Room Memory changes for stable facts, preferences, or todos. Prefer an empty memory_write_proposals array when unsure.\n\n")
 	builder.WriteString("Handled command messages are room history events already processed by TinyClaw. Use them only as context; do not answer, repeat, or execute those commands again.\n\n")
-	builder.WriteString("Messages may include image_url. If the user asks about image content, download the URL with curl -L before answering. If the download fails, say the image is temporarily unavailable instead of guessing.\n\n")
+	builder.WriteString("Conversation messages are JSON Lines. Each line is one normalized message. ")
+	builder.WriteString("Use message.image.url or message.quote.image.url as available image sources. ")
+	builder.WriteString("For source_message_ids, always use the top-level message.id from the JSONL line that contains the image URL. ")
+	builder.WriteString("If you need image content, download the URL with curl -L before answering or before choosing source_message_ids. If the download fails, say the image is temporarily unavailable instead of guessing.\n\n")
+	builder.WriteString("Image Generation:\n")
+	builder.WriteString("- For user requests to generate or edit an image, return image_generation_requests instead of calling image providers or uploading media yourself.\n")
+	builder.WriteString("- Request shape: {\"prompt\":\"...\",\"source_message_ids\":[42],\"size\":\"1024x1024\"}; use source_message_ids only for image edits or references to prior image messages.\n")
+	builder.WriteString("- Use messages with image.url or quote.image.url as image sources. If an image is inside quote, still use the top-level message.id in source_message_ids.\n")
+	builder.WriteString("- Clawman will generate, store, and deliver the image. Keep final_output short when image_generation_requests is non-empty.\n\n")
 	if strings.TrimSpace(run.MemorySearchURL) != "" && strings.TrimSpace(run.MemorySearchToken) != "" {
 		builder.WriteString("Room Memory Search:\n")
 		builder.WriteString("- Request Memory Search by returning memory_search_requests in Agent Run Result.\n")
@@ -413,12 +435,11 @@ func BuildCodexPrompt(run AgentRunRequest) string {
 	fmt.Fprintf(&builder, "%d", run.AgentRun.RoomID)
 	builder.WriteString("\nMessage Window: ")
 	fmt.Fprintf(&builder, "[%d, %d]", run.AgentRun.SourceMessageFromID, run.AgentRun.SourceMessageToID)
-	builder.WriteString("\n\nConversation messages:\n")
+	builder.WriteString("\n\nConversation messages (JSONL):\n")
 	if len(run.ContextMessages) == 0 {
 		builder.WriteString("(empty)\n")
 	}
 	for _, message := range run.ContextMessages {
-		builder.WriteString("- ")
 		builder.WriteString(formatCodexPromptMessage(message))
 		builder.WriteString("\n")
 	}
@@ -525,9 +546,31 @@ const agentRunResultSchema = `{
         },
         "required": ["query", "types", "limit", "include_inactive"]
       }
+    },
+    "image_generation_requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "prompt": {
+            "type": "string"
+          },
+          "source_message_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "size": {
+            "type": "string"
+          }
+        },
+        "required": ["prompt", "source_message_ids", "size"]
+      }
     }
   },
-  "required": ["final_output", "memory_write_proposals", "memory_search_requests"]
+  "required": ["final_output", "memory_write_proposals", "memory_search_requests", "image_generation_requests"]
 }`
 
 func extractTaggedBlock(text string, tag string) (string, bool) {
@@ -553,19 +596,74 @@ func formatCodexPromptMessage(message core.Message) string {
 	if sender == "" {
 		sender = "unknown"
 	}
+	output := codexPromptMessage{
+		ID:     message.ID,
+		Sender: sender,
+		Type:   normalizedPromptMessageType(message.MsgType),
+	}
 	if commandKind := extractMessageCommandKind(message.Payload); commandKind != "" {
-		text := extractMessageText(message.Payload)
-		return fmt.Sprintf("id=%d sender=%s handled_command=%s text=%q", message.ID, sender, commandKind, text)
+		output.HandledCommand = commandKind
 	}
 	text := extractMessageText(message.Payload)
 	if strings.TrimSpace(message.MsgType) == "image" {
-		return fmt.Sprintf("id=%d sender=%s text=%q image_url=%s", message.ID, sender, text, codexPromptMediaURL(message.ID))
+		output.Type = "image"
+		output.Image = &codexPromptImage{
+			Content: text,
+			URL:     codexPromptMediaURL(message.ID),
+		}
+	} else {
+		output.Text = &codexPromptText{Content: text}
 	}
-	return fmt.Sprintf("id=%d sender=%s text=%q", message.ID, sender, text)
+	if quote := buildCodexPromptQuote(message.Payload, message.ID); quote != nil {
+		output.Quote = quote
+	}
+	data, err := json.Marshal(output)
+	if err != nil {
+		return fmt.Sprintf(`{"id":%d,"sender":%q,"type":"text","text":{"content":%q}}`, message.ID, sender, text)
+	}
+	return string(data)
 }
 
 func codexPromptMediaURL(messageID int64) string {
 	return fmt.Sprintf("http://127.0.0.1:8081/internal/media?msgid=%d", messageID)
+}
+
+type codexPromptMessage struct {
+	ID             int64             `json:"id"`
+	Sender         string            `json:"sender"`
+	Type           string            `json:"type"`
+	Text           *codexPromptText  `json:"text,omitempty"`
+	Image          *codexPromptImage `json:"image,omitempty"`
+	Quote          *codexPromptQuote `json:"quote,omitempty"`
+	HandledCommand string            `json:"handled_command,omitempty"`
+}
+
+type codexPromptText struct {
+	Content string `json:"content"`
+}
+
+type codexPromptImage struct {
+	Content string `json:"content,omitempty"`
+	URL     string `json:"url,omitempty"`
+}
+
+type codexPromptQuote struct {
+	Type            string            `json:"type"`
+	Sender          string            `json:"sender,omitempty"`
+	SourceMessageID string            `json:"source_message_id,omitempty"`
+	Text            *codexPromptText  `json:"text,omitempty"`
+	Image           *codexPromptImage `json:"image,omitempty"`
+}
+
+func normalizedPromptMessageType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "image", "图片":
+		return "image"
+	case "text", "文本", "":
+		return "text"
+	default:
+		return strings.TrimSpace(value)
+	}
 }
 
 func extractMessageCommandKind(payload json.RawMessage) string {
@@ -576,6 +674,62 @@ func extractMessageCommandKind(payload json.RawMessage) string {
 		return ""
 	}
 	return strings.TrimSpace(parsed.CommandKind)
+}
+
+func buildCodexPromptQuote(payload json.RawMessage, messageID int64) *codexPromptQuote {
+	var parsed struct {
+		Quote json.RawMessage `json:"quote"`
+	}
+	if err := json.Unmarshal(payload, &parsed); err != nil || len(bytes.TrimSpace(parsed.Quote)) == 0 {
+		return nil
+	}
+	var quote struct {
+		MsgType string `json:"msgtype"`
+		Type    string `json:"type"`
+		From    string `json:"from"`
+		Sender  string `json:"sender"`
+		MsgID   string `json:"msgid"`
+		Text    struct {
+			Content string `json:"content"`
+		} `json:"text"`
+		Image struct {
+			Content string `json:"content"`
+			URL     string `json:"url"`
+		} `json:"image"`
+	}
+	if err := json.Unmarshal(parsed.Quote, &quote); err != nil {
+		return nil
+	}
+	typ := normalizedPromptMessageType(promptFirstNonEmpty(quote.MsgType, quote.Type))
+	if typ == "" {
+		return nil
+	}
+	result := &codexPromptQuote{
+		Type:            typ,
+		Sender:          promptFirstNonEmpty(quote.From, quote.Sender),
+		SourceMessageID: strings.TrimSpace(quote.MsgID),
+	}
+	switch typ {
+	case "image":
+		result.Image = &codexPromptImage{
+			Content: promptFirstNonEmpty(quote.Image.Content, "[图片]"),
+			URL:     promptFirstNonEmpty(quote.Image.URL, codexPromptMediaURL(messageID)),
+		}
+	case "text":
+		if content := strings.TrimSpace(quote.Text.Content); content != "" {
+			result.Text = &codexPromptText{Content: content}
+		}
+	}
+	return result
+}
+
+func promptFirstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if text := strings.TrimSpace(value); text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func extractMessageText(payload json.RawMessage) string {

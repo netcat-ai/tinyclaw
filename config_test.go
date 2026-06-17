@@ -8,6 +8,8 @@ import (
 func TestLoadConfigUsesServiceDefaults(t *testing.T) {
 	t.Setenv("CONTROL_API_ADDR", "")
 	t.Setenv("METRICS_ADDR", "")
+	t.Setenv("CODEX_OPENAI_BASE_URL", "")
+	t.Setenv("OPENAI_BASE_URL", "")
 	t.Setenv("CODEX_RUNNER_TIMEOUT", "")
 
 	cfg, err := LoadConfig()
@@ -35,6 +37,9 @@ func TestLoadConfigUsesServiceDefaults(t *testing.T) {
 	if cfg.CodexRunnerTimeout.String() != "5m0s" {
 		t.Fatalf("CodexRunnerTimeout = %s, want 5m0s", cfg.CodexRunnerTimeout)
 	}
+	if cfg.CodexOpenAIBaseURL != "" {
+		t.Fatalf("CodexOpenAIBaseURL = %q, want empty", cfg.CodexOpenAIBaseURL)
+	}
 	if !cfg.DrawCommandEnabled {
 		t.Fatal("DrawCommandEnabled = false, want true")
 	}
@@ -49,6 +54,20 @@ func TestLoadConfigUsesServiceDefaults(t *testing.T) {
 	}
 	if cfg.WOCMediaToken != "" {
 		t.Fatalf("WOCMediaToken = %q, want empty when WOC_PASSWORD is unset", cfg.WOCMediaToken)
+	}
+}
+
+func TestLoadConfigReadsCodexOpenAIBaseURL(t *testing.T) {
+	t.Setenv("CODEX_OPENAI_BASE_URL", "https://code.v4.chat")
+	t.Setenv("CODEX_RUNNER_TIMEOUT", "")
+	t.Setenv("GENERATED_MEDIA_URL_TTL", "")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+	if cfg.CodexOpenAIBaseURL != "https://code.v4.chat" {
+		t.Fatalf("CodexOpenAIBaseURL = %q, want https://code.v4.chat", cfg.CodexOpenAIBaseURL)
 	}
 }
 

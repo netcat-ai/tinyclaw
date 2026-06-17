@@ -15,11 +15,12 @@ Prefer updating an existing document over creating overlapping files.
 - `rg -n "TODO|FIXME" *.md`: find open doc edits.
 - `git diff -- *.md`: review markdown-only changes.
 - `git status --short`: confirm the final change set.
-- For live PostgreSQL investigation, use the PostgreSQL tools available inside the Kubernetes `netcat` namespace PostgreSQL pod. Prefer read-only `SELECT` queries; do not mutate production data unless the user explicitly asks.
-- Deployments must use GitHub Actions workflows, not local Docker build/push.
-- Use `.github/workflows/build.yml` to build and publish images.
-- Use `.github/workflows/deploy.yml` to deploy `clawman`; pass an explicit image tag when needed.
-- Do not run local `docker buildx --push` or manually patch the deployment image unless the user explicitly requests an emergency hotfix.
+- Services are deployed locally through Docker Compose by default.
+- For live PostgreSQL investigation, use the local `tinyclaw-postgres-local` container. Prefer read-only `SELECT` queries; do not mutate data unless the user explicitly asks.
+- Use `docker compose -f compose.local.yml ps` to inspect local service status.
+- Use `docker logs tinyclaw-clawman-local` for Clawman runtime logs, especially Agent Run and image generation failures.
+- Use `./scripts/local_status.sh` and `./scripts/local_verify.sh` for local health checks and verification.
+- Do not run `docker buildx --push`, GitHub Actions deploy workflows, or Kubernetes deployment commands unless the user explicitly asks for remote deployment.
 - Use concise technical writing and stable terminology.
 - Keep headings clear and task-oriented.
 - Keep examples explicit and executable.
@@ -33,7 +34,9 @@ Prefer updating an existing document over creating overlapping files.
 - 与用户沟通时默认使用中文；除非用户明确要求其他语言，后续说明、计划、状态更新和总结都使用中文。
 - 代码、注释、commit message 等技术向内容保持英文。
 - 如无必要，勿增实体。
+- 如果预计代码或文档改动超过 10 行，先给出方案，等用户确认后再修改。
 - 有 UI/UX 相关改动时，补一个简洁的 ASCII UI 示意图说明布局或交互。
+- 群聊中每天或每隔一段时间，肖淑洁第一次发言时，触发“参见ibo。”流程：回复先写“参见ibo。”，再补一句稳稳接住的彩虹屁；语气贴合群聊玩梗。
 
 ## Code Style
 - Prefer simple, correct, maintainable solutions.

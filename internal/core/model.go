@@ -261,11 +261,28 @@ type CreateMessageResult struct {
 }
 
 type AgentRunResult struct {
-	FinalOutput          string                `json:"final_output"`
-	MemorySearchRequests []MemorySearchInput   `json:"memory_search_requests,omitempty"`
-	MemoryWriteProposals []MemoryWriteProposal `json:"memory_write_proposals,omitempty"`
-	CodexSessionID       string                `json:"-"`
-	MemorySearchCount    int                   `json:"-"`
+	FinalOutput             string                   `json:"final_output"`
+	MemorySearchRequests    []MemorySearchInput      `json:"memory_search_requests,omitempty"`
+	MemoryWriteProposals    []MemoryWriteProposal    `json:"memory_write_proposals,omitempty"`
+	ImageGenerationRequests []ImageGenerationRequest `json:"image_generation_requests,omitempty"`
+	GeneratedMediaOutputs   []GeneratedMediaOutput   `json:"-"`
+	CodexSessionID          string                   `json:"-"`
+	MemorySearchCount       int                      `json:"-"`
+	ImageGenerationCount    int                      `json:"-"`
+}
+
+type ImageGenerationRequest struct {
+	Prompt           string  `json:"prompt"`
+	SourceMessageIDs []int64 `json:"source_message_ids,omitempty"`
+	Size             string  `json:"size,omitempty"`
+}
+
+type GeneratedMediaOutput struct {
+	MediaID      string
+	MediaURL     string
+	MediaURLKind string
+	MIMEType     string
+	ExpiresAt    time.Time
 }
 
 type AgentRun struct {

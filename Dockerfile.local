@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1
+
+ARG GO_IMAGE=golang:1.26-bookworm
+ARG NODE_IMAGE=node:22-bookworm-slim
+
+FROM ${NODE_IMAGE} AS control-builder
+WORKDIR /src/web/control
+RUN corepack enable
+COPY web/control/package.json web/control/pnpm-lock.yaml web/control/pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY web/control/ ./
+RUN pnpm run build
+
+FROM ${GO_IMAGE} AS go-builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . ./
+COPY --from=control-builder /src/web/control/dist ./web/control/dist
+RUN CGO_ENABLED=0 go build -o /out/clawman .
+
+FROM ${NODE_IMAGE}
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+RUN npm install -g @openai/codex@0.131.0
+COPY --from=go-builder /out/clawman /app/clawman
+COPY --from=control-builder /src/web/control/dist /app/web/control/dist
+ENTRYPOINT ["/app/clawman"]

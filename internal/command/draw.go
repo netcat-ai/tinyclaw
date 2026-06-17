@@ -173,7 +173,7 @@ func (h *Handler) run(ctx context.Context, message core.Message, prompt string) 
 		return
 	}
 
-	mediaID, err := newGeneratedMediaID(time.Now().UTC())
+	mediaID, err := NewGeneratedMediaID(time.Now().UTC())
 	if err != nil {
 		slog.Error("generate media id failed", "message_id", message.ID, "err", err)
 		h.createTextDelivery(ctx, message, KindCommandFailure, "画图失败，请稍后再试")
@@ -308,7 +308,7 @@ func (h *Handler) createFileDelivery(ctx context.Context, message core.Message, 
 	}
 }
 
-func newGeneratedMediaID(now time.Time) (string, error) {
+func NewGeneratedMediaID(now time.Time) (string, error) {
 	var raw [4]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", fmt.Errorf("generate random media id: %w", err)

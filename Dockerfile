@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN npm install -g @openai/codex@0.131.0
 
-COPY dist/tinyclaw /app/tinyclaw
+COPY dist/clawman /app/clawman
 COPY web/control/dist /app/web/control/dist
 
-ENTRYPOINT ["/app/tinyclaw"]
+ENTRYPOINT ["/app/clawman"]

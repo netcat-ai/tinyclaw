@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -141,12 +140,19 @@ func (s *Server) handleInternalMedia(w http.ResponseWriter, r *http.Request) {
 		WOCType     string `json:"woc_type"`
 		Content     string `json:"content"`
 		RawText     string `json:"raw_text"`
+		Quote       struct {
+			MsgType string `json:"msgtype"`
+			MsgID   string `json:"msgid"`
+		} `json:"quote"`
 	}
 	_ = json.Unmarshal(message.Body, &body)
 	instanceID := strings.TrimSpace(body.WOCInstance)
 	roomID := strings.TrimSpace(firstNonEmpty(body.WOCRoomID, message.RoomIDRaw))
 	agentMsgID := wocAgentMessageID(message.MsgID, body.RawText, body.Content)
-	if strings.TrimSpace(message.Source) != "wechat" || !isWOCMediaMessage(message, body.WOCType, body.RawText, body.Content) {
+	if isWOCImageType(body.Quote.MsgType) && strings.TrimSpace(body.Quote.MsgID) != "" {
+		agentMsgID = strings.TrimSpace(body.Quote.MsgID)
+	}
+	if strings.TrimSpace(message.Source) != "wechat" || !isWOCMediaMessage(message, body.WOCType, body.Quote.MsgType, body.RawText, body.Content) {
 		writeAPIError(w, http.StatusBadRequest, "unsupported_media", "message is not a WOC image")
 		return
 	}
@@ -162,9 +168,17 @@ func (s *Server) handleInternalMedia(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, s.mediaBaseURL+"/api/agent/media?"+values.Encode(), http.StatusFound)
 }
 
-func isWOCMediaMessage(message core.Message, wocType string, hints ...string) bool {
+func isWOCMediaMessage(message core.Message, wocType string, quotedType string, hints ...string) bool {
 	if strings.TrimSpace(message.MsgType) == "image" {
 		return true
+	}
+	if isWOCImageType(quotedType) {
+		return true
+	}
+	for _, hint := range hints {
+		if strings.Contains(hint, "<img ") && strings.Contains(hint, "cdn") {
+			return true
+		}
 	}
 	if strings.TrimSpace(wocType) != "link" {
 		return false
@@ -177,14 +191,16 @@ func isWOCMediaMessage(message core.Message, wocType string, hints ...string) bo
 	return false
 }
 
-var wocLocalIDPattern = regexp.MustCompile(`\blocal_id=(\d+)\b`)
-
-func wocAgentMessageID(msgID string, hints ...string) string {
-	for _, hint := range hints {
-		if match := wocLocalIDPattern.FindStringSubmatch(hint); len(match) == 2 {
-			return match[1]
-		}
+func isWOCImageType(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "image", "图片":
+		return true
+	default:
+		return false
 	}
+}
+
+func wocAgentMessageID(msgID string, _ ...string) string {
 	msgID = strings.TrimSpace(msgID)
 	if after, ok := strings.CutPrefix(msgID, "woc:"); ok {
 		return strings.TrimSpace(after)

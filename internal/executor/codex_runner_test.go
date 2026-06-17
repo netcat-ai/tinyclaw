@@ -40,13 +40,35 @@ func TestBuildCodexPromptIncludesContextMessages(t *testing.T) {
 		"Return only one JSON object matching Agent Run Result",
 		"Room Memory Search:",
 		"memory_search_requests",
+		"image_generation_requests",
 		"Do not include room_id",
-		"id=1 sender=Alice text=\"hello\"",
-		"id=2 sender=bob text=\"@agent help\"",
+		"Conversation messages (JSONL):",
+		`{"id":1,"sender":"Alice","type":"text","text":{"content":"hello"}}`,
+		`{"id":2,"sender":"bob","type":"text","text":{"content":"@agent help"}}`,
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
+	}
+}
+
+func TestCodexPromptQuoteFromQuoteObject(t *testing.T) {
+	payload := json.RawMessage(`{
+		"content":"edit this image",
+		"quote":{
+			"msgtype":"image",
+			"from":"小金鱼",
+			"msgid":"4024624919367125923",
+			"image":{"content":"[图片]"}
+		}
+	}`)
+
+	quote := buildCodexPromptQuote(payload, 43)
+	if quote == nil || quote.Type != "image" || quote.Sender != "小金鱼" || quote.SourceMessageID != "4024624919367125923" {
+		t.Fatalf("quote = %+v", quote)
+	}
+	if quote.Image == nil || quote.Image.URL != "http://127.0.0.1:8081/internal/media?msgid=43" {
+		t.Fatalf("quote image = %+v", quote.Image)
 	}
 }
 
@@ -59,9 +81,35 @@ func TestBuildCodexPromptIncludesImageMediaURL(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"id=42 sender=Alice text=\"[图片]\"",
-		"image_url=http://127.0.0.1:8081/internal/media?msgid=42",
+		`{"id":42,"sender":"Alice","type":"image","image":{"content":"[图片]","url":"http://127.0.0.1:8081/internal/media?msgid=42"}}`,
+		"Conversation messages are JSON Lines.",
+		"message.image.url or message.quote.image.url",
 		"download the URL with curl -L",
+		"Image Generation:",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildCodexPromptIncludesReferencedImageMediaURL(t *testing.T) {
+	prompt := BuildCodexPrompt(AgentRunRequest{
+		AgentRun: testAgentRun,
+		ContextMessages: []core.Message{
+			{
+				ID:         43,
+				SenderName: "Alice",
+				MsgType:    "text",
+				Payload:    []byte(`{"content":"edit this image","quote":{"msgtype":"image","from":"Bob","msgid":"132","image":{"content":"[图片]"}}}`),
+			},
+		},
+	})
+
+	for _, want := range []string{
+		`"id":43`,
+		`"text":{"content":"edit this image"}`,
+		`"quote":{"type":"image","sender":"Bob","source_message_id":"132","image":{"content":"[图片]","url":"http://127.0.0.1:8081/internal/media?msgid=43"}}`,
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
@@ -80,8 +128,8 @@ func TestBuildCodexPromptMarksHandledCommandMessages(t *testing.T) {
 
 	for _, want := range []string{
 		"Handled command messages are room history events already processed by TinyClaw.",
-		"id=1 sender=Alice handled_command=draw text=\"/draw 一朵花\"",
-		"id=2 sender=bob text=\"@agent 后续问题\"",
+		`{"id":1,"sender":"Alice","type":"text","text":{"content":"/draw 一朵花"},"handled_command":"draw"}`,
+		`{"id":2,"sender":"bob","type":"text","text":{"content":"@agent 后续问题"}}`,
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
@@ -113,6 +161,18 @@ func TestBuildCodexPromptIncludesRunScopedSubagents(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
+	}
+}
+
+func TestCodexExecArgsIncludesOpenAIBaseURL(t *testing.T) {
+	runner := NewCodexRunner(CodexRunnerConfig{
+		WorkDir:       "/workspace",
+		OpenAIBaseURL: "https://code.v4.chat",
+	})
+
+	args := strings.Join(runner.codexExecArgs("/tmp/schema.json", "/tmp/output.txt", ""), "\n")
+	if !strings.Contains(args, "-c\nopenai_base_url=\"https://code.v4.chat\"") {
+		t.Fatalf("args missing openai_base_url config:\n%s", args)
 	}
 }
 
@@ -167,6 +227,213 @@ printf "fake codex answer" > "$output"
 	}
 	if strings.Contains(args, "--ephemeral\n") {
 		t.Fatalf("args include --ephemeral:\n%s", args)
+	}
+}
+
+func TestCodexRunnerLeavesImageMessagesAsURLs(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "codex")
+	argsPath := filepath.Join(dir, "args")
+	promptPath := filepath.Join(dir, "prompt")
+	script := `#!/bin/sh
+output=""
+printf '%s\n' "$@" > "` + argsPath + `"
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-last-message" ]; then
+    shift
+    output="$1"
+  fi
+  shift
+done
+cat > "` + promptPath + `"
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
+printf "image answer" > "$output"
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	runner := NewCodexRunner(CodexRunnerConfig{
+		Bin:          bin,
+		WorkDir:      dir,
+		MediaBaseURL: "http://media.example",
+		Timeout:      5 * time.Second,
+	})
+
+	result, err := runner.RunAgent(context.Background(), AgentRunRequest{
+		AgentRun: testAgentRun,
+		ContextMessages: []core.Message{
+			{ID: 42, SenderName: "Alice", MsgType: "image", Payload: []byte(`{"content":"[图片]"}`)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgent error: %v", err)
+	}
+	if result.FinalOutput != "image answer" {
+		t.Fatalf("output = %q, want image answer", result.FinalOutput)
+	}
+	argsData, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	args := string(argsData)
+	if strings.Contains(args, "--image\n") {
+		t.Fatalf("args include image attachment:\n%s", args)
+	}
+	promptData, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("read prompt: %v", err)
+	}
+	if !strings.Contains(string(promptData), `"image":{"content":"[图片]","url":"http://127.0.0.1:8081/internal/media?msgid=42"}`) {
+		t.Fatalf("prompt missing image_url:\n%s", promptData)
+	}
+}
+
+func TestCodexRunnerDoesNotFetchImageAttachments(t *testing.T) {
+	mediaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("unexpected image fetch")
+	}))
+	defer mediaServer.Close()
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "codex")
+	argsPath := filepath.Join(dir, "args")
+	script := `#!/bin/sh
+output=""
+printf '%s\n' "$@" > "` + argsPath + `"
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-last-message" ]; then
+    shift
+    output="$1"
+  fi
+  shift
+done
+cat >/dev/null
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
+printf "fallback answer" > "$output"
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	runner := NewCodexRunner(CodexRunnerConfig{
+		Bin:          bin,
+		WorkDir:      dir,
+		MediaBaseURL: mediaServer.URL,
+		Timeout:      5 * time.Second,
+	})
+
+	result, err := runner.RunAgent(context.Background(), AgentRunRequest{
+		AgentRun: testAgentRun,
+		ContextMessages: []core.Message{
+			{ID: 42, SenderName: "Alice", MsgType: "image", Payload: []byte(`{"content":"[图片]"}`)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgent error: %v", err)
+	}
+	if result.FinalOutput != "fallback answer" {
+		t.Fatalf("output = %q, want fallback answer", result.FinalOutput)
+	}
+	argsData, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	if strings.Contains(string(argsData), "--image\n") {
+		t.Fatalf("args include image attachment after failed download:\n%s", argsData)
+	}
+}
+
+type fakeAgentImageTool struct {
+	requests []core.ImageGenerationRequest
+	err      error
+}
+
+func (t *fakeAgentImageTool) GenerateAgentImage(_ context.Context, _ AgentRunRequest, request core.ImageGenerationRequest) (core.GeneratedMediaOutput, error) {
+	t.requests = append(t.requests, request)
+	if t.err != nil {
+		return core.GeneratedMediaOutput{}, t.err
+	}
+	return core.GeneratedMediaOutput{
+		MediaID:      "gm_test",
+		MediaURL:     "https://media.example/gm_test.png",
+		MediaURLKind: "presigned_s3",
+		MIMEType:     "image/png",
+		ExpiresAt:    time.Unix(1700000000, 0).UTC(),
+	}, nil
+}
+
+func TestCodexRunnerRunsImageGenerationRequests(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "codex")
+	script := `#!/bin/sh
+output=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-last-message" ]; then
+    shift
+    output="$1"
+  fi
+  shift
+done
+cat >/dev/null
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
+printf '%s' '{"final_output":"图片已生成","memory_search_requests":[],"memory_write_proposals":[],"image_generation_requests":[{"prompt":"画一朵花","source_message_ids":[],"size":"1024x1024"}]}' > "$output"
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	imageTool := &fakeAgentImageTool{}
+	runner := NewCodexRunner(CodexRunnerConfig{
+		Bin:       bin,
+		WorkDir:   dir,
+		ImageTool: imageTool,
+		Timeout:   5 * time.Second,
+	})
+
+	result, err := runner.RunAgent(context.Background(), AgentRunRequest{AgentRun: testAgentRun})
+	if err != nil {
+		t.Fatalf("RunAgent error: %v", err)
+	}
+	if result.FinalOutput != "图片已生成" {
+		t.Fatalf("output = %q", result.FinalOutput)
+	}
+	if len(imageTool.requests) != 1 || imageTool.requests[0].Prompt != "画一朵花" {
+		t.Fatalf("image requests = %+v", imageTool.requests)
+	}
+	if result.ImageGenerationCount != 1 || len(result.GeneratedMediaOutputs) != 1 {
+		t.Fatalf("generated media count=%d outputs=%+v", result.ImageGenerationCount, result.GeneratedMediaOutputs)
+	}
+	if result.GeneratedMediaOutputs[0].MediaID != "gm_test" {
+		t.Fatalf("media id = %q", result.GeneratedMediaOutputs[0].MediaID)
+	}
+}
+
+func TestCodexRunnerFailsWhenImageGenerationIsNotConfigured(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "codex")
+	script := `#!/bin/sh
+output=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-last-message" ]; then
+    shift
+    output="$1"
+  fi
+  shift
+done
+cat >/dev/null
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
+printf '%s' '{"final_output":"图片已生成","memory_search_requests":[],"memory_write_proposals":[],"image_generation_requests":[{"prompt":"画一朵花","source_message_ids":[],"size":"1024x1024"}]}' > "$output"
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	runner := NewCodexRunner(CodexRunnerConfig{
+		Bin:     bin,
+		WorkDir: dir,
+		Timeout: 5 * time.Second,
+	})
+
+	_, err := runner.RunAgent(context.Background(), AgentRunRequest{AgentRun: testAgentRun})
+	if err == nil || !strings.Contains(err.Error(), "图片生成能力未配置") {
+		t.Fatalf("RunAgent error = %v, want image capability config error", err)
 	}
 }
 

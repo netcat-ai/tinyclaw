@@ -284,6 +284,6 @@ _Avoid_: Clawman state, Message id, processing seq
 - Cross-room schedule creation was considered; resolved: a **Schedule** created during an agent interaction belongs to the current **Agent Session** only.
 - Generated images were considered as reusable long-term artifacts; resolved: first-version **Generated Media** is delivered directly to the current **Room**.
 - Generated image bytes were considered for embedding in **Delivery** payloads; resolved: **Deliveries** reference **Generated Media** instead of carrying media bytes in the delivery list.
-- Generated images were considered as free-form agent output; resolved: first-version image generation starts from an explicit **Draw Command**.
+- Generated images were considered as raw free-form agent output; resolved: generated images are requested through structured **Image Generation Requests**, while **Draw Command** remains an explicit shortcut.
 - Generated Media IDs were considered as reusable artifact handles; resolved: first-version **Generated Media IDs** are for user-visible reference and troubleshooting, not for `/show` or `/resend` commands.
 - Commands were considered as messages hidden from the Room timeline; resolved: a **Command** is a valid **Room** message history item, but it does not trigger ordinary agent conversation when consumed by a command handler.

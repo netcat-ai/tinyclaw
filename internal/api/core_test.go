@@ -29,6 +29,12 @@ type fakeCoreStore struct {
 	getMsgFn      func(context.Context, int64) (core.Message, error)
 }
 
+func TestIsWOCMediaMessageAcceptsQuoteImage(t *testing.T) {
+	if !isWOCMediaMessage(core.Message{MsgType: "text"}, "text", "image") {
+		t.Fatal("isWOCMediaMessage = false, want true for quote image")
+	}
+}
+
 func (f fakeCoreStore) RegisterRoom(ctx context.Context, input core.RegisterRoomInput) (core.RegisterRoomResult, error) {
 	return f.registerFn(ctx, input)
 }
@@ -237,7 +243,7 @@ func TestHandleInternalMediaRedirectsWOCImageByInternalMessageID(t *testing.T) {
 	}
 }
 
-func TestHandleInternalMediaRedirectUsesWOCImageLocalIDFromBody(t *testing.T) {
+func TestHandleInternalMediaRedirectUsesWOCServerID(t *testing.T) {
 	api := NewServer(fakeCoreStore{
 		getMsgFn: func(_ context.Context, id int64) (core.Message, error) {
 			if id != 43 {
@@ -246,10 +252,10 @@ func TestHandleInternalMediaRedirectUsesWOCImageLocalIDFromBody(t *testing.T) {
 			return core.Message{
 				ID:        id,
 				Source:    "wechat",
-				MsgID:     "woc:e0d88e4d0195696e",
+				MsgID:     "woc:4024624919367125923",
 				RoomIDRaw: "room-1",
 				MsgType:   "image",
-				Body:      json.RawMessage(`{"woc_instance":"inst-1","woc_room_id":"woc-room","raw_text":"[图片] local_id=87"}`),
+				Body:      json.RawMessage(`{"woc_instance":"inst-1","woc_room_id":"woc-room","raw_text":"[图片]"}`),
 			}, nil
 		},
 	}, "api-secret")
@@ -263,15 +269,12 @@ func TestHandleInternalMediaRedirectUsesWOCImageLocalIDFromBody(t *testing.T) {
 		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusFound, rec.Body.String())
 	}
 	location := rec.Header().Get("Location")
-	if !strings.Contains(location, "msgid=87") {
-		t.Fatalf("location = %q, want WOC local_id msgid", location)
-	}
-	if strings.Contains(location, "e0d88e4d0195696e") {
-		t.Fatalf("location = %q, should not use hashed message id", location)
+	if !strings.Contains(location, "msgid=4024624919367125923") {
+		t.Fatalf("location = %q, want WOC server_id msgid", location)
 	}
 }
 
-func TestHandleInternalMediaRedirectsUnsupportedWOCMediaByLocalID(t *testing.T) {
+func TestHandleInternalMediaRedirectsUnsupportedWOCMediaByServerID(t *testing.T) {
 	api := NewServer(fakeCoreStore{
 		getMsgFn: func(_ context.Context, id int64) (core.Message, error) {
 			if id != 44 {
@@ -298,7 +301,44 @@ func TestHandleInternalMediaRedirectsUnsupportedWOCMediaByLocalID(t *testing.T) 
 	}
 	location := rec.Header().Get("Location")
 	if !strings.Contains(location, "msgid=17907") {
-		t.Fatalf("location = %q, want WOC local_id msgid", location)
+		t.Fatalf("location = %q, want WOC server_id msgid", location)
+	}
+}
+
+func TestHandleInternalMediaRedirectsQuotedWOCImage(t *testing.T) {
+	api := NewServer(fakeCoreStore{
+		getMsgFn: func(_ context.Context, id int64) (core.Message, error) {
+			if id != 45 {
+				t.Fatalf("message id = %d, want 45", id)
+			}
+			return core.Message{
+				ID:        id,
+				Source:    "wechat",
+				MsgID:     "woc:8820952579958515168",
+				RoomIDRaw: "room-1",
+				MsgType:   "text",
+				Body: json.RawMessage(`{
+					"woc_instance":"inst-1",
+					"woc_room_id":"woc-room",
+					"woc_type":"text",
+					"content":"编辑这张图",
+					"quote":{"msgtype":"image","from":"小金鱼","msgid":"4024624919367125923","image":{"content":"[图片]"}}
+				}`),
+			}, nil
+		},
+	}, "api-secret")
+	api.SetMediaRedirectConfig("http://panel.local", "fixed-token")
+
+	req := httptest.NewRequest(http.MethodGet, "/internal/media?msgid=45", nil)
+	rec := httptest.NewRecorder()
+	api.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusFound, rec.Body.String())
+	}
+	location := rec.Header().Get("Location")
+	if !strings.Contains(location, "msgid=4024624919367125923") {
+		t.Fatalf("location = %q, want WOC message id", location)
 	}
 }
 
