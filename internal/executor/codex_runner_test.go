@@ -28,8 +28,8 @@ func TestBuildCodexPromptIncludesContextMessages(t *testing.T) {
 		MemorySearchURL:   "http://127.0.0.1:8081/internal/memory/search",
 		MemorySearchToken: "token-1",
 		ContextMessages: []core.Message{
-			{ID: 1, SenderName: "Alice", Payload: []byte(`{"type":"text","text":"hello"}`)},
-			{ID: 2, SenderID: "bob", Payload: []byte(`{"type":"text","text":"@agent help"}`)},
+			{ID: 1, SenderName: "Alice", MsgType: "text", Body: []byte(`{"content":"hello"}`)},
+			{ID: 2, SenderID: "bob", MsgType: "text", Body: []byte(`{"content":"@agent help"}`)},
 		},
 	})
 
@@ -43,8 +43,12 @@ func TestBuildCodexPromptIncludesContextMessages(t *testing.T) {
 		"image_generation_requests",
 		"Do not include room_id",
 		"Conversation messages (JSONL):",
-		`{"id":1,"sender":"Alice","type":"text","text":{"content":"hello"}}`,
-		`{"id":2,"sender":"bob","type":"text","text":{"content":"@agent help"}}`,
+		`"id":1`,
+		`"sender":"Alice"`,
+		`"text":{"content":"hello"}`,
+		`"id":2`,
+		`"sender":"bob"`,
+		`"text":{"content":"@agent help"}`,
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
@@ -52,39 +56,19 @@ func TestBuildCodexPromptIncludesContextMessages(t *testing.T) {
 	}
 }
 
-func TestCodexPromptQuoteFromQuoteObject(t *testing.T) {
-	payload := json.RawMessage(`{
-		"content":"edit this image",
-		"text":{
-			"content":"edit this image",
-			"quote":{
-				"msgtype":"image",
-				"from":"小金鱼",
-				"msgid":"4024624919367125923",
-				"image":{"content":"[图片]"}
-			}
-		}
-	}`)
-
-	quote := buildCodexPromptQuote(payload)
-	if quote == nil || quote.MsgType != "image" || quote.From != "小金鱼" || quote.MsgID != "4024624919367125923" {
-		t.Fatalf("quote = %+v", quote)
-	}
-	if quote.Image == nil || quote.Image.Content != "[图片]" {
-		t.Fatalf("quote image = %+v", quote.Image)
-	}
-}
-
 func TestBuildCodexPromptIncludesImageMediaRule(t *testing.T) {
 	prompt := BuildCodexPrompt(AgentRunRequest{
 		AgentRun: testAgentRun,
 		ContextMessages: []core.Message{
-			{ID: 42, SenderName: "Alice", MsgType: "image", Payload: []byte(`{"content":"[图片]"}`)},
+			{ID: 42, SenderName: "Alice", MsgType: "image", Body: []byte(`{"content":"[图片]"}`)},
 		},
 	})
 
 	for _, want := range []string{
-		`{"id":42,"sender":"Alice","type":"image","image":{"content":"[图片]"}}`,
+		`"id":42`,
+		`"sender":"Alice"`,
+		`"type":"image"`,
+		`"image":{"content":"[图片]"}`,
 		"Conversation messages are JSON Lines.",
 		"http://127.0.0.1:8081/internal/media?msgid=<message.id>",
 		"Never use text.quote.msgid in internal media URLs.",
@@ -105,7 +89,7 @@ func TestBuildCodexPromptIncludesReferencedImageMetadata(t *testing.T) {
 				ID:         43,
 				SenderName: "Alice",
 				MsgType:    "text",
-				Payload:    []byte(`{"content":"edit this image","text":{"content":"edit this image","quote":{"msgtype":"image","from":"Bob","msgid":"132","image":{"content":"[图片]"}}}}`),
+				Body:       []byte(`{"content":"edit this image","quote":{"msgtype":"image","from":"Bob","msgid":"132","image":{"content":"[图片]"}}}`),
 			},
 		},
 	})
@@ -124,15 +108,17 @@ func TestBuildCodexPromptMarksHandledCommandMessages(t *testing.T) {
 	prompt := BuildCodexPrompt(AgentRunRequest{
 		AgentRun: testAgentRun,
 		ContextMessages: []core.Message{
-			{ID: 1, SenderName: "Alice", Payload: []byte(`{"type":"text","text":"/draw 一朵花","command_kind":"draw"}`)},
-			{ID: 2, SenderID: "bob", Payload: []byte(`{"type":"text","text":"@agent 后续问题"}`)},
+			{ID: 1, SenderName: "Alice", MsgType: "text", Body: []byte(`{"content":"/draw 一朵花","command_kind":"draw"}`)},
+			{ID: 2, SenderID: "bob", MsgType: "text", Body: []byte(`{"content":"@agent 后续问题"}`)},
 		},
 	})
 
 	for _, want := range []string{
 		"Handled command messages are room history events already processed by TinyClaw.",
-		`{"id":1,"sender":"Alice","type":"text","text":{"content":"/draw 一朵花"},"handled_command":"draw"}`,
-		`{"id":2,"sender":"bob","type":"text","text":{"content":"@agent 后续问题"}}`,
+		`"handled_command":"draw"`,
+		`"command_kind":"draw"`,
+		`"content":"/draw 一朵花"`,
+		`"text":{"content":"@agent 后续问题"}`,
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
@@ -151,7 +137,7 @@ func TestBuildCodexPromptIncludesRunScopedSubagents(t *testing.T) {
 			Enabled:     true,
 		}},
 		ContextMessages: []core.Message{
-			{ID: 2, SenderID: "bob", Payload: []byte(`{"type":"text","text":"@product 看下这个方案"}`)},
+			{ID: 2, SenderID: "bob", MsgType: "text", Body: []byte(`{"content":"@product 看下这个方案"}`), Payload: []byte(`{"content":"@product 看下这个方案"}`)},
 		},
 	})
 
@@ -265,7 +251,7 @@ printf "image answer" > "$output"
 	result, err := runner.RunAgent(context.Background(), AgentRunRequest{
 		AgentRun: testAgentRun,
 		ContextMessages: []core.Message{
-			{ID: 42, SenderName: "Alice", MsgType: "image", Payload: []byte(`{"content":"[图片]"}`)},
+			{ID: 42, SenderName: "Alice", MsgType: "image", Body: []byte(`{"content":"[图片]"}`)},
 		},
 	})
 	if err != nil {
@@ -331,7 +317,7 @@ printf "fallback answer" > "$output"
 	result, err := runner.RunAgent(context.Background(), AgentRunRequest{
 		AgentRun: testAgentRun,
 		ContextMessages: []core.Message{
-			{ID: 42, SenderName: "Alice", MsgType: "image", Payload: []byte(`{"content":"[图片]"}`)},
+			{ID: 42, SenderName: "Alice", MsgType: "image", Body: []byte(`{"content":"[图片]"}`)},
 		},
 	})
 	if err != nil {
@@ -907,7 +893,9 @@ func TestCodexRunnerRealMemorySearch(t *testing.T) {
 		ContextMessages: []core.Message{{
 			ID:         1,
 			SenderName: "Alice",
-			Payload:    []byte(`{"type":"text","text":"Use memory_search_requests first, then answer with my reply language preference from Room Memory."}`),
+			MsgType:    "text",
+			Body:       []byte(`{"content":"Use memory_search_requests first, then answer with my reply language preference from Room Memory."}`),
+			Payload:    []byte(`{"content":"Use memory_search_requests first, then answer with my reply language preference from Room Memory."}`),
 		}},
 	})
 	if err != nil {

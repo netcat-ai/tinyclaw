@@ -50,6 +50,35 @@ func validateCreateMessage(input core.CreateMessageInput) error {
 func upsertRoomTx(ctx context.Context, tx *sql.Tx, input core.RegisterRoomInput) (core.Room, error) {
 	var room core.Room
 	var displayName sql.NullString
+	tenantID := firstNonEmpty(input.TenantID, core.DefaultTenantID)
+	if tenantID != core.DefaultTenantID {
+		row := tx.QueryRowContext(ctx, `
+			UPDATE rooms
+			SET tenant_id = $1,
+			    channel_room_type = $4,
+			    display_name = $5,
+			    outbound_alias = $6,
+			    updated_at = NOW()
+			WHERE tenant_id = $7
+			  AND channel = $2
+			  AND channel_room_id = $3
+			  AND NOT EXISTS (
+			      SELECT 1
+			      FROM rooms
+			      WHERE tenant_id = $1
+			        AND channel = $2
+			        AND channel_room_id = $3
+			  )
+			RETURNING id, tenant_id, channel, channel_room_id, channel_room_type, display_name, outbound_alias, created_at, updated_at
+		`, tenantID, input.Channel, input.ChannelRoomID, input.ChannelRoomType, nullIfEmpty(input.DisplayName), input.OutboundAlias, core.DefaultTenantID)
+		room, err := scanCoreRoom(row)
+		if err == nil {
+			return room, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return core.Room{}, fmt.Errorf("adopt room tenant: %w", err)
+		}
+	}
 	err := tx.QueryRowContext(ctx, `
 		INSERT INTO rooms (
 			tenant_id,
@@ -65,7 +94,7 @@ func upsertRoomTx(ctx context.Context, tx *sql.Tx, input core.RegisterRoomInput)
 		    outbound_alias = EXCLUDED.outbound_alias,
 		    updated_at = NOW()
 		RETURNING id, tenant_id, channel, channel_room_id, channel_room_type, display_name, outbound_alias, created_at, updated_at
-	`, core.DefaultTenantID, input.Channel, input.ChannelRoomID, input.ChannelRoomType, nullIfEmpty(input.DisplayName), input.OutboundAlias).Scan(
+	`, tenantID, input.Channel, input.ChannelRoomID, input.ChannelRoomType, nullIfEmpty(input.DisplayName), input.OutboundAlias).Scan(
 		&room.ID,
 		&room.TenantID,
 		&room.Channel,
@@ -140,6 +169,22 @@ func upsertAgentSessionTx(ctx context.Context, tx *sql.Tx, roomID int64, input c
 
 func getCoreRoomByIDTx(ctx context.Context, tx *sql.Tx, id int64) (core.Room, error) {
 	row := tx.QueryRowContext(ctx, `
+		SELECT id, tenant_id, channel, channel_room_id, channel_room_type, display_name, outbound_alias, created_at, updated_at
+		FROM rooms
+		WHERE id = $1
+	`, id)
+	room, err := scanCoreRoom(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return core.Room{}, fmt.Errorf("room %d not found", id)
+		}
+		return core.Room{}, fmt.Errorf("get room: %w", err)
+	}
+	return room, nil
+}
+
+func getCoreRoomByID(ctx context.Context, db *sql.DB, id int64) (core.Room, error) {
+	row := db.QueryRowContext(ctx, `
 		SELECT id, tenant_id, channel, channel_room_id, channel_room_type, display_name, outbound_alias, created_at, updated_at
 		FROM rooms
 		WHERE id = $1

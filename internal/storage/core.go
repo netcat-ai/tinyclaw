@@ -22,6 +22,7 @@ func NewCoreStore(db *sql.DB) *CoreStore {
 }
 
 func (s *CoreStore) RegisterRoom(ctx context.Context, input core.RegisterRoomInput) (core.RegisterRoomResult, error) {
+	input.TenantID = strings.TrimSpace(input.TenantID)
 	input.Channel = strings.TrimSpace(input.Channel)
 	input.ChannelRoomID = strings.TrimSpace(input.ChannelRoomID)
 	input.ChannelRoomType = strings.TrimSpace(input.ChannelRoomType)
@@ -55,6 +56,10 @@ func (s *CoreStore) RegisterRoom(ctx context.Context, input core.RegisterRoomInp
 	}
 	telemetry.IncRoomRegistration(input.Channel, "success")
 	return core.RegisterRoomResult{Room: room, AgentSession: session}, nil
+}
+
+func (s *CoreStore) GetCoreRoomByID(ctx context.Context, id int64) (core.Room, error) {
+	return getCoreRoomByID(ctx, s.db, id)
 }
 
 func (s *CoreStore) CreateMessage(ctx context.Context, input core.CreateMessageInput) (core.CreateMessageResult, error) {

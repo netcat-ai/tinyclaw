@@ -219,6 +219,7 @@ type UpsertAgentInput struct {
 }
 
 type RegisterRoomInput struct {
+	TenantID        string          `json:"tenant_id,omitempty"`
 	Channel         string          `json:"channel"`
 	ChannelRoomID   string          `json:"channel_room_id"`
 	ChannelRoomType string          `json:"channel_room_type"`

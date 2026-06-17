@@ -26,6 +26,7 @@ type CoreStore interface {
 
 type MediaStore interface {
 	GetCoreMessageByID(ctx context.Context, id int64) (core.Message, error)
+	GetCoreRoomByID(ctx context.Context, id int64) (core.Room, error)
 }
 
 type APIClientStore interface {
@@ -134,27 +135,26 @@ func (s *Server) handleInternalMedia(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusNotFound, "message_not_found", "message not found")
 		return
 	}
+	room, err := store.GetCoreRoomByID(r.Context(), message.RoomID)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "room_not_found", "room not found")
+		return
+	}
 	var body struct {
-		WOCInstance string `json:"woc_instance"`
-		WOCRoomID   string `json:"woc_room_id"`
-		WOCType     string `json:"woc_type"`
-		Content     string `json:"content"`
-		RawText     string `json:"raw_text"`
-		Text        struct {
-			Quote struct {
-				MsgType string `json:"msgtype"`
-				MsgID   string `json:"msgid"`
-			} `json:"quote"`
-		} `json:"text"`
+		Content string `json:"content"`
+		Quote   struct {
+			MsgType string `json:"msgtype"`
+			MsgID   string `json:"msgid"`
+		} `json:"quote"`
 	}
 	_ = json.Unmarshal(message.Body, &body)
-	instanceID := strings.TrimSpace(body.WOCInstance)
-	roomID := strings.TrimSpace(firstNonEmpty(body.WOCRoomID, message.RoomIDRaw))
-	agentMsgID := wocAgentMessageID(message.MsgID, body.RawText, body.Content)
-	if isWOCImageType(body.Text.Quote.MsgType) && strings.TrimSpace(body.Text.Quote.MsgID) != "" {
-		agentMsgID = strings.TrimSpace(body.Text.Quote.MsgID)
+	instanceID := strings.TrimSpace(room.TenantID)
+	roomID := strings.TrimSpace(firstNonEmpty(message.RoomIDRaw, room.ChannelRoomID))
+	agentMsgID := wocAgentMessageID(message.MsgID)
+	if isWOCImageType(body.Quote.MsgType) && strings.TrimSpace(body.Quote.MsgID) != "" {
+		agentMsgID = strings.TrimSpace(body.Quote.MsgID)
 	}
-	if strings.TrimSpace(message.Source) != "wechat" || !isWOCMediaMessage(message, body.WOCType, body.Text.Quote.MsgType, body.RawText, body.Content) {
+	if strings.TrimSpace(message.Source) != "wechat" || !isWOCMediaMessage(message, message.MsgType, body.Quote.MsgType) {
 		writeAPIError(w, http.StatusBadRequest, "unsupported_media", "message is not a WOC image")
 		return
 	}
@@ -170,20 +170,15 @@ func (s *Server) handleInternalMedia(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, s.mediaBaseURL+"/api/agent/media?"+values.Encode(), http.StatusFound)
 }
 
-func isWOCMediaMessage(message core.Message, wocType string, quotedType string, hints ...string) bool {
+func isWOCMediaMessage(message core.Message, wocType string, quotedType string) bool {
 	if strings.TrimSpace(message.MsgType) == "image" {
+		return true
+	}
+	if isWOCImageType(wocType) {
 		return true
 	}
 	if isWOCImageType(quotedType) {
 		return true
-	}
-	if strings.TrimSpace(wocType) != "link" {
-		return false
-	}
-	for _, hint := range hints {
-		if strings.Contains(hint, "当前版本不支持展示") {
-			return true
-		}
 	}
 	return false
 }
@@ -197,7 +192,7 @@ func isWOCImageType(value string) bool {
 	}
 }
 
-func wocAgentMessageID(msgID string, _ ...string) string {
+func wocAgentMessageID(msgID string) string {
 	msgID = strings.TrimSpace(msgID)
 	if after, ok := strings.CutPrefix(msgID, "woc:"); ok {
 		return strings.TrimSpace(after)

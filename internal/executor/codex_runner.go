@@ -596,68 +596,25 @@ func formatCodexPromptMessage(message core.Message) string {
 	if sender == "" {
 		sender = "unknown"
 	}
-	output := codexPromptMessage{
-		ID:     message.ID,
-		Sender: sender,
-		Type:   normalizedPromptMessageType(message.MsgType),
+	msgType := strings.TrimSpace(message.MsgType)
+	if msgType == "" {
+		msgType = "text"
 	}
-	if commandKind := extractMessageCommandKind(message.Payload); commandKind != "" {
-		output.HandledCommand = commandKind
+	output := map[string]any{
+		"id":     message.ID,
+		"sender": sender,
+		"type":   msgType,
+		msgType:  json.RawMessage(message.Body),
 	}
-	text := extractMessageText(message.Payload)
-	if strings.TrimSpace(message.MsgType) == "image" {
-		output.Type = "image"
-		output.Image = &codexPromptImage{
-			Content: text,
-		}
-	} else {
-		output.Text = &codexPromptText{Content: text}
-		if quote := buildCodexPromptQuote(message.Payload); quote != nil {
-			output.Text.Quote = quote
-		}
+	if commandKind := extractMessageCommandKind(message.Body); commandKind != "" {
+		output["handled_command"] = commandKind
 	}
 	data, err := json.Marshal(output)
 	if err != nil {
+		text := extractMessageText(message.Body)
 		return fmt.Sprintf(`{"id":%d,"sender":%q,"type":"text","text":{"content":%q}}`, message.ID, sender, text)
 	}
 	return string(data)
-}
-
-type codexPromptMessage struct {
-	ID             int64             `json:"id"`
-	Sender         string            `json:"sender"`
-	Type           string            `json:"type"`
-	Text           *codexPromptText  `json:"text,omitempty"`
-	Image          *codexPromptImage `json:"image,omitempty"`
-	HandledCommand string            `json:"handled_command,omitempty"`
-}
-
-type codexPromptText struct {
-	Content string            `json:"content"`
-	Quote   *codexPromptQuote `json:"quote,omitempty"`
-}
-
-type codexPromptImage struct {
-	Content string `json:"content,omitempty"`
-}
-
-type codexPromptQuote struct {
-	MsgType string            `json:"msgtype"`
-	From    string            `json:"from,omitempty"`
-	MsgID   string            `json:"msgid,omitempty"`
-	Text    *codexPromptText  `json:"text,omitempty"`
-	Image   *codexPromptImage `json:"image,omitempty"`
-}
-
-func normalizedPromptMessageType(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "image", "图片":
-		return "image"
-	case "text", "文本", "":
-		return "text"
-	default:
-		return strings.TrimSpace(value)
-	}
 }
 
 func extractMessageCommandKind(payload json.RawMessage) string {
@@ -668,60 +625,6 @@ func extractMessageCommandKind(payload json.RawMessage) string {
 		return ""
 	}
 	return strings.TrimSpace(parsed.CommandKind)
-}
-
-func buildCodexPromptQuote(payload json.RawMessage) *codexPromptQuote {
-	var parsed struct {
-		Text struct {
-			Quote json.RawMessage `json:"quote"`
-		} `json:"text"`
-	}
-	if err := json.Unmarshal(payload, &parsed); err != nil || len(bytes.TrimSpace(parsed.Text.Quote)) == 0 {
-		return nil
-	}
-	var quote struct {
-		MsgType string `json:"msgtype"`
-		From    string `json:"from"`
-		MsgID   string `json:"msgid"`
-		Text    struct {
-			Content string `json:"content"`
-		} `json:"text"`
-		Image struct {
-			Content string `json:"content"`
-		} `json:"image"`
-	}
-	if err := json.Unmarshal(parsed.Text.Quote, &quote); err != nil {
-		return nil
-	}
-	typ := normalizedPromptMessageType(quote.MsgType)
-	if typ == "" {
-		return nil
-	}
-	result := &codexPromptQuote{
-		MsgType: typ,
-		From:    strings.TrimSpace(quote.From),
-		MsgID:   strings.TrimSpace(quote.MsgID),
-	}
-	switch typ {
-	case "image":
-		result.Image = &codexPromptImage{
-			Content: promptFirstNonEmpty(quote.Image.Content, "[图片]"),
-		}
-	case "text":
-		if content := strings.TrimSpace(quote.Text.Content); content != "" {
-			result.Text = &codexPromptText{Content: content}
-		}
-	}
-	return result
-}
-
-func promptFirstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if text := strings.TrimSpace(value); text != "" {
-			return text
-		}
-	}
-	return ""
 }
 
 func extractMessageText(payload json.RawMessage) string {

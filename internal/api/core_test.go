@@ -27,6 +27,7 @@ type fakeCoreStore struct {
 	createAgentFn func(context.Context, core.UpsertAgentInput) (core.Agent, error)
 	updateAgentFn func(context.Context, int64, core.UpsertAgentInput) (core.Agent, error)
 	getMsgFn      func(context.Context, int64) (core.Message, error)
+	getRoomFn     func(context.Context, int64) (core.Room, error)
 }
 
 func TestIsWOCMediaMessageAcceptsQuoteImage(t *testing.T) {
@@ -89,6 +90,13 @@ func (f fakeCoreStore) UpdateAgent(ctx context.Context, id int64, input core.Ups
 
 func (f fakeCoreStore) GetCoreMessageByID(ctx context.Context, id int64) (core.Message, error) {
 	return f.getMsgFn(ctx, id)
+}
+
+func (f fakeCoreStore) GetCoreRoomByID(ctx context.Context, id int64) (core.Room, error) {
+	if f.getRoomFn == nil {
+		return core.Room{ID: id, TenantID: core.DefaultTenantID}, nil
+	}
+	return f.getRoomFn(ctx, id)
 }
 
 type fakeCommandHandler struct {
@@ -212,12 +220,19 @@ func TestHandleInternalMediaRedirectsWOCImageByInternalMessageID(t *testing.T) {
 			}
 			return core.Message{
 				ID:        id,
+				RoomID:    10,
 				Source:    "wechat",
 				MsgID:     "woc:17964",
 				RoomIDRaw: "room-1",
 				MsgType:   "image",
-				Body:      json.RawMessage(`{"woc_instance":"inst-1","woc_room_id":"woc-room"}`),
+				Body:      json.RawMessage(`{"content":"[图片]"}`),
 			}, nil
+		},
+		getRoomFn: func(_ context.Context, id int64) (core.Room, error) {
+			if id != 10 {
+				t.Fatalf("room id = %d, want 10", id)
+			}
+			return core.Room{ID: id, TenantID: "inst-1", ChannelRoomID: "woc-room"}, nil
 		},
 	}, "api-secret")
 	api.SetMediaRedirectConfig("http://panel.local", "fixed-token")
@@ -233,7 +248,7 @@ func TestHandleInternalMediaRedirectsWOCImageByInternalMessageID(t *testing.T) {
 	for _, want := range []string{
 		"http://panel.local/api/agent/media?",
 		"instanceid=inst-1",
-		"roomid=woc-room",
+		"roomid=room-1",
 		"msgid=17964",
 		"token=fixed-token",
 	} {
@@ -251,12 +266,16 @@ func TestHandleInternalMediaRedirectUsesWOCServerID(t *testing.T) {
 			}
 			return core.Message{
 				ID:        id,
+				RoomID:    10,
 				Source:    "wechat",
 				MsgID:     "woc:4024624919367125923",
 				RoomIDRaw: "room-1",
 				MsgType:   "image",
-				Body:      json.RawMessage(`{"woc_instance":"inst-1","woc_room_id":"woc-room","raw_text":"[图片]"}`),
+				Body:      json.RawMessage(`{"content":"[图片]"}`),
 			}, nil
+		},
+		getRoomFn: func(_ context.Context, id int64) (core.Room, error) {
+			return core.Room{ID: id, TenantID: "inst-1", ChannelRoomID: "woc-room"}, nil
 		},
 	}, "api-secret")
 	api.SetMediaRedirectConfig("http://panel.local", "fixed-token")
@@ -274,37 +293,6 @@ func TestHandleInternalMediaRedirectUsesWOCServerID(t *testing.T) {
 	}
 }
 
-func TestHandleInternalMediaRedirectsUnsupportedWOCMediaByServerID(t *testing.T) {
-	api := NewServer(fakeCoreStore{
-		getMsgFn: func(_ context.Context, id int64) (core.Message, error) {
-			if id != 44 {
-				t.Fatalf("message id = %d, want 44", id)
-			}
-			return core.Message{
-				ID:        id,
-				Source:    "wechat",
-				MsgID:     "woc:17907",
-				RoomIDRaw: "room-1",
-				MsgType:   "unknown",
-				Body:      json.RawMessage(`{"woc_instance":"inst-1","woc_room_id":"woc-room","woc_type":"link","raw_text":"当前版本不支持展示该内容，请升级至最新版本。"}`),
-			}, nil
-		},
-	}, "api-secret")
-	api.SetMediaRedirectConfig("http://panel.local", "fixed-token")
-
-	req := httptest.NewRequest(http.MethodGet, "/internal/media?msgid=44", nil)
-	rec := httptest.NewRecorder()
-	api.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusFound {
-		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusFound, rec.Body.String())
-	}
-	location := rec.Header().Get("Location")
-	if !strings.Contains(location, "msgid=17907") {
-		t.Fatalf("location = %q, want WOC server_id msgid", location)
-	}
-}
-
 func TestHandleInternalMediaRedirectsQuotedWOCImage(t *testing.T) {
 	api := NewServer(fakeCoreStore{
 		getMsgFn: func(_ context.Context, id int64) (core.Message, error) {
@@ -313,18 +301,19 @@ func TestHandleInternalMediaRedirectsQuotedWOCImage(t *testing.T) {
 			}
 			return core.Message{
 				ID:        id,
+				RoomID:    10,
 				Source:    "wechat",
 				MsgID:     "woc:8820952579958515168",
 				RoomIDRaw: "room-1",
 				MsgType:   "text",
 				Body: json.RawMessage(`{
-					"woc_instance":"inst-1",
-					"woc_room_id":"woc-room",
-					"woc_type":"text",
 					"content":"编辑这张图",
-					"text":{"content":"编辑这张图","quote":{"msgtype":"image","from":"小金鱼","msgid":"4024624919367125923","image":{"content":"[图片]"}}}
+					"quote":{"msgtype":"image","from":"小金鱼","msgid":"4024624919367125923","image":{"content":"[图片]"}}
 				}`),
 			}, nil
+		},
+		getRoomFn: func(_ context.Context, id int64) (core.Room, error) {
+			return core.Room{ID: id, TenantID: "inst-1", ChannelRoomID: "woc-room"}, nil
 		},
 	}, "api-secret")
 	api.SetMediaRedirectConfig("http://panel.local", "fixed-token")
