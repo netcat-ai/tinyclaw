@@ -66,16 +66,16 @@ func TestCodexPromptQuoteFromQuoteObject(t *testing.T) {
 		}
 	}`)
 
-	quote := buildCodexPromptQuote(payload, 43)
+	quote := buildCodexPromptQuote(payload)
 	if quote == nil || quote.MsgType != "image" || quote.From != "小金鱼" || quote.MsgID != "4024624919367125923" {
 		t.Fatalf("quote = %+v", quote)
 	}
-	if quote.Image == nil || quote.Image.URL != "http://127.0.0.1:8081/internal/media?msgid=43" {
+	if quote.Image == nil || quote.Image.Content != "[图片]" {
 		t.Fatalf("quote image = %+v", quote.Image)
 	}
 }
 
-func TestBuildCodexPromptIncludesImageMediaURL(t *testing.T) {
+func TestBuildCodexPromptIncludesImageMediaRule(t *testing.T) {
 	prompt := BuildCodexPrompt(AgentRunRequest{
 		AgentRun: testAgentRun,
 		ContextMessages: []core.Message{
@@ -84,10 +84,11 @@ func TestBuildCodexPromptIncludesImageMediaURL(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		`{"id":42,"sender":"Alice","type":"image","image":{"content":"[图片]","url":"http://127.0.0.1:8081/internal/media?msgid=42"}}`,
+		`{"id":42,"sender":"Alice","type":"image","image":{"content":"[图片]"}}`,
 		"Conversation messages are JSON Lines.",
-		"message.image.url or message.text.quote.image.url",
-		"download the URL with curl -L",
+		"http://127.0.0.1:8081/internal/media?msgid=<message.id>",
+		"Never use text.quote.msgid in internal media URLs.",
+		"download the internal media URL with curl -L",
 		"Image Generation:",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -96,7 +97,7 @@ func TestBuildCodexPromptIncludesImageMediaURL(t *testing.T) {
 	}
 }
 
-func TestBuildCodexPromptIncludesReferencedImageMediaURL(t *testing.T) {
+func TestBuildCodexPromptIncludesReferencedImageMetadata(t *testing.T) {
 	prompt := BuildCodexPrompt(AgentRunRequest{
 		AgentRun: testAgentRun,
 		ContextMessages: []core.Message{
@@ -111,7 +112,7 @@ func TestBuildCodexPromptIncludesReferencedImageMediaURL(t *testing.T) {
 
 	for _, want := range []string{
 		`"id":43`,
-		`"text":{"content":"edit this image","quote":{"msgtype":"image","from":"Bob","msgid":"132","image":{"content":"[图片]","url":"http://127.0.0.1:8081/internal/media?msgid=43"}}}`,
+		`"text":{"content":"edit this image","quote":{"msgtype":"image","from":"Bob","msgid":"132","image":{"content":"[图片]"}}}`,
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
@@ -232,7 +233,7 @@ printf "fake codex answer" > "$output"
 	}
 }
 
-func TestCodexRunnerLeavesImageMessagesAsURLs(t *testing.T) {
+func TestCodexRunnerLeavesImageMessagesInPrompt(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "codex")
 	argsPath := filepath.Join(dir, "args")
@@ -285,8 +286,12 @@ printf "image answer" > "$output"
 	if err != nil {
 		t.Fatalf("read prompt: %v", err)
 	}
-	if !strings.Contains(string(promptData), `"image":{"content":"[图片]","url":"http://127.0.0.1:8081/internal/media?msgid=42"}`) {
-		t.Fatalf("prompt missing image_url:\n%s", promptData)
+	prompt := string(promptData)
+	if !strings.Contains(prompt, `"image":{"content":"[图片]"}`) {
+		t.Fatalf("prompt missing image metadata:\n%s", promptData)
+	}
+	if !strings.Contains(prompt, "http://127.0.0.1:8081/internal/media?msgid=<message.id>") {
+		t.Fatalf("prompt missing internal media rule:\n%s", promptData)
 	}
 }
 

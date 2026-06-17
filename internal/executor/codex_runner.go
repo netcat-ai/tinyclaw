@@ -395,13 +395,13 @@ func BuildCodexPrompt(run AgentRunRequest) string {
 	builder.WriteString("Only propose durable Room Memory changes for stable facts, preferences, or todos. Prefer an empty memory_write_proposals array when unsure.\n\n")
 	builder.WriteString("Handled command messages are room history events already processed by TinyClaw. Use them only as context; do not answer, repeat, or execute those commands again.\n\n")
 	builder.WriteString("Conversation messages are JSON Lines. Each line is one normalized message. ")
-	builder.WriteString("Use message.image.url or message.text.quote.image.url as available image sources. ")
-	builder.WriteString("For source_message_ids, always use the top-level message.id from the JSONL line that contains the image URL. ")
-	builder.WriteString("If you need image content, download the URL with curl -L before answering or before choosing source_message_ids. If the download fails, say the image is temporarily unavailable instead of guessing.\n\n")
+	builder.WriteString("For image messages or text.quote image references, use http://127.0.0.1:8081/internal/media?msgid=<message.id> as the image source, where <message.id> is the top-level JSONL message.id. ")
+	builder.WriteString("Never use text.quote.msgid in internal media URLs. ")
+	builder.WriteString("If you need image content, download the internal media URL with curl -L before answering or before choosing source_message_ids. If the download fails, say the image is temporarily unavailable instead of guessing.\n\n")
 	builder.WriteString("Image Generation:\n")
 	builder.WriteString("- For user requests to generate or edit an image, return image_generation_requests instead of calling image providers or uploading media yourself.\n")
 	builder.WriteString("- Request shape: {\"prompt\":\"...\",\"source_message_ids\":[42],\"size\":\"1024x1024\"}; use source_message_ids only for image edits or references to prior image messages.\n")
-	builder.WriteString("- Use messages with image.url or text.quote.image.url as image sources. If an image is inside text.quote, still use the top-level message.id in source_message_ids.\n")
+	builder.WriteString("- For image edits, use the top-level message.id of the JSONL line that contains the image or text.quote image reference in source_message_ids.\n")
 	builder.WriteString("- Clawman will generate, store, and deliver the image. Keep final_output short when image_generation_requests is non-empty.\n\n")
 	if strings.TrimSpace(run.MemorySearchURL) != "" && strings.TrimSpace(run.MemorySearchToken) != "" {
 		builder.WriteString("Room Memory Search:\n")
@@ -609,11 +609,10 @@ func formatCodexPromptMessage(message core.Message) string {
 		output.Type = "image"
 		output.Image = &codexPromptImage{
 			Content: text,
-			URL:     codexPromptMediaURL(message.ID),
 		}
 	} else {
 		output.Text = &codexPromptText{Content: text}
-		if quote := buildCodexPromptQuote(message.Payload, message.ID); quote != nil {
+		if quote := buildCodexPromptQuote(message.Payload); quote != nil {
 			output.Text.Quote = quote
 		}
 	}
@@ -622,10 +621,6 @@ func formatCodexPromptMessage(message core.Message) string {
 		return fmt.Sprintf(`{"id":%d,"sender":%q,"type":"text","text":{"content":%q}}`, message.ID, sender, text)
 	}
 	return string(data)
-}
-
-func codexPromptMediaURL(messageID int64) string {
-	return fmt.Sprintf("http://127.0.0.1:8081/internal/media?msgid=%d", messageID)
 }
 
 type codexPromptMessage struct {
@@ -644,7 +639,6 @@ type codexPromptText struct {
 
 type codexPromptImage struct {
 	Content string `json:"content,omitempty"`
-	URL     string `json:"url,omitempty"`
 }
 
 type codexPromptQuote struct {
@@ -676,7 +670,7 @@ func extractMessageCommandKind(payload json.RawMessage) string {
 	return strings.TrimSpace(parsed.CommandKind)
 }
 
-func buildCodexPromptQuote(payload json.RawMessage, messageID int64) *codexPromptQuote {
+func buildCodexPromptQuote(payload json.RawMessage) *codexPromptQuote {
 	var parsed struct {
 		Text struct {
 			Quote json.RawMessage `json:"quote"`
@@ -694,7 +688,6 @@ func buildCodexPromptQuote(payload json.RawMessage, messageID int64) *codexPromp
 		} `json:"text"`
 		Image struct {
 			Content string `json:"content"`
-			URL     string `json:"url"`
 		} `json:"image"`
 	}
 	if err := json.Unmarshal(parsed.Text.Quote, &quote); err != nil {
@@ -713,7 +706,6 @@ func buildCodexPromptQuote(payload json.RawMessage, messageID int64) *codexPromp
 	case "image":
 		result.Image = &codexPromptImage{
 			Content: promptFirstNonEmpty(quote.Image.Content, "[图片]"),
-			URL:     promptFirstNonEmpty(quote.Image.URL, codexPromptMediaURL(messageID)),
 		}
 	case "text":
 		if content := strings.TrimSpace(quote.Text.Content); content != "" {
