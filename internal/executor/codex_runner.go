@@ -30,7 +30,6 @@ type CodexRunnerConfig struct {
 	OpenAIBaseURL    string
 	DisabledFeatures []string
 	MediaBaseURL     string
-	ImageTool        ImageGenerationTool
 	Timeout          time.Duration
 }
 
@@ -75,12 +74,7 @@ func (r *CodexRunner) RunAgent(ctx context.Context, run AgentRunRequest) (core.A
 			run.AgentRun.CodexSessionID = strings.TrimSpace(result.CodexSessionID)
 		}
 		if len(result.MemorySearchRequests) == 0 {
-			generatedMedia, err := runImageGenerationRequests(runCtx, r.config.ImageTool, run, result.ImageGenerationRequests)
-			if err != nil {
-				return core.AgentRunResult{}, err
-			}
-			result.GeneratedMediaOutputs = generatedMedia
-			result.ImageGenerationCount = len(generatedMedia)
+			result.ImageGenerationCount = len(result.ImageGenerationRequests)
 			result.MemorySearchCount = len(run.MemorySearchResults)
 			return result, nil
 		}
@@ -395,13 +389,16 @@ func BuildCodexPrompt(run AgentRunRequest) string {
 	builder.WriteString("Only propose durable Room Memory changes for stable facts, preferences, or todos. Prefer an empty memory_write_proposals array when unsure.\n\n")
 	builder.WriteString("Handled command messages are room history events already processed by TinyClaw. Use them only as context; do not answer, repeat, or execute those commands again.\n\n")
 	builder.WriteString("Conversation messages are JSON Lines. Each line is one normalized message. ")
-	builder.WriteString("For image messages or text.quote image references, use http://127.0.0.1:8081/internal/media?msgid=<message.id> as the image source, where <message.id> is the top-level JSONL message.id. ")
+	builder.WriteString("For image/video/emotion/voice messages or text.quote media references, use http://127.0.0.1:8081/internal/media?msgid=<message.id> as the media source, where <message.id> is the top-level JSONL message.id. ")
 	builder.WriteString("Never use text.quote.msgid in internal media URLs. ")
-	builder.WriteString("If you need image content, download the internal media URL with curl -L before answering or before choosing source_message_ids. If the download fails, say the image is temporarily unavailable instead of guessing.\n\n")
+	builder.WriteString("If you need media content, download the internal media URL with curl -L before answering or before choosing source_message_ids. If the download fails, say the media is temporarily unavailable instead of guessing.\n\n")
 	builder.WriteString("Image Generation:\n")
 	builder.WriteString("- For user requests to generate or edit an image, return image_generation_requests instead of calling image providers or uploading media yourself.\n")
 	builder.WriteString("- Request shape: {\"prompt\":\"...\",\"source_message_ids\":[42],\"size\":\"1024x1024\"}; use source_message_ids only for image edits or references to prior image messages.\n")
-	builder.WriteString("- For image edits, use the top-level message.id of the JSONL line that contains the image or text.quote image reference in source_message_ids.\n")
+	builder.WriteString("- For image edits, use the top-level message.id of the JSONL line that contains the image/media or text.quote media reference in source_message_ids.\n")
+	builder.WriteString("- Before returning an image edit request, inspect the exact source image via curl. If several images could be intended, ask a brief clarification instead of guessing.\n")
+	builder.WriteString("- Image edit prompts must be conservative and specific: describe the source image, the single intended edit target, preserve constraints, and negative constraints. Preserve identity, subject count, pose, layout, background, and all unrelated details unless the user explicitly asks to change them.\n")
+	builder.WriteString("- For vague edits such as 美化, 更可爱, 精修, or 好看一点, default to a local minimal edit. Do not reinterpret, redraw, replace the subject, change identity, or compose a new scene.\n")
 	builder.WriteString("- Clawman will generate, store, and deliver the image. Keep final_output short when image_generation_requests is non-empty.\n\n")
 	if strings.TrimSpace(run.MemorySearchURL) != "" && strings.TrimSpace(run.MemorySearchToken) != "" {
 		builder.WriteString("Room Memory Search:\n")

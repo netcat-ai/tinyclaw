@@ -195,10 +195,13 @@ func (h *Handler) run(ctx context.Context, message core.Message, prompt string) 
 		h.createTextDelivery(ctx, message, KindCommandFailure, "画图失败，请稍后再试")
 		return
 	}
-	mimeType := strings.TrimSpace(image.MIMEType)
-	if mimeType == "" {
-		mimeType = "image/png"
+	image, err = NormalizeGeneratedImageToJPEG(image)
+	if err != nil {
+		slog.Error("normalize generated image failed", "message_id", message.ID, "media_id", mediaID, "err", err)
+		h.createTextDelivery(ctx, message, KindCommandFailure, "画图失败，请稍后再试")
+		return
 	}
+	mimeType := image.MIMEType
 	ttl := h.MediaURLTTL
 	if ttl <= 0 {
 		ttl = defaultMediaURLTTL

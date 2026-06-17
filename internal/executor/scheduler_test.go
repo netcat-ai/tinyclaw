@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ type fakeStore struct {
 	agents          []core.Agent
 	completedResult core.AgentRunResult
 	failedDetail    string
+	mediaDeliveries chan core.GeneratedMediaOutput
 }
 
 func (s *fakeStore) ClaimNextAgentRun(context.Context, string, time.Duration) (core.AgentRun, bool, error) {
@@ -53,6 +55,13 @@ func (s *fakeStore) FailAgentRun(_ context.Context, _ core.AgentRun, detail stri
 	return nil, nil
 }
 
+func (s *fakeStore) CreateGeneratedMediaDelivery(_ context.Context, _ core.AgentRun, media core.GeneratedMediaOutput) (*core.Delivery, error) {
+	if s.mediaDeliveries != nil {
+		s.mediaDeliveries <- media
+	}
+	return &core.Delivery{ID: 200}, nil
+}
+
 func (s *fakeStore) ListAgents(context.Context) ([]core.Agent, error) {
 	return s.agents, nil
 }
@@ -64,9 +73,10 @@ func (errorRunner) RunAgent(context.Context, AgentRunRequest) (core.AgentRunResu
 }
 
 type contextRunner struct {
-	contextCount int
-	text         string
-	lastRun      AgentRunRequest
+	contextCount  int
+	text          string
+	imageRequests []core.ImageGenerationRequest
+	lastRun       AgentRunRequest
 }
 
 func (r *contextRunner) RunAgent(_ context.Context, run AgentRunRequest) (core.AgentRunResult, error) {
@@ -77,7 +87,8 @@ func (r *contextRunner) RunAgent(_ context.Context, run AgentRunRequest) (core.A
 		text = "done"
 	}
 	return core.AgentRunResult{
-		FinalOutput: text,
+		FinalOutput:             text,
+		ImageGenerationRequests: r.imageRequests,
 		MemoryWriteProposals: []core.MemoryWriteProposal{{
 			Op:      core.MemoryWriteOpUpsertFact,
 			Key:     "project",
@@ -86,10 +97,34 @@ func (r *contextRunner) RunAgent(_ context.Context, run AgentRunRequest) (core.A
 	}, nil
 }
 
+type schedulerImageTool struct {
+	requests chan core.ImageGenerationRequest
+	release  chan struct{}
+}
+
+func (t schedulerImageTool) GenerateAgentImage(_ context.Context, _ AgentRunRequest, request core.ImageGenerationRequest) (core.GeneratedMediaOutput, error) {
+	t.requests <- request
+	<-t.release
+	return core.GeneratedMediaOutput{
+		MediaID:      "gm_async",
+		MediaURL:     "https://media.example/gm_async.png",
+		MediaURLKind: "presigned_s3",
+		MIMEType:     "image/png",
+	}, nil
+}
+
 type emptyOutputRunner struct{}
 
 func (emptyOutputRunner) RunAgent(context.Context, AgentRunRequest) (core.AgentRunResult, error) {
 	return core.AgentRunResult{}, nil
+}
+
+type imageRequestRunner struct {
+	requests []core.ImageGenerationRequest
+}
+
+func (r imageRequestRunner) RunAgent(context.Context, AgentRunRequest) (core.AgentRunResult, error) {
+	return core.AgentRunResult{ImageGenerationRequests: r.requests}, nil
 }
 
 func TestRunOnceCompletesAgentRun(t *testing.T) {
@@ -175,6 +210,52 @@ func TestRunOnceCompletesAgentRunWithEmptyOutput(t *testing.T) {
 	}
 }
 
+func TestRunOnceStartsImageGenerationAsync(t *testing.T) {
+	store := &fakeStore{mediaDeliveries: make(chan core.GeneratedMediaOutput, 1)}
+	imageTool := schedulerImageTool{
+		requests: make(chan core.ImageGenerationRequest, 1),
+		release:  make(chan struct{}),
+	}
+	runner := imageRequestRunner{
+		requests: []core.ImageGenerationRequest{{
+			Prompt: "draw flower",
+			Size:   "1024x1024",
+		}},
+	}
+	scheduler := NewScheduler(context.Background(), store, runner)
+	scheduler.SetImageGenerationTool(imageTool)
+
+	if !scheduler.RunOnce(context.Background()) {
+		t.Fatal("RunOnce = false, want true")
+	}
+	if !store.completed {
+		t.Fatal("completed = false, want true")
+	}
+	if store.completedResult.FinalOutput != "收到，开始生成图片。" {
+		t.Fatalf("final output = %q", store.completedResult.FinalOutput)
+	}
+
+	request := <-imageTool.requests
+	if request.Prompt != "draw flower" {
+		t.Fatalf("image prompt = %q", request.Prompt)
+	}
+	select {
+	case media := <-store.mediaDeliveries:
+		t.Fatalf("media delivery created before image generation released: %+v", media)
+	default:
+	}
+
+	close(imageTool.release)
+	select {
+	case media := <-store.mediaDeliveries:
+		if media.MediaID != "gm_async" {
+			t.Fatalf("media id = %q, want gm_async", media.MediaID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("async media delivery was not created")
+	}
+}
+
 func TestRunOnceSelectsMentionedAgents(t *testing.T) {
 	store := &fakeStore{
 		contextMessages: []core.Message{
@@ -221,5 +302,84 @@ func TestRunOnceDoesNotSelectPrivateMentionedAgents(t *testing.T) {
 	}
 	if runner.lastRun.SelectedAgents[0].Key != "shared" {
 		t.Fatalf("selected agents = %+v, want shared only", runner.lastRun.SelectedAgents)
+	}
+}
+
+type concurrentStore struct {
+	mu     sync.Mutex
+	claims int
+	owners chan string
+}
+
+func (s *concurrentStore) ClaimNextAgentRun(_ context.Context, owner string, _ time.Duration) (core.AgentRun, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.claims >= 2 {
+		return core.AgentRun{}, false, nil
+	}
+	s.claims++
+	s.owners <- owner
+	return core.AgentRun{
+		AgentSessionID:      int64(100 + s.claims),
+		RoomID:              int64(10 + s.claims),
+		SourceMessageFromID: int64(20 + s.claims),
+		SourceMessageToID:   int64(20 + s.claims),
+		LockOwner:           owner,
+	}, true, nil
+}
+
+func (s *concurrentStore) ListAgentRunMessages(context.Context, core.AgentRun) ([]core.Message, error) {
+	return nil, nil
+}
+
+func (s *concurrentStore) CompleteAgentRun(context.Context, core.AgentRun, core.AgentRunResult) (*core.Delivery, error) {
+	return nil, nil
+}
+
+func (s *concurrentStore) FailAgentRun(context.Context, core.AgentRun, string) (*core.Delivery, error) {
+	return nil, nil
+}
+
+type blockingRunner struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r blockingRunner) RunAgent(context.Context, AgentRunRequest) (core.AgentRunResult, error) {
+	r.started <- struct{}{}
+	<-r.release
+	return core.AgentRunResult{FinalOutput: "done"}, nil
+}
+
+func TestRunWorkersUsesDistinctLockOwners(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &concurrentStore{owners: make(chan string, 2)}
+	runner := blockingRunner{
+		started: make(chan struct{}, 2),
+		release: make(chan struct{}),
+	}
+	scheduler := NewScheduler(ctx, store, runner)
+	scheduler.pollInterval = time.Millisecond
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		scheduler.RunWorkers(2)
+	}()
+
+	firstOwner := <-store.owners
+	secondOwner := <-store.owners
+	if firstOwner == secondOwner {
+		t.Fatalf("worker owners are equal: %q", firstOwner)
+	}
+	<-runner.started
+	<-runner.started
+
+	cancel()
+	close(runner.release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("RunWorkers did not stop after context cancellation")
 	}
 }

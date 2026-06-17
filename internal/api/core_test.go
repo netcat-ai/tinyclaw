@@ -36,6 +36,14 @@ func TestIsWOCMediaMessageAcceptsQuoteImage(t *testing.T) {
 	}
 }
 
+func TestIsWOCMediaMessageAcceptsKnownMediaTypes(t *testing.T) {
+	for _, msgType := range []string{"image", "video", "emotion", "voice", "图片", "视频", "表情", "语音"} {
+		if !isWOCMediaMessage(core.Message{MsgType: msgType}, msgType, "") {
+			t.Fatalf("isWOCMediaMessage = false, want true for %q", msgType)
+		}
+	}
+}
+
 func (f fakeCoreStore) RegisterRoom(ctx context.Context, input core.RegisterRoomInput) (core.RegisterRoomResult, error) {
 	return f.registerFn(ctx, input)
 }
@@ -328,6 +336,79 @@ func TestHandleInternalMediaRedirectsQuotedWOCImage(t *testing.T) {
 	location := rec.Header().Get("Location")
 	if !strings.Contains(location, "msgid=4024624919367125923") {
 		t.Fatalf("location = %q, want WOC message id", location)
+	}
+}
+
+func TestHandleInternalMediaRedirectsWOCEmotion(t *testing.T) {
+	api := NewServer(fakeCoreStore{
+		getMsgFn: func(_ context.Context, id int64) (core.Message, error) {
+			if id != 46 {
+				t.Fatalf("message id = %d, want 46", id)
+			}
+			return core.Message{
+				ID:        id,
+				RoomID:    10,
+				Source:    "wechat",
+				MsgID:     "woc:7038377559080186342",
+				RoomIDRaw: "jlyfish",
+				MsgType:   "emotion",
+				Body:      json.RawMessage(`{"content":"[表情]"}`),
+			}, nil
+		},
+		getRoomFn: func(_ context.Context, id int64) (core.Room, error) {
+			return core.Room{ID: id, TenantID: "inst-1", ChannelRoomID: "jlyfish"}, nil
+		},
+	}, "api-secret")
+	api.SetMediaRedirectConfig("http://panel.local", "fixed-token")
+
+	req := httptest.NewRequest(http.MethodGet, "/internal/media?msgid=46", nil)
+	rec := httptest.NewRecorder()
+	api.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusFound, rec.Body.String())
+	}
+	location := rec.Header().Get("Location")
+	if !strings.Contains(location, "msgid=7038377559080186342") {
+		t.Fatalf("location = %q, want WOC emotion message id", location)
+	}
+}
+
+func TestHandleInternalMediaRedirectsQuotedWOCEmotion(t *testing.T) {
+	api := NewServer(fakeCoreStore{
+		getMsgFn: func(_ context.Context, id int64) (core.Message, error) {
+			if id != 47 {
+				t.Fatalf("message id = %d, want 47", id)
+			}
+			return core.Message{
+				ID:        id,
+				RoomID:    10,
+				Source:    "wechat",
+				MsgID:     "woc:6350728120025981445",
+				RoomIDRaw: "jlyfish",
+				MsgType:   "text",
+				Body: json.RawMessage(`{
+					"content":"这个表情你现在能看到吗？",
+					"quote":{"msgtype":"emotion","from":"jlyfish","msgid":"7038377559080186342","emotion":{"content":"[表情]"}}
+				}`),
+			}, nil
+		},
+		getRoomFn: func(_ context.Context, id int64) (core.Room, error) {
+			return core.Room{ID: id, TenantID: "inst-1", ChannelRoomID: "jlyfish"}, nil
+		},
+	}, "api-secret")
+	api.SetMediaRedirectConfig("http://panel.local", "fixed-token")
+
+	req := httptest.NewRequest(http.MethodGet, "/internal/media?msgid=47", nil)
+	rec := httptest.NewRecorder()
+	api.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusFound, rec.Body.String())
+	}
+	location := rec.Header().Get("Location")
+	if !strings.Contains(location, "msgid=7038377559080186342") {
+		t.Fatalf("location = %q, want quoted WOC emotion message id", location)
 	}
 }
 

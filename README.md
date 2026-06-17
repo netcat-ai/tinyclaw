@@ -25,6 +25,7 @@ Set `AGENT_RUNNER=codex` to run triggered Agent Sessions through `codex exec`. O
 - `CODEX_OPENAI_BASE_URL`: optional OpenAI-compatible API base URL passed to `codex exec` as `openai_base_url`.
 - `CODEX_DISABLED_FEATURES`: comma-separated Codex CLI features disabled for headless runs, defaults to `apps,tool_suggest,plugins`; set to `none` to disable no features.
 - `CODEX_RUNNER_TIMEOUT`: execution timeout, defaults to `5m`.
+- `AGENT_WORKER_CONCURRENCY`: number of concurrent Agent Run workers, defaults to `2`. Runs stay serialized per Room through Agent Session locks while different Rooms can run concurrently.
 
 Codex runs receive a short-lived Room Memory Search capability. The capability calls Clawman's internal memory endpoint with a run-bound token; it does not accept `room_id` from the agent. Runner output is parsed as an Agent Run Result with user-visible final output, optional Memory Write Proposals, and optional image generation requests. Memory Search failures are returned to Codex as error results so the run can continue; memory writes are persisted as background jobs and do not block Delivery creation. For image messages in the run window, Clawman downloads internal media and passes local image files to Codex CLI with `--image`.
 

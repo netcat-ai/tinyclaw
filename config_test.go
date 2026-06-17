@@ -25,6 +25,9 @@ func TestLoadConfigUsesServiceDefaults(t *testing.T) {
 	if cfg.CodexBin != "codex" {
 		t.Fatalf("CodexBin = %q, want codex", cfg.CodexBin)
 	}
+	if cfg.AgentWorkerConcurrency != 2 {
+		t.Fatalf("AgentWorkerConcurrency = %d, want 2", cfg.AgentWorkerConcurrency)
+	}
 	wantDisabled := []string{"apps", "tool_suggest", "plugins"}
 	if len(cfg.CodexDisabledFeatures) != len(wantDisabled) {
 		t.Fatalf("CodexDisabledFeatures = %v, want %v", cfg.CodexDisabledFeatures, wantDisabled)
@@ -54,6 +57,34 @@ func TestLoadConfigUsesServiceDefaults(t *testing.T) {
 	}
 	if cfg.WOCMediaToken != "" {
 		t.Fatalf("WOCMediaToken = %q, want empty when WOC_PASSWORD is unset", cfg.WOCMediaToken)
+	}
+}
+
+func TestLoadConfigReadsAgentWorkerConcurrency(t *testing.T) {
+	t.Setenv("AGENT_WORKER_CONCURRENCY", "4")
+	t.Setenv("CODEX_RUNNER_TIMEOUT", "")
+	t.Setenv("GENERATED_MEDIA_URL_TTL", "")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+	if cfg.AgentWorkerConcurrency != 4 {
+		t.Fatalf("AgentWorkerConcurrency = %d, want 4", cfg.AgentWorkerConcurrency)
+	}
+}
+
+func TestLoadConfigFallsBackForInvalidAgentWorkerConcurrency(t *testing.T) {
+	t.Setenv("AGENT_WORKER_CONCURRENCY", "0")
+	t.Setenv("CODEX_RUNNER_TIMEOUT", "")
+	t.Setenv("GENERATED_MEDIA_URL_TTL", "")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+	if cfg.AgentWorkerConcurrency != 2 {
+		t.Fatalf("AgentWorkerConcurrency = %d, want 2", cfg.AgentWorkerConcurrency)
 	}
 }
 

@@ -1,9 +1,13 @@
 package command
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"testing"
 	"time"
 
@@ -51,7 +55,17 @@ func (g *fakeImageGenerator) GenerateImage(_ context.Context, input ImageGenerat
 	if g.err != nil {
 		return GeneratedImage{}, g.err
 	}
-	return GeneratedImage{Bytes: []byte{0x89, 'P', 'N', 'G'}, MIMEType: "image/png"}, nil
+	return GeneratedImage{Bytes: validGeneratedPNGForTest(), MIMEType: "image/png"}, nil
+}
+
+func validGeneratedPNGForTest() []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.RGBA{R: 255, G: 0, B: 0, A: 255})
+	var out bytes.Buffer
+	if err := png.Encode(&out, img); err != nil {
+		panic(err)
+	}
+	return out.Bytes()
 }
 
 type fakeMediaStore struct {
@@ -67,7 +81,7 @@ func (s *fakeMediaStore) StoreGeneratedMedia(_ context.Context, input StoreMedia
 		return StoredMedia{}, s.err
 	}
 	return StoredMedia{
-		URL:       "https://s3.example/generated.png",
+		URL:       "https://s3.example/generated.jpg",
 		URLKind:   "presigned_s3",
 		ExpiresAt: time.Date(2026, 5, 23, 0, 0, 0, 0, time.UTC),
 	}, nil
@@ -208,7 +222,7 @@ func TestHandlerCreatesSuccessDeliveries(t *testing.T) {
 	if image.calls != 1 || image.input.Prompt != "flower" || image.input.Size != defaultDrawImageSize {
 		t.Fatalf("image call = %+v calls=%d", image.input, image.calls)
 	}
-	if media.calls != 1 || media.input.MediaID == "" || media.input.MIMEType != "image/png" {
+	if media.calls != 1 || media.input.MediaID == "" || media.input.MIMEType != "image/jpeg" {
 		t.Fatalf("media call = %+v calls=%d", media.input, media.calls)
 	}
 	if len(store.deliveries) != 3 {
@@ -225,6 +239,9 @@ func TestHandlerCreatesSuccessDeliveries(t *testing.T) {
 	}
 	if imagePayload["kind"] != KindCommandOutput || imagePayload["type"] != "image" || imagePayload["media_url_kind"] != "presigned_s3" {
 		t.Fatalf("image payload = %+v", imagePayload)
+	}
+	if imagePayload["mime_type"] != "image/jpeg" {
+		t.Fatalf("image mime type = %v, want image/jpeg", imagePayload["mime_type"])
 	}
 }
 

@@ -359,6 +359,29 @@ func (s *CoreStore) CompleteAgentRun(ctx context.Context, run core.AgentRun, res
 	return delivery, nil
 }
 
+func (s *CoreStore) CreateGeneratedMediaDelivery(ctx context.Context, run core.AgentRun, media core.GeneratedMediaOutput) (*core.Delivery, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin generated media delivery tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	room, err := getCoreRoomByIDTx(ctx, tx, run.RoomID)
+	if err != nil {
+		return nil, err
+	}
+	payload := deliveryGeneratedMediaPayload(room, "agent_output", media)
+	delivery, err := createCoreDeliveryTx(ctx, tx, run, payload)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit generated media delivery: %w", err)
+	}
+	telemetry.IncDelivery(telemetry.PayloadKind(payload), "created")
+	return &delivery, nil
+}
+
 func (s *CoreStore) FailAgentRun(ctx context.Context, run core.AgentRun, detail string) (*core.Delivery, error) {
 	detail = strings.TrimSpace(detail)
 	if detail == "" {

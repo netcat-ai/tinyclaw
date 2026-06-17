@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"tinyclaw/internal/core"
@@ -23,6 +24,10 @@ type Store interface {
 	ListAgentRunMessages(ctx context.Context, run core.AgentRun) ([]core.Message, error)
 	CompleteAgentRun(ctx context.Context, run core.AgentRun, result core.AgentRunResult) (*core.Delivery, error)
 	FailAgentRun(ctx context.Context, run core.AgentRun, detail string) (*core.Delivery, error)
+}
+
+type GeneratedMediaDeliveryStore interface {
+	CreateGeneratedMediaDelivery(ctx context.Context, run core.AgentRun, media core.GeneratedMediaOutput) (*core.Delivery, error)
 }
 
 type MemoryCapabilityTokenStore interface {
@@ -55,6 +60,7 @@ type Scheduler struct {
 	lockTTL         time.Duration
 	memorySearchURL string
 	memoryTokenTTL  time.Duration
+	imageTool       ImageGenerationTool
 }
 
 func NewScheduler(ctx context.Context, store Store, runner Runner) *Scheduler {
@@ -79,7 +85,37 @@ func (s *Scheduler) SetMemorySearchURL(url string) {
 	}
 }
 
+func (s *Scheduler) SetImageGenerationTool(tool ImageGenerationTool) {
+	if s != nil {
+		s.imageTool = tool
+	}
+}
+
 func (s *Scheduler) RunLoop() {
+	s.runLoopWithOwner(s.owner)
+}
+
+func (s *Scheduler) RunWorkers(concurrency int) {
+	if s == nil || s.store == nil || s.runner == nil {
+		return
+	}
+	if concurrency <= 1 {
+		s.RunLoop()
+		return
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		workerOwner := fmt.Sprintf("%s-w%d", s.owner, i+1)
+		wg.Add(1)
+		go func(owner string) {
+			defer wg.Done()
+			s.runLoopWithOwner(owner)
+		}(workerOwner)
+	}
+	wg.Wait()
+}
+
+func (s *Scheduler) runLoopWithOwner(owner string) {
 	if s == nil || s.store == nil || s.runner == nil {
 		return
 	}
@@ -90,7 +126,7 @@ func (s *Scheduler) RunLoop() {
 	ticker := time.NewTicker(s.pollInterval)
 	defer ticker.Stop()
 	for {
-		s.RunAvailable(ctx)
+		s.runAvailableWithOwner(ctx, owner)
 		select {
 		case <-ctx.Done():
 			return
@@ -100,8 +136,12 @@ func (s *Scheduler) RunLoop() {
 }
 
 func (s *Scheduler) RunAvailable(ctx context.Context) {
+	s.runAvailableWithOwner(ctx, s.owner)
+}
+
+func (s *Scheduler) runAvailableWithOwner(ctx context.Context, owner string) {
 	for {
-		ran := s.RunOnce(ctx)
+		ran := s.runOnceWithOwner(ctx, owner)
 		if !ran {
 			return
 		}
@@ -109,13 +149,17 @@ func (s *Scheduler) RunAvailable(ctx context.Context) {
 }
 
 func (s *Scheduler) RunOnce(ctx context.Context) bool {
+	return s.runOnceWithOwner(ctx, s.owner)
+}
+
+func (s *Scheduler) runOnceWithOwner(ctx context.Context, owner string) bool {
 	if s == nil || s.store == nil || s.runner == nil {
 		return false
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	run, ok, err := s.store.ClaimNextAgentRun(ctx, s.owner, s.lockTTL)
+	run, ok, err := s.store.ClaimNextAgentRun(ctx, owner, s.lockTTL)
 	if err != nil {
 		telemetry.IncAgentRun("claim_error")
 		slog.Error("claim agent run failed", "err", err)
@@ -171,12 +215,21 @@ func (s *Scheduler) RunOnce(ctx context.Context) bool {
 		)
 		return true
 	}
+	if len(result.ImageGenerationRequests) > 0 && !s.canRunAsyncImageGeneration() {
+		result.FinalOutput = "图片生成能力未配置"
+		result.ImageGenerationRequests = nil
+		result.ImageGenerationCount = 0
+	}
+	if len(result.ImageGenerationRequests) > 0 && strings.TrimSpace(result.FinalOutput) == "" {
+		result.FinalOutput = "收到，开始生成图片。"
+	}
 	delivery, err := s.store.CompleteAgentRun(ctx, run, result)
 	if err != nil {
 		telemetry.IncAgentRun("complete_error")
 		slog.Error("complete agent run failed", "agent_session_id", run.AgentSessionID, "err", err)
 		return true
 	}
+	s.runImageGenerationRequestsAsync(request, result.ImageGenerationRequests)
 	deliveryID := int64(0)
 	if delivery != nil {
 		deliveryID = delivery.ID
@@ -193,6 +246,80 @@ func (s *Scheduler) RunOnce(ctx context.Context) bool {
 	)
 	telemetry.IncAgentRun("success")
 	return true
+}
+
+func (s *Scheduler) canRunAsyncImageGeneration() bool {
+	if s == nil || s.imageTool == nil {
+		return false
+	}
+	_, ok := s.store.(GeneratedMediaDeliveryStore)
+	return ok
+}
+
+func (s *Scheduler) runImageGenerationRequestsAsync(run AgentRunRequest, requests []core.ImageGenerationRequest) {
+	if len(requests) == 0 {
+		return
+	}
+	store, ok := s.store.(GeneratedMediaDeliveryStore)
+	if !ok {
+		slog.Error("image generation delivery store is not configured", "agent_session_id", run.AgentRun.AgentSessionID)
+		return
+	}
+	if s.imageTool == nil {
+		slog.Error("image generation tool is not configured", "agent_session_id", run.AgentRun.AgentSessionID)
+		return
+	}
+	requests = append([]core.ImageGenerationRequest(nil), requests...)
+	go func() {
+		ctx := s.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(ctx, defaultCodexRunnerTimeout)
+		defer cancel()
+		for _, request := range requests {
+			output, err := s.imageTool.GenerateAgentImage(ctx, run, request)
+			if err != nil {
+				slog.Error("async agent image generation failed",
+					"agent_session_id", run.AgentRun.AgentSessionID,
+					"room_id", run.AgentRun.RoomID,
+					"prompt", request.Prompt,
+					"err", err,
+				)
+				continue
+			}
+			delivery, err := store.CreateGeneratedMediaDelivery(ctx, run.AgentRun, output)
+			if err != nil {
+				slog.Error("create async generated media delivery failed",
+					"agent_session_id", run.AgentRun.AgentSessionID,
+					"room_id", run.AgentRun.RoomID,
+					"media_id", output.MediaID,
+					"err", err,
+				)
+				continue
+			}
+			deliveryID := int64(0)
+			if delivery != nil {
+				deliveryID = delivery.ID
+			}
+			slog.Info("async agent image generation completed",
+				"agent_session_id", run.AgentRun.AgentSessionID,
+				"room_id", run.AgentRun.RoomID,
+				"source_message_ids", request.SourceMessageIDs,
+				"prompt", truncateLogValue(request.Prompt, 500),
+				"media_id", output.MediaID,
+				"delivery_id", deliveryID,
+			)
+		}
+	}()
+}
+
+func truncateLogValue(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "..."
 }
 
 func (s *Scheduler) selectedAgentsForRun(ctx context.Context, messages []core.Message) []core.Agent {

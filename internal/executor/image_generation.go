@@ -2,8 +2,8 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -68,10 +68,11 @@ func (t AgentImageTool) GenerateAgentImage(ctx context.Context, run AgentRunRequ
 	if err != nil {
 		return core.GeneratedMediaOutput{}, fmt.Errorf("generate image: %w", err)
 	}
-	mimeType := strings.TrimSpace(image.MIMEType)
-	if mimeType == "" {
-		mimeType = "image/png"
+	image, err = command.NormalizeGeneratedImageToJPEG(image)
+	if err != nil {
+		return core.GeneratedMediaOutput{}, fmt.Errorf("normalize generated image: %w", err)
 	}
+	mimeType := image.MIMEType
 	ttl := t.MediaURLTTL
 	if ttl <= 0 {
 		ttl = defaultAgentGeneratedMediaTTL
@@ -106,7 +107,7 @@ func (t AgentImageTool) sourceImages(ctx context.Context, run AgentRunRequest, i
 	}
 	imagesByID := make(map[int64]core.Message, len(run.ContextMessages))
 	for _, message := range run.ContextMessages {
-		if message.ID > 0 && strings.TrimSpace(message.MsgType) == "image" {
+		if message.ID > 0 && isAgentSourceImageMessage(message) {
 			imagesByID[message.ID] = message
 		}
 	}
@@ -142,24 +143,32 @@ func (t AgentImageTool) sourceImageMessage(ctx context.Context, run AgentRunRequ
 	if message.RoomID != run.AgentRun.RoomID {
 		return core.Message{}, fmt.Errorf("source image message %d is not in the current room", id)
 	}
+	if !isAgentSourceImageMessage(message) {
+		return core.Message{}, fmt.Errorf("source image message %d is not an image or quoted image message", id)
+	}
 	return message, nil
 }
 
-func runImageGenerationRequests(ctx context.Context, tool ImageGenerationTool, run AgentRunRequest, requests []core.ImageGenerationRequest) ([]core.GeneratedMediaOutput, error) {
-	if len(requests) == 0 {
-		return nil, nil
+func isAgentSourceImageMessage(message core.Message) bool {
+	if isAgentImageType(message.MsgType) {
+		return true
 	}
-	if tool == nil {
-		return nil, fmt.Errorf("图片生成能力未配置")
+	var body struct {
+		Quote struct {
+			MsgType string `json:"msgtype"`
+		} `json:"quote"`
 	}
-	outputs := make([]core.GeneratedMediaOutput, 0, len(requests))
-	for _, request := range requests {
-		output, err := tool.GenerateAgentImage(ctx, run, request)
-		if err != nil {
-			slog.Error("agent image generation failed", "prompt", request.Prompt, "err", err)
-			return nil, fmt.Errorf("图片生成失败，请稍后再试")
-		}
-		outputs = append(outputs, output)
+	if len(message.Body) > 0 {
+		_ = json.Unmarshal(message.Body, &body)
 	}
-	return outputs, nil
+	return isAgentImageType(body.Quote.MsgType)
+}
+
+func isAgentImageType(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "image", "图片":
+		return true
+	default:
+		return false
+	}
 }

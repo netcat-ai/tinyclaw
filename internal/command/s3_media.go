@@ -84,7 +84,7 @@ func (s *S3MediaStore) StoreGeneratedMedia(ctx context.Context, input StoreMedia
 	}
 	mimeType := strings.TrimSpace(input.MIMEType)
 	if mimeType == "" {
-		mimeType = "image/png"
+		mimeType = "image/jpeg"
 	}
 	ttl := input.TTL
 	if ttl <= 0 {

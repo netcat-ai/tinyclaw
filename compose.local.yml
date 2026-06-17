@@ -38,6 +38,7 @@ services:
       WOC_USERNAME: ${WOC_USERNAME:-admin}
       WOC_PASSWORD: ${WOC_PASSWORD:-wechat}
       AGENT_RUNNER: ${AGENT_RUNNER:-codex}
+      AGENT_WORKER_CONCURRENCY: ${AGENT_WORKER_CONCURRENCY:-2}
       CODEX_WORKDIR: /workspace
       CODEX_HOME: /codex
       CODEX_AUTH_PATH: /codex/auth.json

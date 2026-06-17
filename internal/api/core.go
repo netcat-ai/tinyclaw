@@ -151,11 +151,11 @@ func (s *Server) handleInternalMedia(w http.ResponseWriter, r *http.Request) {
 	instanceID := strings.TrimSpace(room.TenantID)
 	roomID := strings.TrimSpace(firstNonEmpty(message.RoomIDRaw, room.ChannelRoomID))
 	agentMsgID := wocAgentMessageID(message.MsgID)
-	if isWOCImageType(body.Quote.MsgType) && strings.TrimSpace(body.Quote.MsgID) != "" {
+	if isWOCMediaType(body.Quote.MsgType) && strings.TrimSpace(body.Quote.MsgID) != "" {
 		agentMsgID = strings.TrimSpace(body.Quote.MsgID)
 	}
 	if strings.TrimSpace(message.Source) != "wechat" || !isWOCMediaMessage(message, message.MsgType, body.Quote.MsgType) {
-		writeAPIError(w, http.StatusBadRequest, "unsupported_media", "message is not a WOC image")
+		writeAPIError(w, http.StatusBadRequest, "unsupported_media", "message is not a WOC media message")
 		return
 	}
 	if instanceID == "" || roomID == "" || agentMsgID == "" {
@@ -171,21 +171,21 @@ func (s *Server) handleInternalMedia(w http.ResponseWriter, r *http.Request) {
 }
 
 func isWOCMediaMessage(message core.Message, wocType string, quotedType string) bool {
-	if strings.TrimSpace(message.MsgType) == "image" {
+	if isWOCMediaType(message.MsgType) {
 		return true
 	}
-	if isWOCImageType(wocType) {
+	if isWOCMediaType(wocType) {
 		return true
 	}
-	if isWOCImageType(quotedType) {
+	if isWOCMediaType(quotedType) {
 		return true
 	}
 	return false
 }
 
-func isWOCImageType(value string) bool {
+func isWOCMediaType(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "image", "图片":
+	case "image", "图片", "video", "视频", "emotion", "表情", "voice", "语音":
 		return true
 	default:
 		return false

@@ -1,8 +1,12 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"testing"
 	"time"
 
@@ -18,7 +22,17 @@ type fakeExecutorImageGenerator struct {
 
 func (g *fakeExecutorImageGenerator) GenerateImage(_ context.Context, input command.ImageGenerationInput) (command.GeneratedImage, error) {
 	g.input = input
-	return command.GeneratedImage{Bytes: []byte{1, 2, 3}, MIMEType: "image/png"}, nil
+	return command.GeneratedImage{Bytes: validExecutorGeneratedPNGForTest(), MIMEType: "image/png"}, nil
+}
+
+func validExecutorGeneratedPNGForTest() []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.RGBA{R: 0, G: 128, B: 255, A: 255})
+	var out bytes.Buffer
+	if err := png.Encode(&out, img); err != nil {
+		panic(err)
+	}
+	return out.Bytes()
 }
 
 type fakeExecutorMediaStore struct {
@@ -85,7 +99,7 @@ func TestAgentImageToolGeneratesWithSourceImageFromContext(t *testing.T) {
 	if image.input.Prompt != "改成水彩" || image.input.Size != "1536x1024" || len(image.input.SourceImages) != 1 {
 		t.Fatalf("image input = %+v", image.input)
 	}
-	if media.input.MediaID == "" || media.input.TTL != time.Hour {
+	if media.input.MediaID == "" || media.input.TTL != time.Hour || media.input.MIMEType != "image/jpeg" {
 		t.Fatalf("media input = %+v", media.input)
 	}
 	if output.MediaID != media.input.MediaID || output.MediaURLKind != "presigned_s3" {
@@ -101,7 +115,7 @@ func TestAgentImageToolGeneratesWithSourceMessageFromSameRoom(t *testing.T) {
 		Media:        &fakeExecutorMediaStore{},
 		MediaFetcher: fetcher,
 		SourceMessageStore: fakeExecutorSourceMessageStore{messages: map[int64]core.Message{
-			99: {ID: 99, RoomID: 10, MsgType: "text"},
+			99: {ID: 99, RoomID: 10, MsgType: "text", Body: []byte(`{"quote":{"msgtype":"image","msgid":"abc","image":{"content":"[图片]"}}}`)},
 		}},
 	}
 
@@ -117,6 +131,31 @@ func TestAgentImageToolGeneratesWithSourceMessageFromSameRoom(t *testing.T) {
 	}
 	if fetcher.messageID != 99 || len(image.input.SourceImages) != 1 {
 		t.Fatalf("same-room source message was not used, fetched=%d input=%+v", fetcher.messageID, image.input)
+	}
+}
+
+func TestAgentImageToolGeneratesWithQuotedSourceImageFromContext(t *testing.T) {
+	image := &fakeExecutorImageGenerator{}
+	fetcher := &fakeExecutorMediaFetcher{}
+	tool := AgentImageTool{
+		Image:        image,
+		Media:        &fakeExecutorMediaStore{},
+		MediaFetcher: fetcher,
+	}
+
+	_, err := tool.GenerateAgentImage(context.Background(), AgentRunRequest{
+		ContextMessages: []core.Message{
+			{ID: 42, MsgType: "text", Body: []byte(`{"quote":{"msgtype":"image","msgid":"abc","image":{"content":"[图片]"}}}`)},
+		},
+	}, core.ImageGenerationRequest{
+		Prompt:           "只改发夹",
+		SourceMessageIDs: []int64{42},
+	})
+	if err != nil {
+		t.Fatalf("GenerateAgentImage error: %v", err)
+	}
+	if fetcher.messageID != 42 || len(image.input.SourceImages) != 1 {
+		t.Fatalf("quoted source image was not used, fetched=%d input=%+v", fetcher.messageID, image.input)
 	}
 }
 
@@ -139,5 +178,26 @@ func TestAgentImageToolRejectsSourceImageFromOtherRoom(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("GenerateAgentImage error = nil, want room validation error")
+	}
+}
+
+func TestAgentImageToolRejectsNonImageSourceMessage(t *testing.T) {
+	tool := AgentImageTool{
+		Image:        &fakeExecutorImageGenerator{},
+		Media:        &fakeExecutorMediaStore{},
+		MediaFetcher: &fakeExecutorMediaFetcher{},
+		SourceMessageStore: fakeExecutorSourceMessageStore{messages: map[int64]core.Message{
+			99: {ID: 99, RoomID: 10, MsgType: "text", Body: []byte(`{"content":"not an image"}`)},
+		}},
+	}
+
+	_, err := tool.GenerateAgentImage(context.Background(), AgentRunRequest{
+		AgentRun: core.AgentRun{RoomID: 10, SourceMessageToID: 120},
+	}, core.ImageGenerationRequest{
+		Prompt:           "改成水彩",
+		SourceMessageIDs: []int64{99},
+	})
+	if err == nil {
+		t.Fatal("GenerateAgentImage error = nil, want non-image validation error")
 	}
 }

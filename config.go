@@ -23,14 +23,15 @@ type Config struct {
 
 	MetricsAddr string
 
-	AgentRunner           string
-	CodexBin              string
-	CodexWorkDir          string
-	CodexModel            string
-	CodexSandbox          string
-	CodexOpenAIBaseURL    string
-	CodexDisabledFeatures []string
-	CodexRunnerTimeout    time.Duration
+	AgentRunner            string
+	AgentWorkerConcurrency int
+	CodexBin               string
+	CodexWorkDir           string
+	CodexModel             string
+	CodexSandbox           string
+	CodexOpenAIBaseURL     string
+	CodexDisabledFeatures  []string
+	CodexRunnerTimeout     time.Duration
 
 	DrawCommandEnabled   bool
 	ImageProviderBaseURL string
@@ -72,11 +73,12 @@ func LoadConfig() (Config, error) {
 
 		MetricsAddr: envOrDefault("METRICS_ADDR", ":9090"),
 
-		AgentRunner:  os.Getenv("AGENT_RUNNER"),
-		CodexBin:     envOrDefault("CODEX_BIN", "codex"),
-		CodexWorkDir: envOrDefault("CODEX_WORKDIR", "."),
-		CodexModel:   os.Getenv("CODEX_MODEL"),
-		CodexSandbox: envOrDefault("CODEX_SANDBOX", "workspace-write"),
+		AgentRunner:            os.Getenv("AGENT_RUNNER"),
+		AgentWorkerConcurrency: parsePositiveIntEnvDefault("AGENT_WORKER_CONCURRENCY", 2),
+		CodexBin:               envOrDefault("CODEX_BIN", "codex"),
+		CodexWorkDir:           envOrDefault("CODEX_WORKDIR", "."),
+		CodexModel:             os.Getenv("CODEX_MODEL"),
+		CodexSandbox:           envOrDefault("CODEX_SANDBOX", "workspace-write"),
 		CodexOpenAIBaseURL: strings.TrimSpace(envOrDefault(
 			"CODEX_OPENAI_BASE_URL",
 			os.Getenv("OPENAI_BASE_URL"),
@@ -133,6 +135,18 @@ func parseBoolEnvDefault(key string, def bool) bool {
 	}
 	v, err := strconv.ParseBool(raw)
 	if err != nil {
+		return def
+	}
+	return v
+}
+
+func parsePositiveIntEnvDefault(key string, def int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 {
 		return def
 	}
 	return v
