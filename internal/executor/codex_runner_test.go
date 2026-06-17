@@ -55,16 +55,19 @@ func TestBuildCodexPromptIncludesContextMessages(t *testing.T) {
 func TestCodexPromptQuoteFromQuoteObject(t *testing.T) {
 	payload := json.RawMessage(`{
 		"content":"edit this image",
-		"quote":{
-			"msgtype":"image",
-			"from":"小金鱼",
-			"msgid":"4024624919367125923",
-			"image":{"content":"[图片]"}
+		"text":{
+			"content":"edit this image",
+			"quote":{
+				"msgtype":"image",
+				"from":"小金鱼",
+				"msgid":"4024624919367125923",
+				"image":{"content":"[图片]"}
+			}
 		}
 	}`)
 
 	quote := buildCodexPromptQuote(payload, 43)
-	if quote == nil || quote.Type != "image" || quote.Sender != "小金鱼" || quote.SourceMessageID != "4024624919367125923" {
+	if quote == nil || quote.MsgType != "image" || quote.From != "小金鱼" || quote.MsgID != "4024624919367125923" {
 		t.Fatalf("quote = %+v", quote)
 	}
 	if quote.Image == nil || quote.Image.URL != "http://127.0.0.1:8081/internal/media?msgid=43" {
@@ -83,7 +86,7 @@ func TestBuildCodexPromptIncludesImageMediaURL(t *testing.T) {
 	for _, want := range []string{
 		`{"id":42,"sender":"Alice","type":"image","image":{"content":"[图片]","url":"http://127.0.0.1:8081/internal/media?msgid=42"}}`,
 		"Conversation messages are JSON Lines.",
-		"message.image.url or message.quote.image.url",
+		"message.image.url or message.text.quote.image.url",
 		"download the URL with curl -L",
 		"Image Generation:",
 	} {
@@ -101,15 +104,14 @@ func TestBuildCodexPromptIncludesReferencedImageMediaURL(t *testing.T) {
 				ID:         43,
 				SenderName: "Alice",
 				MsgType:    "text",
-				Payload:    []byte(`{"content":"edit this image","quote":{"msgtype":"image","from":"Bob","msgid":"132","image":{"content":"[图片]"}}}`),
+				Payload:    []byte(`{"content":"edit this image","text":{"content":"edit this image","quote":{"msgtype":"image","from":"Bob","msgid":"132","image":{"content":"[图片]"}}}}`),
 			},
 		},
 	})
 
 	for _, want := range []string{
 		`"id":43`,
-		`"text":{"content":"edit this image"}`,
-		`"quote":{"type":"image","sender":"Bob","source_message_id":"132","image":{"content":"[图片]","url":"http://127.0.0.1:8081/internal/media?msgid=43"}}`,
+		`"text":{"content":"edit this image","quote":{"msgtype":"image","from":"Bob","msgid":"132","image":{"content":"[图片]","url":"http://127.0.0.1:8081/internal/media?msgid=43"}}}`,
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)

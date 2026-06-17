@@ -395,13 +395,13 @@ func BuildCodexPrompt(run AgentRunRequest) string {
 	builder.WriteString("Only propose durable Room Memory changes for stable facts, preferences, or todos. Prefer an empty memory_write_proposals array when unsure.\n\n")
 	builder.WriteString("Handled command messages are room history events already processed by TinyClaw. Use them only as context; do not answer, repeat, or execute those commands again.\n\n")
 	builder.WriteString("Conversation messages are JSON Lines. Each line is one normalized message. ")
-	builder.WriteString("Use message.image.url or message.quote.image.url as available image sources. ")
+	builder.WriteString("Use message.image.url or message.text.quote.image.url as available image sources. ")
 	builder.WriteString("For source_message_ids, always use the top-level message.id from the JSONL line that contains the image URL. ")
 	builder.WriteString("If you need image content, download the URL with curl -L before answering or before choosing source_message_ids. If the download fails, say the image is temporarily unavailable instead of guessing.\n\n")
 	builder.WriteString("Image Generation:\n")
 	builder.WriteString("- For user requests to generate or edit an image, return image_generation_requests instead of calling image providers or uploading media yourself.\n")
 	builder.WriteString("- Request shape: {\"prompt\":\"...\",\"source_message_ids\":[42],\"size\":\"1024x1024\"}; use source_message_ids only for image edits or references to prior image messages.\n")
-	builder.WriteString("- Use messages with image.url or quote.image.url as image sources. If an image is inside quote, still use the top-level message.id in source_message_ids.\n")
+	builder.WriteString("- Use messages with image.url or text.quote.image.url as image sources. If an image is inside text.quote, still use the top-level message.id in source_message_ids.\n")
 	builder.WriteString("- Clawman will generate, store, and deliver the image. Keep final_output short when image_generation_requests is non-empty.\n\n")
 	if strings.TrimSpace(run.MemorySearchURL) != "" && strings.TrimSpace(run.MemorySearchToken) != "" {
 		builder.WriteString("Room Memory Search:\n")
@@ -613,9 +613,9 @@ func formatCodexPromptMessage(message core.Message) string {
 		}
 	} else {
 		output.Text = &codexPromptText{Content: text}
-	}
-	if quote := buildCodexPromptQuote(message.Payload, message.ID); quote != nil {
-		output.Quote = quote
+		if quote := buildCodexPromptQuote(message.Payload, message.ID); quote != nil {
+			output.Text.Quote = quote
+		}
 	}
 	data, err := json.Marshal(output)
 	if err != nil {
@@ -634,12 +634,12 @@ type codexPromptMessage struct {
 	Type           string            `json:"type"`
 	Text           *codexPromptText  `json:"text,omitempty"`
 	Image          *codexPromptImage `json:"image,omitempty"`
-	Quote          *codexPromptQuote `json:"quote,omitempty"`
 	HandledCommand string            `json:"handled_command,omitempty"`
 }
 
 type codexPromptText struct {
-	Content string `json:"content"`
+	Content string            `json:"content"`
+	Quote   *codexPromptQuote `json:"quote,omitempty"`
 }
 
 type codexPromptImage struct {
@@ -648,11 +648,11 @@ type codexPromptImage struct {
 }
 
 type codexPromptQuote struct {
-	Type            string            `json:"type"`
-	Sender          string            `json:"sender,omitempty"`
-	SourceMessageID string            `json:"source_message_id,omitempty"`
-	Text            *codexPromptText  `json:"text,omitempty"`
-	Image           *codexPromptImage `json:"image,omitempty"`
+	MsgType string            `json:"msgtype"`
+	From    string            `json:"from,omitempty"`
+	MsgID   string            `json:"msgid,omitempty"`
+	Text    *codexPromptText  `json:"text,omitempty"`
+	Image   *codexPromptImage `json:"image,omitempty"`
 }
 
 func normalizedPromptMessageType(value string) string {
@@ -678,16 +678,16 @@ func extractMessageCommandKind(payload json.RawMessage) string {
 
 func buildCodexPromptQuote(payload json.RawMessage, messageID int64) *codexPromptQuote {
 	var parsed struct {
-		Quote json.RawMessage `json:"quote"`
+		Text struct {
+			Quote json.RawMessage `json:"quote"`
+		} `json:"text"`
 	}
-	if err := json.Unmarshal(payload, &parsed); err != nil || len(bytes.TrimSpace(parsed.Quote)) == 0 {
+	if err := json.Unmarshal(payload, &parsed); err != nil || len(bytes.TrimSpace(parsed.Text.Quote)) == 0 {
 		return nil
 	}
 	var quote struct {
 		MsgType string `json:"msgtype"`
-		Type    string `json:"type"`
 		From    string `json:"from"`
-		Sender  string `json:"sender"`
 		MsgID   string `json:"msgid"`
 		Text    struct {
 			Content string `json:"content"`
@@ -697,17 +697,17 @@ func buildCodexPromptQuote(payload json.RawMessage, messageID int64) *codexPromp
 			URL     string `json:"url"`
 		} `json:"image"`
 	}
-	if err := json.Unmarshal(parsed.Quote, &quote); err != nil {
+	if err := json.Unmarshal(parsed.Text.Quote, &quote); err != nil {
 		return nil
 	}
-	typ := normalizedPromptMessageType(promptFirstNonEmpty(quote.MsgType, quote.Type))
+	typ := normalizedPromptMessageType(quote.MsgType)
 	if typ == "" {
 		return nil
 	}
 	result := &codexPromptQuote{
-		Type:            typ,
-		Sender:          promptFirstNonEmpty(quote.From, quote.Sender),
-		SourceMessageID: strings.TrimSpace(quote.MsgID),
+		MsgType: typ,
+		From:    strings.TrimSpace(quote.From),
+		MsgID:   strings.TrimSpace(quote.MsgID),
 	}
 	switch typ {
 	case "image":

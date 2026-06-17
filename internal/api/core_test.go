@@ -322,7 +322,7 @@ func TestHandleInternalMediaRedirectsQuotedWOCImage(t *testing.T) {
 					"woc_room_id":"woc-room",
 					"woc_type":"text",
 					"content":"编辑这张图",
-					"quote":{"msgtype":"image","from":"小金鱼","msgid":"4024624919367125923","image":{"content":"[图片]"}}
+					"text":{"content":"编辑这张图","quote":{"msgtype":"image","from":"小金鱼","msgid":"4024624919367125923","image":{"content":"[图片]"}}}
 				}`),
 			}, nil
 		},
