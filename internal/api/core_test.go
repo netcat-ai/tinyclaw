@@ -181,26 +181,6 @@ func TestHandleListDeliveriesAcceptsMultipleChannels(t *testing.T) {
 	}
 }
 
-func TestHandleListDeliveriesAcceptsLegacyIDCursor(t *testing.T) {
-	api := NewServer(fakeCoreStore{
-		listFn: func(_ context.Context, channel string, afterID int64) ([]core.Delivery, error) {
-			if channel != "wecom" || afterID != 44 {
-				t.Fatalf("channel/afterID = %s/%d, want wecom/44", channel, afterID)
-			}
-			return nil, nil
-		},
-	}, "api-secret")
-
-	req := httptest.NewRequest(http.MethodGet, "/api/deliveries?channels=wecom&id=44", nil)
-	req.Header.Set("Authorization", "Bearer api-secret")
-	rec := httptest.NewRecorder()
-	api.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-}
-
 func TestHandleDeliveryAckUsesDeliveryID(t *testing.T) {
 	api := NewServer(fakeCoreStore{
 		ackFn: func(_ context.Context, id int64) (core.Delivery, error) {

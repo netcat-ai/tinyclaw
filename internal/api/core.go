@@ -509,7 +509,7 @@ func (s *Server) handleListDeliveries(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", "channels is required")
 		return
 	}
-	afterID := parsePositiveInt64(firstNonEmpty(r.URL.Query().Get("after_id"), r.URL.Query().Get("id")), 0)
+	afterID := parsePositiveInt64(r.URL.Query().Get("after_id"), 0)
 	var deliveries []core.Delivery
 	for _, channel := range channels {
 		channelDeliveries, err := s.core.ListCoreDeliveries(r.Context(), channel, afterID)

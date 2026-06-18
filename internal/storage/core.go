@@ -188,27 +188,17 @@ func normalizeCreateMessageInput(input core.CreateMessageInput) core.CreateMessa
 	if input.Source == "" {
 		input.Source = "external"
 	}
-	legacy := parseLegacyPayload(input.Payload)
 	if input.MsgID == "" {
-		input.MsgID = firstNonEmpty(input.SourceMessageID, legacy.MsgID)
+		input.MsgID = input.SourceMessageID
 	}
 	if input.Action == "" {
-		input.Action = firstNonEmpty(legacy.Action, "send")
+		input.Action = "send"
 	}
 	if input.FromID == "" {
-		input.FromID = firstNonEmpty(input.SenderID, legacy.FromID)
-	}
-	if len(input.ToList) == 0 {
-		input.ToList = append([]string(nil), legacy.ToList...)
+		input.FromID = input.SenderID
 	}
 	if input.ToList == nil {
 		input.ToList = []string{}
-	}
-	if input.RoomIDRaw == "" {
-		input.RoomIDRaw = legacy.RoomID
-	}
-	if input.MsgTime <= 0 {
-		input.MsgTime = legacy.MsgTime
 	}
 	if input.MsgTime <= 0 {
 		if input.MessageTime.IsZero() {
@@ -217,13 +207,10 @@ func normalizeCreateMessageInput(input core.CreateMessageInput) core.CreateMessa
 		input.MsgTime = input.MessageTime.UTC().Unix()
 	}
 	if input.MsgType == "" {
-		input.MsgType = legacy.MsgType
-	}
-	if input.MsgType == "" {
 		input.MsgType = "text"
 	}
 	if len(input.Body) == 0 {
-		input.Body = legacy.Body
+		input.Body = input.Payload
 	}
 	if len(input.Body) == 0 {
 		input.Body = json.RawMessage(`{}`)
@@ -241,61 +228,6 @@ func normalizeCreateMessageInput(input core.CreateMessageInput) core.CreateMessa
 		input.MessageTime = time.Unix(input.MsgTime, 0).UTC()
 	}
 	return input
-}
-
-type legacyMessagePayload struct {
-	MsgID   string
-	Action  string
-	FromID  string
-	ToList  []string
-	RoomID  string
-	MsgTime int64
-	MsgType string
-	Body    json.RawMessage
-}
-
-func parseLegacyPayload(payload json.RawMessage) legacyMessagePayload {
-	var result legacyMessagePayload
-	if len(payload) == 0 || !json.Valid(payload) {
-		return result
-	}
-	var values map[string]json.RawMessage
-	if err := json.Unmarshal(payload, &values); err != nil {
-		return result
-	}
-	result.MsgID = jsonString(values["msgid"])
-	result.Action = jsonString(values["action"])
-	result.FromID = jsonString(values["from"])
-	result.RoomID = jsonString(values["roomid"])
-	result.MsgTime = jsonInt64(values["msgtime"])
-	result.MsgType = firstNonEmpty(jsonString(values["msgtype"]), jsonString(values["type"]))
-	if raw := values["tolist"]; len(raw) > 0 {
-		_ = json.Unmarshal(raw, &result.ToList)
-	}
-	if raw := values["body"]; len(raw) > 0 && json.Valid(raw) {
-		result.Body = raw
-	} else if raw := values[result.MsgType]; len(raw) > 0 && json.Valid(raw) {
-		if text := jsonString(raw); text != "" {
-			result.Body = mustJSON(map[string]string{"content": text})
-		} else {
-			result.Body = raw
-		}
-	} else {
-		result.Body = payload
-	}
-	return result
-}
-
-func jsonString(raw json.RawMessage) string {
-	var value string
-	_ = json.Unmarshal(raw, &value)
-	return strings.TrimSpace(value)
-}
-
-func jsonInt64(raw json.RawMessage) int64 {
-	var value int64
-	_ = json.Unmarshal(raw, &value)
-	return value
 }
 
 func firstNonEmpty(values ...string) string {
