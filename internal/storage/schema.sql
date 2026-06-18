@@ -17,10 +17,13 @@ CREATE TABLE IF NOT EXISTS rooms (
 	channel_room_type TEXT NOT NULL,
 	display_name TEXT,
 	outbound_alias TEXT,
+	prompt TEXT NOT NULL DEFAULT '',
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	UNIQUE (tenant_id, channel, channel_room_id)
 );
+
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS prompt TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS messages (
 	id BIGSERIAL PRIMARY KEY,

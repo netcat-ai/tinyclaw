@@ -13,21 +13,22 @@ import (
 )
 
 type fakeCoreStore struct {
-	registerFn    func(context.Context, core.RegisterRoomInput) (core.RegisterRoomResult, error)
-	messageFn     func(context.Context, core.CreateMessageInput) (core.CreateMessageResult, error)
-	listFn        func(context.Context, string, int64) ([]core.Delivery, error)
-	ackFn         func(context.Context, int64) (core.Delivery, error)
-	memoryFn      func(context.Context, string, core.MemorySearchInput) ([]core.MemoryItem, error)
-	authFn        func(context.Context, string, string) (core.APIClient, error)
-	roomsFn       func(context.Context, int) ([]core.AdminRoomSummary, error)
-	timelineFn    func(context.Context, int64, int64, int) (core.AdminRoomTimeline, error)
-	adminMemFn    func(context.Context, core.AdminMemoryListInput) ([]core.MemoryItem, error)
-	agentsFn      func(context.Context) ([]core.Agent, error)
-	getAgentFn    func(context.Context, int64) (core.Agent, error)
-	createAgentFn func(context.Context, core.UpsertAgentInput) (core.Agent, error)
-	updateAgentFn func(context.Context, int64, core.UpsertAgentInput) (core.Agent, error)
-	getMsgFn      func(context.Context, int64) (core.Message, error)
-	getRoomFn     func(context.Context, int64) (core.Room, error)
+	registerFn          func(context.Context, core.RegisterRoomInput) (core.RegisterRoomResult, error)
+	getRoomByIdentityFn func(context.Context, string, string, string) (core.Room, bool, error)
+	messageFn           func(context.Context, core.CreateMessageInput) (core.CreateMessageResult, error)
+	listFn              func(context.Context, string, int64) ([]core.Delivery, error)
+	ackFn               func(context.Context, int64) (core.Delivery, error)
+	memoryFn            func(context.Context, string, core.MemorySearchInput) ([]core.MemoryItem, error)
+	authFn              func(context.Context, string, string) (core.APIClient, error)
+	roomsFn             func(context.Context, int) ([]core.AdminRoomSummary, error)
+	timelineFn          func(context.Context, int64, int64, int) (core.AdminRoomTimeline, error)
+	adminMemFn          func(context.Context, core.AdminMemoryListInput) ([]core.MemoryItem, error)
+	agentsFn            func(context.Context) ([]core.Agent, error)
+	getAgentFn          func(context.Context, int64) (core.Agent, error)
+	createAgentFn       func(context.Context, core.UpsertAgentInput) (core.Agent, error)
+	updateAgentFn       func(context.Context, int64, core.UpsertAgentInput) (core.Agent, error)
+	getMsgFn            func(context.Context, int64) (core.Message, error)
+	getRoomFn           func(context.Context, int64) (core.Room, error)
 }
 
 func TestIsWOCMediaMessageAcceptsQuoteImage(t *testing.T) {
@@ -105,6 +106,13 @@ func (f fakeCoreStore) GetCoreRoomByID(ctx context.Context, id int64) (core.Room
 		return core.Room{ID: id, TenantID: core.DefaultTenantID}, nil
 	}
 	return f.getRoomFn(ctx, id)
+}
+
+func (f fakeCoreStore) GetCoreRoomByIdentity(ctx context.Context, tenantID string, channel string, channelRoomID string) (core.Room, bool, error) {
+	if f.getRoomByIdentityFn == nil {
+		return core.Room{}, false, nil
+	}
+	return f.getRoomByIdentityFn(ctx, tenantID, channel, channelRoomID)
 }
 
 type fakeCommandHandler struct {
@@ -230,7 +238,7 @@ func TestHandleInternalMediaRedirectsWOCImageByInternalMessageID(t *testing.T) {
 				ID:        id,
 				RoomID:    10,
 				Source:    "wechat",
-				MsgID:     "woc:17964",
+				MsgID:     "17964",
 				RoomIDRaw: "room-1",
 				MsgType:   "image",
 				Body:      json.RawMessage(`{"content":"[图片]"}`),
@@ -276,7 +284,7 @@ func TestHandleInternalMediaRedirectUsesWOCServerID(t *testing.T) {
 				ID:        id,
 				RoomID:    10,
 				Source:    "wechat",
-				MsgID:     "woc:4024624919367125923",
+				MsgID:     "4024624919367125923",
 				RoomIDRaw: "room-1",
 				MsgType:   "image",
 				Body:      json.RawMessage(`{"content":"[图片]"}`),
@@ -311,7 +319,7 @@ func TestHandleInternalMediaRedirectsQuotedWOCImage(t *testing.T) {
 				ID:        id,
 				RoomID:    10,
 				Source:    "wechat",
-				MsgID:     "woc:8820952579958515168",
+				MsgID:     "8820952579958515168",
 				RoomIDRaw: "room-1",
 				MsgType:   "text",
 				Body: json.RawMessage(`{
@@ -349,7 +357,7 @@ func TestHandleInternalMediaRedirectsWOCEmotion(t *testing.T) {
 				ID:        id,
 				RoomID:    10,
 				Source:    "wechat",
-				MsgID:     "woc:7038377559080186342",
+				MsgID:     "7038377559080186342",
 				RoomIDRaw: "jlyfish",
 				MsgType:   "emotion",
 				Body:      json.RawMessage(`{"content":"[表情]"}`),
@@ -384,7 +392,7 @@ func TestHandleInternalMediaRedirectsQuotedWOCEmotion(t *testing.T) {
 				ID:        id,
 				RoomID:    10,
 				Source:    "wechat",
-				MsgID:     "woc:6350728120025981445",
+				MsgID:     "6350728120025981445",
 				RoomIDRaw: "jlyfish",
 				MsgType:   "text",
 				Body: json.RawMessage(`{
@@ -628,6 +636,55 @@ func TestHandleRoomsRegistersRoom(t *testing.T) {
 	}
 }
 
+func TestHandleRoomsReturnsExistingRoomWithoutRegistering(t *testing.T) {
+	api := NewServer(fakeCoreStore{
+		getRoomByIdentityFn: func(_ context.Context, tenantID string, channel string, channelRoomID string) (core.Room, bool, error) {
+			if tenantID != core.DefaultTenantID || channel != "wecom" || channelRoomID != "room-1" {
+				t.Fatalf("lookup identity = %q/%q/%q, want default/wecom/room-1", tenantID, channel, channelRoomID)
+			}
+			return core.Room{
+				ID:              10,
+				TenantID:        core.DefaultTenantID,
+				Channel:         channel,
+				ChannelRoomID:   channelRoomID,
+				ChannelRoomType: core.RoomChatTypeGroup,
+				DisplayName:     "Original Room",
+				OutboundAlias:   "original-alias",
+				Prompt:          "Original prompt.",
+			}, true, nil
+		},
+		registerFn: func(context.Context, core.RegisterRoomInput) (core.RegisterRoomResult, error) {
+			t.Fatal("RegisterRoom should not be called when adapter room already exists")
+			return core.RegisterRoomResult{}, nil
+		},
+	}, "api-secret")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/rooms", strings.NewReader(`{
+		"channel":"wecom",
+		"channel_room_id":"room-1",
+		"channel_room_type":"direct",
+		"display_name":"Adapter Room",
+		"outbound_alias":"adapter-alias",
+		"agent_enabled":false,
+		"prompt":"Adapter prompt."
+	}`))
+	req.Header.Set("Authorization", "Bearer api-secret")
+	rec := httptest.NewRecorder()
+
+	api.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload registerRoomResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Room.DisplayName != "Original Room" || payload.Room.OutboundAlias != "original-alias" || payload.Room.Prompt != "Original prompt." {
+		t.Fatalf("room = %+v, want existing room", payload.Room)
+	}
+}
+
 func TestHandleAdminRoomsRequiresAdminClient(t *testing.T) {
 	api := NewServer(fakeCoreStore{
 		authFn: func(_ context.Context, clientID string, secret string) (core.APIClient, error) {
@@ -708,6 +765,9 @@ func TestHandleAdminRoomsRegistersRoomWithAdminAuth(t *testing.T) {
 			if input.Channel != "wecom" || input.ChannelRoomID != "room-1" || input.OutboundAlias != "测试群" || !input.AgentEnabled {
 				t.Fatalf("unexpected input: %+v", input)
 			}
+			if input.Prompt == nil || *input.Prompt != "Short room style." {
+				t.Fatalf("room prompt = %+v, want Short room style.", input.Prompt)
+			}
 			return core.RegisterRoomResult{
 				Room: core.Room{
 					ID:              10,
@@ -717,6 +777,7 @@ func TestHandleAdminRoomsRegistersRoomWithAdminAuth(t *testing.T) {
 					ChannelRoomType: input.ChannelRoomType,
 					DisplayName:     input.DisplayName,
 					OutboundAlias:   input.OutboundAlias,
+					Prompt:          *input.Prompt,
 				},
 				AgentSession: core.AgentSession{
 					ID:      100,
@@ -733,7 +794,8 @@ func TestHandleAdminRoomsRegistersRoomWithAdminAuth(t *testing.T) {
 		"channel_room_type":"group",
 		"display_name":"测试群",
 		"outbound_alias":"测试群",
-		"agent_enabled":true
+		"agent_enabled":true,
+		"prompt":"Short room style."
 	}`))
 	req.SetBasicAuth("admin", "admin-secret")
 	rec := httptest.NewRecorder()
@@ -748,6 +810,9 @@ func TestHandleAdminRoomsRegistersRoomWithAdminAuth(t *testing.T) {
 	}
 	if payload.Room.ID != 10 || payload.AgentSession.ID != 100 {
 		t.Fatalf("payload = %+v, want registered room", payload)
+	}
+	if payload.Room.Prompt != "Short room style." {
+		t.Fatalf("room prompt = %q, want prompt", payload.Room.Prompt)
 	}
 }
 

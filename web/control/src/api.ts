@@ -11,6 +11,7 @@ export type Room = {
   channel_room_type: string
   display_name?: string
   outbound_alias: string
+  prompt: string
 }
 
 export type AgentSession = {
@@ -79,6 +80,7 @@ export type Timeline = {
 }
 
 export type RegisterRoomInput = {
+  tenant_id?: string
   channel: string
   channel_room_id: string
   channel_room_type: string
@@ -86,12 +88,7 @@ export type RegisterRoomInput = {
   outbound_alias: string
   agent_enabled: boolean
   trigger_policy?: unknown
-}
-
-export type InjectMessageInput = {
-  sender_id: string
-  text: string
-  suppress_agent_trigger: boolean
+  prompt?: string
 }
 
 export type Agent = {
@@ -184,12 +181,6 @@ export const api = {
 
   registerRoom: (credentials: Credentials, input: RegisterRoomInput) =>
     requestJSON<RegisterRoomResult>('/admin/api/rooms', credentials, {
-      method: 'POST',
-      body: JSON.stringify(input),
-    }),
-
-  injectMessage: (credentials: Credentials, roomId: number, input: InjectMessageInput) =>
-    requestJSON(`/admin/api/rooms/${roomId}/messages:inject`, credentials, {
       method: 'POST',
       body: JSON.stringify(input),
     }),

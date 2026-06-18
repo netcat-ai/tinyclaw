@@ -92,6 +92,117 @@ func TestAgentRunDoesNotExpandWindowWhenNewMessageArrivesDuringRun(t *testing.T)
 	}
 }
 
+func TestRegisterRoomPromptUpdatesAndPreservesExistingPrompt(t *testing.T) {
+	ctx := context.Background()
+	store := openPostgresStorageTestStore(t, ctx)
+	suffix := time.Now().UnixNano()
+	roomID := fmt.Sprintf("prompt-room-%d", suffix)
+	prompt := "Default to short replies."
+
+	result, err := store.RegisterRoom(ctx, core.RegisterRoomInput{
+		Channel:         "storage-core-test",
+		ChannelRoomID:   roomID,
+		ChannelRoomType: core.RoomChatTypeGroup,
+		DisplayName:     "Storage Core Prompt Test",
+		OutboundAlias:   "storage-core-test",
+		AgentEnabled:    true,
+		TriggerPolicy:   json.RawMessage(`{"mode":"never"}`),
+		Prompt:          &prompt,
+	})
+	if err != nil {
+		t.Fatalf("register room with prompt: %v", err)
+	}
+	if result.Room.Prompt != prompt {
+		t.Fatalf("room prompt = %q, want %q", result.Room.Prompt, prompt)
+	}
+
+	result, err = store.RegisterRoom(ctx, core.RegisterRoomInput{
+		Channel:         "storage-core-test",
+		ChannelRoomID:   roomID,
+		ChannelRoomType: core.RoomChatTypeGroup,
+		DisplayName:     "Storage Core Prompt Test Updated",
+		OutboundAlias:   "storage-core-test",
+		AgentEnabled:    true,
+		TriggerPolicy:   json.RawMessage(`{"mode":"never"}`),
+	})
+	if err != nil {
+		t.Fatalf("register room without prompt: %v", err)
+	}
+	if result.Room.Prompt != prompt {
+		t.Fatalf("room prompt after omitted update = %q, want %q", result.Room.Prompt, prompt)
+	}
+
+	emptyPrompt := ""
+	result, err = store.RegisterRoom(ctx, core.RegisterRoomInput{
+		Channel:         "storage-core-test",
+		ChannelRoomID:   roomID,
+		ChannelRoomType: core.RoomChatTypeGroup,
+		DisplayName:     "Storage Core Prompt Test Updated",
+		OutboundAlias:   "storage-core-test",
+		AgentEnabled:    true,
+		TriggerPolicy:   json.RawMessage(`{"mode":"never"}`),
+		Prompt:          &emptyPrompt,
+	})
+	if err != nil {
+		t.Fatalf("clear room prompt: %v", err)
+	}
+	if result.Room.Prompt != "" {
+		t.Fatalf("room prompt after clear = %q, want empty", result.Room.Prompt)
+	}
+}
+
+func TestBatchTriggerPolicyTriggersAfterMessageThreshold(t *testing.T) {
+	ctx := context.Background()
+	store := openPostgresStorageTestStore(t, ctx)
+	suffix := time.Now().UnixNano()
+
+	roomResult, err := store.RegisterRoom(ctx, core.RegisterRoomInput{
+		Channel:         "storage-core-test",
+		ChannelRoomID:   fmt.Sprintf("batch-room-%d", suffix),
+		ChannelRoomType: core.RoomChatTypeGroup,
+		DisplayName:     "Storage Core Batch Test",
+		OutboundAlias:   "storage-core-test",
+		AgentEnabled:    true,
+		TriggerPolicy:   json.RawMessage(`{"batch":{"enabled":true,"min_messages":3}}`),
+	})
+	if err != nil {
+		t.Fatalf("register room: %v", err)
+	}
+
+	for i := 1; i <= 3; i++ {
+		result, err := store.CreateMessage(ctx, core.CreateMessageInput{
+			RoomID:    roomResult.Room.ID,
+			Source:    "storage-core-test",
+			MsgID:     fmt.Sprintf("batch-msg-%d-%d", i, suffix),
+			Action:    "send",
+			FromID:    "alice",
+			MsgTime:   time.Now().UTC().Unix(),
+			MsgType:   "text",
+			Body:      json.RawMessage(fmt.Sprintf(`{"content":"ordinary message %d"}`, i)),
+			ToList:    []string{"tinyclaw"},
+			RoomIDRaw: "room",
+		})
+		if err != nil {
+			t.Fatalf("create message %d: %v", i, err)
+		}
+		wantTriggered := i == 3
+		if result.Triggered != wantTriggered {
+			t.Fatalf("message %d triggered = %v, want %v", i, result.Triggered, wantTriggered)
+		}
+	}
+
+	run, ok, err := store.ClaimNextAgentRun(ctx, "test-worker", time.Minute)
+	if err != nil {
+		t.Fatalf("claim run: %v", err)
+	}
+	if !ok {
+		t.Fatal("claim run ok = false, want true")
+	}
+	if run.SourceMessageFromID <= 0 || run.SourceMessageToID <= run.SourceMessageFromID {
+		t.Fatalf("run window = [%d,%d], want batched window", run.SourceMessageFromID, run.SourceMessageToID)
+	}
+}
+
 func TestLatestImageMessageBeforeReturnsPreviousImage(t *testing.T) {
 	ctx := context.Background()
 	store := openPostgresStorageTestStore(t, ctx)

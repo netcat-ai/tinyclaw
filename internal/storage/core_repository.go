@@ -51,6 +51,7 @@ func upsertRoomTx(ctx context.Context, tx *sql.Tx, input core.RegisterRoomInput)
 	var room core.Room
 	var displayName sql.NullString
 	tenantID := firstNonEmpty(input.TenantID, core.DefaultTenantID)
+	prompt := nullStringPtr(input.Prompt)
 	if tenantID != core.DefaultTenantID {
 		row := tx.QueryRowContext(ctx, `
 			UPDATE rooms
@@ -58,6 +59,7 @@ func upsertRoomTx(ctx context.Context, tx *sql.Tx, input core.RegisterRoomInput)
 			    channel_room_type = $4,
 			    display_name = $5,
 			    outbound_alias = $6,
+			    prompt = COALESCE($8, prompt),
 			    updated_at = NOW()
 			WHERE tenant_id = $7
 			  AND channel = $2
@@ -69,8 +71,8 @@ func upsertRoomTx(ctx context.Context, tx *sql.Tx, input core.RegisterRoomInput)
 			        AND channel = $2
 			        AND channel_room_id = $3
 			  )
-			RETURNING id, tenant_id, channel, channel_room_id, channel_room_type, display_name, outbound_alias, created_at, updated_at
-		`, tenantID, input.Channel, input.ChannelRoomID, input.ChannelRoomType, nullIfEmpty(input.DisplayName), input.OutboundAlias, core.DefaultTenantID)
+			RETURNING id, tenant_id, channel, channel_room_id, channel_room_type, display_name, outbound_alias, prompt, created_at, updated_at
+		`, tenantID, input.Channel, input.ChannelRoomID, input.ChannelRoomType, nullIfEmpty(input.DisplayName), input.OutboundAlias, core.DefaultTenantID, prompt)
 		room, err := scanCoreRoom(row)
 		if err == nil {
 			return room, nil
@@ -86,15 +88,17 @@ func upsertRoomTx(ctx context.Context, tx *sql.Tx, input core.RegisterRoomInput)
 			channel_room_id,
 			channel_room_type,
 			display_name,
-			outbound_alias
+			outbound_alias,
+			prompt
 		)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, ''))
 		ON CONFLICT (tenant_id, channel, channel_room_id) DO UPDATE
 		SET display_name = EXCLUDED.display_name,
 		    outbound_alias = EXCLUDED.outbound_alias,
+		    prompt = COALESCE($7, rooms.prompt),
 		    updated_at = NOW()
-		RETURNING id, tenant_id, channel, channel_room_id, channel_room_type, display_name, outbound_alias, created_at, updated_at
-	`, tenantID, input.Channel, input.ChannelRoomID, input.ChannelRoomType, nullIfEmpty(input.DisplayName), input.OutboundAlias).Scan(
+		RETURNING id, tenant_id, channel, channel_room_id, channel_room_type, display_name, outbound_alias, prompt, created_at, updated_at
+	`, tenantID, input.Channel, input.ChannelRoomID, input.ChannelRoomType, nullIfEmpty(input.DisplayName), input.OutboundAlias, prompt).Scan(
 		&room.ID,
 		&room.TenantID,
 		&room.Channel,
@@ -102,6 +106,7 @@ func upsertRoomTx(ctx context.Context, tx *sql.Tx, input core.RegisterRoomInput)
 		&room.ChannelRoomType,
 		&displayName,
 		&room.OutboundAlias,
+		&room.Prompt,
 		&room.CreatedAt,
 		&room.UpdatedAt,
 	)
@@ -167,9 +172,61 @@ func upsertAgentSessionTx(ctx context.Context, tx *sql.Tx, roomID int64, input c
 	return session, nil
 }
 
+func getAgentSessionByRoomIDTx(ctx context.Context, tx *sql.Tx, roomID int64) (core.AgentSession, bool, error) {
+	row := tx.QueryRowContext(ctx, `
+		SELECT id, room_id, enabled, trigger_policy, pending_trigger_message_id, caught_up_message_id, codex_session_id, lock_owner, lock_expires_at, created_at, updated_at
+		FROM agent_sessions
+		WHERE room_id = $1
+	`, roomID)
+	session, err := scanAgentSession(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return core.AgentSession{}, false, nil
+		}
+		return core.AgentSession{}, false, fmt.Errorf("get agent session by room: %w", err)
+	}
+	return session, true, nil
+}
+
+func getCoreRoomByIdentityTx(ctx context.Context, tx *sql.Tx, tenantID string, channel string, channelRoomID string) (core.Room, bool, error) {
+	row := tx.QueryRowContext(ctx, `
+		SELECT id, tenant_id, channel, channel_room_id, channel_room_type, display_name, outbound_alias, prompt, created_at, updated_at
+		FROM rooms
+		WHERE tenant_id = $1
+		  AND channel = $2
+		  AND channel_room_id = $3
+	`, tenantID, channel, channelRoomID)
+	room, err := scanCoreRoom(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return core.Room{}, false, nil
+		}
+		return core.Room{}, false, fmt.Errorf("get room by identity: %w", err)
+	}
+	return room, true, nil
+}
+
+func getCoreRoomByIdentity(ctx context.Context, db *sql.DB, tenantID string, channel string, channelRoomID string) (core.Room, bool, error) {
+	row := db.QueryRowContext(ctx, `
+		SELECT id, tenant_id, channel, channel_room_id, channel_room_type, display_name, outbound_alias, prompt, created_at, updated_at
+		FROM rooms
+		WHERE tenant_id = $1
+		  AND channel = $2
+		  AND channel_room_id = $3
+	`, tenantID, channel, channelRoomID)
+	room, err := scanCoreRoom(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return core.Room{}, false, nil
+		}
+		return core.Room{}, false, fmt.Errorf("get room by identity: %w", err)
+	}
+	return room, true, nil
+}
+
 func getCoreRoomByIDTx(ctx context.Context, tx *sql.Tx, id int64) (core.Room, error) {
 	row := tx.QueryRowContext(ctx, `
-		SELECT id, tenant_id, channel, channel_room_id, channel_room_type, display_name, outbound_alias, created_at, updated_at
+		SELECT id, tenant_id, channel, channel_room_id, channel_room_type, display_name, outbound_alias, prompt, created_at, updated_at
 		FROM rooms
 		WHERE id = $1
 	`, id)
@@ -185,7 +242,7 @@ func getCoreRoomByIDTx(ctx context.Context, tx *sql.Tx, id int64) (core.Room, er
 
 func getCoreRoomByID(ctx context.Context, db *sql.DB, id int64) (core.Room, error) {
 	row := db.QueryRowContext(ctx, `
-		SELECT id, tenant_id, channel, channel_room_id, channel_room_type, display_name, outbound_alias, created_at, updated_at
+		SELECT id, tenant_id, channel, channel_room_id, channel_room_type, display_name, outbound_alias, prompt, created_at, updated_at
 		FROM rooms
 		WHERE id = $1
 	`, id)
@@ -327,20 +384,109 @@ func markAgentSessionTriggeredTx(ctx context.Context, tx *sql.Tx, sessionID int6
 	return nil
 }
 
+func shouldTriggerBatchMessageTx(ctx context.Context, tx *sql.Tx, room core.Room, session core.AgentSession, input core.CreateMessageInput, message core.Message) (bool, error) {
+	policy, ok := core.EvaluateBatchTriggerPolicy(session.TriggerPolicy, room.ChannelRoomType, input)
+	if !ok {
+		return false, nil
+	}
+	if policy.MinMessages <= 0 && policy.MaxIntervalSeconds <= 0 {
+		return false, nil
+	}
+	boundaryID := session.CaughtUpMessageID
+	if session.PendingTriggerMessageID > boundaryID {
+		boundaryID = session.PendingTriggerMessageID
+	}
+	state, err := getBatchTriggerStateTx(ctx, tx, room.ID, boundaryID, message.ID)
+	if err != nil {
+		return false, err
+	}
+	if state.MessageCount <= 0 {
+		return false, nil
+	}
+	if policy.MinMessages > 0 && state.MessageCount >= policy.MinMessages {
+		if policy.MinIntervalSeconds <= 0 || boundaryID == 0 || state.CurrentCreatedAt.Sub(state.BoundaryCreatedAt) >= time.Duration(policy.MinIntervalSeconds)*time.Second {
+			return true, nil
+		}
+	}
+	if policy.MaxIntervalSeconds > 0 && state.CurrentCreatedAt.Sub(state.FirstMessageCreatedAt) >= time.Duration(policy.MaxIntervalSeconds)*time.Second {
+		return true, nil
+	}
+	return false, nil
+}
+
+type batchTriggerState struct {
+	MessageCount          int
+	FirstMessageCreatedAt time.Time
+	BoundaryCreatedAt     time.Time
+	CurrentCreatedAt      time.Time
+}
+
+func getBatchTriggerStateTx(ctx context.Context, tx *sql.Tx, roomID int64, boundaryID int64, currentMessageID int64) (batchTriggerState, error) {
+	row := tx.QueryRowContext(ctx, `
+		WITH pending AS (
+			SELECT COUNT(*)::int AS message_count,
+			       MIN(created_at) AS first_message_created_at
+			FROM messages
+			WHERE room_id = $1
+			  AND id > $2
+			  AND id <= $3
+		),
+		boundary AS (
+			SELECT created_at AS boundary_created_at
+			FROM messages
+			WHERE room_id = $1
+			  AND id = $2
+		),
+		current_message AS (
+			SELECT created_at AS current_created_at
+			FROM messages
+			WHERE room_id = $1
+			  AND id = $3
+		)
+		SELECT pending.message_count,
+		       pending.first_message_created_at,
+		       COALESCE(boundary.boundary_created_at, pending.first_message_created_at),
+		       current_message.current_created_at
+		FROM pending
+		CROSS JOIN current_message
+		LEFT JOIN boundary ON TRUE
+	`, roomID, boundaryID, currentMessageID)
+	var state batchTriggerState
+	var firstMessageCreatedAt sql.NullTime
+	var boundaryCreatedAt sql.NullTime
+	if err := row.Scan(
+		&state.MessageCount,
+		&firstMessageCreatedAt,
+		&boundaryCreatedAt,
+		&state.CurrentCreatedAt,
+	); err != nil {
+		return batchTriggerState{}, fmt.Errorf("get batch trigger state: %w", err)
+	}
+	if firstMessageCreatedAt.Valid {
+		state.FirstMessageCreatedAt = firstMessageCreatedAt.Time
+	}
+	if boundaryCreatedAt.Valid {
+		state.BoundaryCreatedAt = boundaryCreatedAt.Time
+	}
+	return state, nil
+}
+
 func claimNextAgentRunTx(ctx context.Context, tx *sql.Tx, owner string, ttl time.Duration) (core.AgentRun, bool, error) {
 	var run core.AgentRun
 	expiresAt := time.Now().UTC().Add(ttl)
 	row := tx.QueryRowContext(ctx, `
 		WITH candidate AS (
-			SELECT s.id
+			SELECT s.id,
+			       r.prompt AS room_prompt
 			FROM agent_sessions s
+			JOIN rooms r ON r.id = s.room_id
 			WHERE s.enabled = TRUE
 			  AND s.pending_trigger_message_id IS NOT NULL
 			  AND s.pending_trigger_message_id > s.caught_up_message_id
 			  AND (s.lock_expires_at IS NULL OR s.lock_expires_at < NOW())
 			ORDER BY s.updated_at ASC, s.id ASC
 			LIMIT 1
-			FOR UPDATE SKIP LOCKED
+			FOR UPDATE OF s SKIP LOCKED
 		)
 		UPDATE agent_sessions s
 		SET lock_owner = $1,
@@ -359,9 +505,11 @@ func claimNextAgentRunTx(ctx context.Context, tx *sql.Tx, owner string, ttl time
 		                AND m.id <= s.pending_trigger_message_id
 		          ), s.pending_trigger_message_id),
 		          s.pending_trigger_message_id,
-		          s.lock_owner
+		          s.lock_owner,
+		          candidate.room_prompt
 	`, owner, expiresAt)
 	var codexSessionID sql.NullString
+	var roomPrompt string
 	err := row.Scan(
 		&run.AgentSessionID,
 		&run.RoomID,
@@ -369,6 +517,7 @@ func claimNextAgentRunTx(ctx context.Context, tx *sql.Tx, owner string, ttl time
 		&run.SourceMessageFromID,
 		&run.SourceMessageToID,
 		&run.LockOwner,
+		&roomPrompt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -379,6 +528,7 @@ func claimNextAgentRunTx(ctx context.Context, tx *sql.Tx, owner string, ttl time
 	if codexSessionID.Valid {
 		run.CodexSessionID = codexSessionID.String
 	}
+	run.RoomPrompt = roomPrompt
 	return run, true, nil
 }
 
@@ -505,6 +655,7 @@ func scanCoreRoom(row scanner) (core.Room, error) {
 		&room.ChannelRoomType,
 		&displayName,
 		&room.OutboundAlias,
+		&room.Prompt,
 		&room.CreatedAt,
 		&room.UpdatedAt,
 	); err != nil {
@@ -613,6 +764,13 @@ func nullIfEmpty(value string) sql.NullString {
 		return sql.NullString{}
 	}
 	return sql.NullString{String: value, Valid: true}
+}
+
+func nullStringPtr(value *string) sql.NullString {
+	if value == nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: *value, Valid: true}
 }
 
 func nullJSON(value json.RawMessage) any {

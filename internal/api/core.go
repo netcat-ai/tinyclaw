@@ -24,6 +24,10 @@ type CoreStore interface {
 	AckCoreDelivery(ctx context.Context, id int64) (core.Delivery, error)
 }
 
+type RoomIdentityStore interface {
+	GetCoreRoomByIdentity(ctx context.Context, tenantID string, channel string, channelRoomID string) (core.Room, bool, error)
+}
+
 type MediaStore interface {
 	GetCoreMessageByID(ctx context.Context, id int64) (core.Message, error)
 	GetCoreRoomByID(ctx context.Context, id int64) (core.Room, error)
@@ -193,11 +197,7 @@ func isWOCMediaType(value string) bool {
 }
 
 func wocAgentMessageID(msgID string) string {
-	msgID = strings.TrimSpace(msgID)
-	if after, ok := strings.CutPrefix(msgID, "woc:"); ok {
-		return strings.TrimSpace(after)
-	}
-	return msgID
+	return strings.TrimSpace(msgID)
 }
 
 type registerRoomResponse struct {
@@ -219,6 +219,7 @@ type coreRoomResponse struct {
 	ChannelRoomType string `json:"channel_room_type"`
 	DisplayName     string `json:"display_name,omitempty"`
 	OutboundAlias   string `json:"outbound_alias"`
+	Prompt          string `json:"prompt"`
 }
 
 type coreAgentSessionResponse struct {
@@ -429,6 +430,24 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 	if err := readJSONBody(r, &input); err != nil {
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
+	}
+	if store, ok := s.core.(RoomIdentityStore); ok {
+		room, exists, err := store.GetCoreRoomByIdentity(
+			r.Context(),
+			firstNonEmpty(strings.TrimSpace(input.TenantID), core.DefaultTenantID),
+			strings.TrimSpace(input.Channel),
+			strings.TrimSpace(input.ChannelRoomID),
+		)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "lookup_failed", err.Error())
+			return
+		}
+		if exists {
+			writeAPIJSON(w, http.StatusOK, registerRoomResponse{
+				Room: roomToResponse(room),
+			})
+			return
+		}
 	}
 	result, err := s.core.RegisterRoom(r.Context(), input)
 	if err != nil {
@@ -934,6 +953,7 @@ func roomToResponse(room core.Room) coreRoomResponse {
 		ChannelRoomType: room.ChannelRoomType,
 		DisplayName:     room.DisplayName,
 		OutboundAlias:   room.OutboundAlias,
+		Prompt:          room.Prompt,
 	}
 }
 

@@ -83,6 +83,32 @@ func TestEvaluateTriggerPolicyStillTriggersOtherSenders(t *testing.T) {
 	}
 }
 
+func TestEvaluateTriggerPolicyTreatsBatchAsExplicitPolicy(t *testing.T) {
+	got, ok := EvaluateTriggerPolicy(json.RawMessage(`{
+		"batch": {"enabled": true, "min_messages": 3}
+	}`), RoomChatTypeGroup, CreateMessageInput{
+		Payload: json.RawMessage(`{"type":"text","text":"普通聊天"}`),
+	})
+	if !ok {
+		t.Fatal("policy was not evaluated")
+	}
+	if got {
+		t.Fatal("trigger = true, want false for immediate decision")
+	}
+}
+
+func TestEvaluateBatchTriggerPolicyIgnoresModeNever(t *testing.T) {
+	_, ok := EvaluateBatchTriggerPolicy(json.RawMessage(`{
+		"mode": "never",
+		"batch": {"enabled": true, "min_messages": 3}
+	}`), RoomChatTypeGroup, CreateMessageInput{
+		Payload: json.RawMessage(`{"type":"text","text":"普通聊天"}`),
+	})
+	if ok {
+		t.Fatal("batch policy ok = true, want false")
+	}
+}
+
 func mustJSONString(value string) string {
 	data, err := json.Marshal(value)
 	if err != nil {

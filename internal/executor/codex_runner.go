@@ -403,6 +403,11 @@ func BuildCodexPrompt(run AgentRunRequest) string {
 	builder.WriteString("- For vague edits such as 美化, 更可爱, 精修, or 好看一点, default to a local minimal edit. Do not reinterpret, redraw, replace the subject, change identity, or compose a new scene.\n")
 	builder.WriteString("- Always set output_format to jpeg; Clawman will normalize stored output to JPEG.\n")
 	builder.WriteString("- Clawman will generate, store, and deliver the image. Keep final_output short when image_generation_requests is non-empty.\n\n")
+	if prompt := strings.TrimSpace(run.AgentRun.RoomPrompt); prompt != "" {
+		builder.WriteString("Room Prompt:\n")
+		builder.WriteString(prompt)
+		builder.WriteString("\n\n")
+	}
 	if strings.TrimSpace(run.MemorySearchURL) != "" && strings.TrimSpace(run.MemorySearchToken) != "" {
 		builder.WriteString("Room Memory Search:\n")
 		builder.WriteString("- Request Memory Search by returning memory_search_requests in Agent Run Result.\n")

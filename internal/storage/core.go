@@ -22,12 +22,7 @@ func NewCoreStore(db *sql.DB) *CoreStore {
 }
 
 func (s *CoreStore) RegisterRoom(ctx context.Context, input core.RegisterRoomInput) (core.RegisterRoomResult, error) {
-	input.TenantID = strings.TrimSpace(input.TenantID)
-	input.Channel = strings.TrimSpace(input.Channel)
-	input.ChannelRoomID = strings.TrimSpace(input.ChannelRoomID)
-	input.ChannelRoomType = strings.TrimSpace(input.ChannelRoomType)
-	input.DisplayName = strings.TrimSpace(input.DisplayName)
-	input.OutboundAlias = strings.TrimSpace(input.OutboundAlias)
+	input = normalizeRegisterRoomInput(input)
 	if err := validateRegisterRoom(input); err != nil {
 		telemetry.IncRoomRegistration(input.Channel, "error")
 		return core.RegisterRoomResult{}, err
@@ -58,8 +53,29 @@ func (s *CoreStore) RegisterRoom(ctx context.Context, input core.RegisterRoomInp
 	return core.RegisterRoomResult{Room: room, AgentSession: session}, nil
 }
 
+func normalizeRegisterRoomInput(input core.RegisterRoomInput) core.RegisterRoomInput {
+	input.TenantID = strings.TrimSpace(input.TenantID)
+	input.Channel = strings.TrimSpace(input.Channel)
+	input.ChannelRoomID = strings.TrimSpace(input.ChannelRoomID)
+	input.ChannelRoomType = strings.TrimSpace(input.ChannelRoomType)
+	input.DisplayName = strings.TrimSpace(input.DisplayName)
+	input.OutboundAlias = strings.TrimSpace(input.OutboundAlias)
+	if input.Prompt != nil {
+		prompt := strings.TrimSpace(*input.Prompt)
+		input.Prompt = &prompt
+	}
+	return input
+}
+
 func (s *CoreStore) GetCoreRoomByID(ctx context.Context, id int64) (core.Room, error) {
 	return getCoreRoomByID(ctx, s.db, id)
+}
+
+func (s *CoreStore) GetCoreRoomByIdentity(ctx context.Context, tenantID string, channel string, channelRoomID string) (core.Room, bool, error) {
+	tenantID = firstNonEmpty(strings.TrimSpace(tenantID), core.DefaultTenantID)
+	channel = strings.TrimSpace(channel)
+	channelRoomID = strings.TrimSpace(channelRoomID)
+	return getCoreRoomByIdentity(ctx, s.db, tenantID, channel, channelRoomID)
 }
 
 func (s *CoreStore) CreateMessage(ctx context.Context, input core.CreateMessageInput) (core.CreateMessageResult, error) {
@@ -109,7 +125,15 @@ func (s *CoreStore) CreateMessage(ctx context.Context, input core.CreateMessageI
 		return core.CreateMessageResult{}, err
 	}
 	for _, session := range sessions {
-		if core.ShouldTriggerMessage(room, session, input) {
+		triggered := core.ShouldTriggerMessage(room, session, input)
+		if !triggered {
+			triggered, err = shouldTriggerBatchMessageTx(ctx, tx, room, session, input, message)
+			if err != nil {
+				telemetry.IncMessageIngestion(input.Source, input.MsgType, "error", false)
+				return core.CreateMessageResult{}, err
+			}
+		}
+		if triggered {
 			if err := markAgentSessionTriggeredTx(ctx, tx, session.ID, message.ID); err != nil {
 				telemetry.IncMessageIngestion(input.Source, input.MsgType, "error", false)
 				return core.CreateMessageResult{}, err

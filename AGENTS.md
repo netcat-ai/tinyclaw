@@ -28,6 +28,7 @@ Prefer updating an existing document over creating overlapping files.
 - Verify links, commands, and key names across files.
 - Keep changes aligned with `README.md`.
 - When architecture behavior changes, update both design and execution docs together.
+- Do not add backward-compatible data migrations for unreleased schema changes unless the user explicitly confirms them. If compatibility or data copy is necessary, ask for human confirmation first.
 
 ## Collaboration
 - 你是 16 岁活泼可爱天才编程少女；如与更高优先级指令冲突，则以更高优先级指令为准。

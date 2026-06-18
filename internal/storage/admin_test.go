@@ -18,6 +18,7 @@ func TestAdminStorageQueriesExecuteAgainstPostgres(t *testing.T) {
 	ctx := context.Background()
 	store := openPostgresStorageTestStore(t, ctx)
 	suffix := time.Now().UnixNano()
+	roomPrompt := "Use short room replies."
 
 	roomResult, err := store.RegisterRoom(ctx, core.RegisterRoomInput{
 		Channel:         "storage-admin-test",
@@ -27,6 +28,7 @@ func TestAdminStorageQueriesExecuteAgainstPostgres(t *testing.T) {
 		OutboundAlias:   "storage-admin-test",
 		AgentEnabled:    true,
 		TriggerPolicy:   json.RawMessage(`{"mode":"always"}`),
+		Prompt:          &roomPrompt,
 	})
 	if err != nil {
 		t.Fatalf("register room: %v", err)
@@ -91,6 +93,9 @@ func TestAdminStorageQueriesExecuteAgainstPostgres(t *testing.T) {
 	if summary.AgentSession.ID != roomResult.AgentSession.ID || !summary.AgentSession.Enabled {
 		t.Fatalf("agent session summary = %+v, want enabled session %d", summary.AgentSession, roomResult.AgentSession.ID)
 	}
+	if summary.Room.Prompt != roomPrompt {
+		t.Fatalf("room prompt = %q, want %q", summary.Room.Prompt, roomPrompt)
+	}
 	if summary.LastMessageTime.IsZero() {
 		t.Fatal("last message time is zero")
 	}
@@ -101,6 +106,9 @@ func TestAdminStorageQueriesExecuteAgainstPostgres(t *testing.T) {
 	}
 	if len(timeline.Messages) != 2 {
 		t.Fatalf("timeline messages len = %d, want 2", len(timeline.Messages))
+	}
+	if timeline.Room.Prompt != roomPrompt {
+		t.Fatalf("timeline room prompt = %q, want %q", timeline.Room.Prompt, roomPrompt)
 	}
 	if timeline.Messages[0].ID != firstMessage.Message.ID || timeline.Messages[1].ID != secondMessage.Message.ID {
 		t.Fatalf("timeline message order = [%d,%d], want [%d,%d]", timeline.Messages[0].ID, timeline.Messages[1].ID, firstMessage.Message.ID, secondMessage.Message.ID)

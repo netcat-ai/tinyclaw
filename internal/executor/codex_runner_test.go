@@ -90,6 +90,27 @@ func TestBuildCodexPromptIncludesImageMediaRule(t *testing.T) {
 	}
 }
 
+func TestBuildCodexPromptIncludesRoomPrompt(t *testing.T) {
+	run := testAgentRun
+	run.RoomPrompt = "Default to short replies for this room."
+	prompt := BuildCodexPrompt(AgentRunRequest{
+		AgentRun: run,
+		ContextMessages: []core.Message{
+			{ID: 1, SenderName: "Alice", MsgType: "text", Body: []byte(`{"content":"hello"}`)},
+		},
+	})
+
+	for _, want := range []string{
+		"Room Prompt:",
+		"Default to short replies for this room.",
+		"Conversation messages (JSONL):",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestBuildCodexPromptIncludesReferencedImageMetadata(t *testing.T) {
 	prompt := BuildCodexPrompt(AgentRunRequest{
 		AgentRun: testAgentRun,

@@ -46,6 +46,7 @@ type Room struct {
 	ChannelRoomType string
 	DisplayName     string
 	OutboundAlias   string
+	Prompt          string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -227,6 +228,7 @@ type RegisterRoomInput struct {
 	OutboundAlias   string          `json:"outbound_alias"`
 	AgentEnabled    bool            `json:"agent_enabled"`
 	TriggerPolicy   json.RawMessage `json:"trigger_policy"`
+	Prompt          *string         `json:"prompt,omitempty"`
 }
 
 type RegisterRoomResult struct {
@@ -295,6 +297,7 @@ type GeneratedMediaOutput struct {
 type AgentRun struct {
 	AgentSessionID      int64
 	RoomID              int64
+	RoomPrompt          string
 	AgentID             int64
 	CodexSessionID      string
 	SourceMessageFromID int64

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useStorage } from '@vueuse/core'
 import {
+  ArrowDown,
   Bot,
   Check,
   Database,
@@ -9,7 +10,6 @@ import {
   KeyRound,
   Loader2,
   MessageCircle,
-  MessageSquarePlus,
   Plus,
   RefreshCw,
   Search,
@@ -20,7 +20,6 @@ import {
   type Agent,
   type Credentials,
   type Delivery,
-  type InjectMessageInput,
   type MemoryItem,
   type Message,
   type RegisterRoomInput,
@@ -41,6 +40,7 @@ const clientSecret = ref(savedCredentials.value.clientSecret)
 const rememberCredentials = useStorage('tinyclaw.control.remember_credentials', true)
 const editingCredentials = ref(false)
 const chatUserId = useStorage('tinyclaw.control.chat_user_id', 'guest')
+const showTestRooms = useStorage('tinyclaw.control.show_test_rooms', false)
 const rooms = ref<RoomSummary[]>([])
 const agents = ref<Agent[]>([])
 const selectedRoomId = useStorage<number | null>('tinyclaw.control.selected_room_id', null)
@@ -52,14 +52,13 @@ const query = ref('')
 const agentQuery = ref('')
 const roomLoading = ref(false)
 const detailLoading = ref(false)
+const loadingOlder = ref(false)
 const memoryLoading = ref(false)
 const savingRoom = ref(false)
 const agentLoading = ref(false)
 const savingAgent = ref(false)
 const authError = ref('')
 const actionError = ref('')
-const injectText = ref('')
-const injecting = ref(false)
 const ackingDeliveryId = ref<number | null>(null)
 const memoryStatus = ref('active')
 const memoryTypes = ref<string[]>([])
@@ -70,6 +69,7 @@ const settingsDisplayName = ref('')
 const settingsOutboundAlias = ref('')
 const settingsAgentEnabled = ref(true)
 const settingsTriggerPolicy = ref('')
+const settingsRoomPrompt = ref('')
 const agentKey = ref('')
 const agentDisplayName = ref('')
 const agentDescription = ref('')
@@ -78,6 +78,8 @@ const agentShared = ref(false)
 const agentPrompt = ref('')
 const agentAllowedTools = ref('[]')
 const agentEnabled = ref(true)
+const chatThreadRef = ref<HTMLElement | null>(null)
+const showJumpToLatest = ref(false)
 
 const credentials = computed<Credentials>(() => ({
   clientId: clientId.value.trim(),
@@ -90,20 +92,46 @@ const selectedRoom = computed(() =>
 
 const selectedAgent = computed(() => agents.value.find((agent) => agent.id === selectedAgentId.value) ?? null)
 
+const roomSearchText = (summary: RoomSummary) =>
+  [
+    summary.room.display_name,
+    summary.room.channel,
+    summary.room.channel_room_id,
+    summary.room.channel_room_type,
+    summary.room.outbound_alias,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+
+const isTestRoom = (summary: RoomSummary) => {
+  const text = roomSearchText(summary)
+  return ['smoke', 'sandbox', 'test', 'codex-image-', 'codex-img2img-', 'local-image-', 'local-youtube-'].some((token) =>
+    text.includes(token),
+  )
+}
+
+const roomActivityTime = (summary: RoomSummary) => {
+  const lastMessageTime = Date.parse(summary.last_message_time ?? '')
+  if (Number.isFinite(lastMessageTime)) return lastMessageTime
+  const updatedAt = Date.parse(summary.updated_at)
+  return Number.isFinite(updatedAt) ? updatedAt : 0
+}
+
+const sortedRooms = computed(() =>
+  [...rooms.value].sort((a, b) => roomActivityTime(b) - roomActivityTime(a) || b.room.id - a.room.id),
+)
+
+const visibleRooms = computed(() =>
+  showTestRooms.value ? sortedRooms.value : sortedRooms.value.filter((summary) => !isTestRoom(summary)),
+)
+
+const hiddenTestRoomCount = computed(() => rooms.value.filter(isTestRoom).length)
+
 const filteredRooms = computed(() => {
   const value = query.value.trim().toLowerCase()
-  if (!value) return rooms.value
-  return rooms.value.filter(({ room }) =>
-    [
-      room.display_name,
-      room.channel,
-      room.channel_room_id,
-      room.channel_room_type,
-      room.outbound_alias,
-    ]
-      .filter(Boolean)
-      .some((part) => String(part).toLowerCase().includes(value)),
-  )
+  if (!value) return visibleRooms.value
+  return visibleRooms.value.filter((summary) => roomSearchText(summary).includes(value))
 })
 
 const filteredAgents = computed(() => {
@@ -141,6 +169,31 @@ const showCredentialForm = computed(() => !canUseAPI.value || authError.value !=
 
 const canShowWorkspace = computed(() => selectedRoom.value !== null || activeTab.value === 'agents' || activeTab.value === 'settings')
 
+const isThreadNearLatest = () => {
+  const element = chatThreadRef.value
+  if (!element) return true
+  return element.scrollHeight - element.scrollTop - element.clientHeight < 96
+}
+
+const updateJumpToLatest = () => {
+  showJumpToLatest.value = activeTab.value === 'timeline' && sortedMessages.value.length > 0 && !isThreadNearLatest()
+}
+
+const scrollTimelineToLatest = async () => {
+  await nextTick()
+  const element = chatThreadRef.value
+  if (!element) return
+  element.scrollTop = element.scrollHeight
+  updateJumpToLatest()
+}
+
+const mergeById = <T extends { id: number }>(current: T[], incoming: T[]) => {
+  const items = new Map<number, T>()
+  for (const item of current) items.set(item.id, item)
+  for (const item of incoming) items.set(item.id, item)
+  return [...items.values()].sort((a, b) => a.id - b.id)
+}
+
 const formatDate = (value?: string) => {
   if (!value || value.startsWith('0001-')) return 'Never'
   return new Intl.DateTimeFormat(undefined, {
@@ -155,6 +208,8 @@ const formatMessageTime = (message: Message) => {
   if (message.msgtime > 0) return formatDate(new Date(message.msgtime * 1000).toISOString())
   return formatDate(message.created_at)
 }
+
+const displayMessageID = (messageID: string) => messageID.replace(/^woc:/, '')
 
 const textFromBody = (body: Record<string, unknown>) => {
   const content = body.content
@@ -177,10 +232,26 @@ const textFromDelivery = (delivery: Delivery) => {
   return JSON.stringify(delivery.payload)
 }
 
+const deliveryPayloadText = (delivery: Delivery, key: string) => {
+  const value = delivery.payload[key]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+const deliveryPreview = (delivery: Delivery) => {
+  const type = deliveryPayloadText(delivery, 'type')
+  if (type === 'image') return deliveryPayloadText(delivery, 'media_id') || 'Image'
+  if (type === 'file') return deliveryPayloadText(delivery, 'filename') || deliveryPayloadText(delivery, 'media_id') || 'File'
+  return textFromDelivery(delivery)
+}
+
+const shouldShowDeliveryBubble = (delivery: Delivery) => delivery.status !== 1
+
 const isSharedAgent = (agent: Agent) => agent.visibility !== 'private'
 
+const isSelfEchoMessage = (message: Message) => message.body.is_self === true
+
 const isOutboundMessage = (message: Message) =>
-  message.from === chatUserId.value || ['admin', 'agent'].includes(message.source)
+  isSelfEchoMessage(message) || message.from === chatUserId.value || ['admin', 'agent'].includes(message.source)
 
 const deliveryStatusLabel = (status: number) => {
   if (status === 0) return 'Pending'
@@ -201,6 +272,7 @@ const syncSettingsFromSelectedRoom = () => {
   settingsTriggerPolicy.value = summary.agent_session?.trigger_policy
     ? JSON.stringify(summary.agent_session.trigger_policy, null, 2)
     : ''
+  settingsRoomPrompt.value = summary.room.prompt ?? ''
 }
 
 const resetRoomForm = () => {
@@ -211,6 +283,7 @@ const resetRoomForm = () => {
   settingsOutboundAlias.value = ''
   settingsAgentEnabled.value = true
   settingsTriggerPolicy.value = ''
+  settingsRoomPrompt.value = ''
 }
 
 const loadRooms = async () => {
@@ -250,18 +323,55 @@ const loadAgents = async () => {
 }
 
 const loadTimeline = async () => {
-  if (!canUseAPI.value || !selectedRoomId.value) return
+  const roomId = selectedRoomId.value
+  if (!canUseAPI.value || !roomId) return
   detailLoading.value = true
   actionError.value = ''
   try {
-    timeline.value = await api.getTimeline(credentials.value, selectedRoomId.value)
+    const page = await api.getTimeline(credentials.value, roomId)
+    if (selectedRoomId.value !== roomId) return
+    timeline.value = page
     timeline.value.messages ??= []
     timeline.value.deliveries ??= []
     timeline.value.agent_sessions ??= []
+    await scrollTimelineToLatest()
   } catch (error) {
     actionError.value = error instanceof Error ? error.message : 'Failed to load timeline'
   } finally {
     detailLoading.value = false
+  }
+}
+
+const loadOlderMessages = async () => {
+  const roomId = selectedRoomId.value
+  if (!canUseAPI.value || !roomId || !timeline.value?.has_more || loadingOlder.value) return
+  const beforeMessageId = sortedMessages.value[0]?.id
+  if (!beforeMessageId) return
+  const element = chatThreadRef.value
+  const previousScrollHeight = element?.scrollHeight ?? 0
+  const previousScrollTop = element?.scrollTop ?? 0
+  loadingOlder.value = true
+  actionError.value = ''
+  try {
+    const page = await api.getTimeline(credentials.value, roomId, beforeMessageId)
+    if (selectedRoomId.value !== roomId || !timeline.value) return
+    const current = timeline.value
+    timeline.value = {
+      ...page,
+      messages: mergeById(current.messages ?? [], page.messages ?? []),
+      deliveries: mergeById(current.deliveries ?? [], page.deliveries ?? []),
+      agent_sessions: page.agent_sessions?.length ? page.agent_sessions : current.agent_sessions,
+    }
+    await nextTick()
+    const updatedElement = chatThreadRef.value
+    if (updatedElement) {
+      updatedElement.scrollTop = updatedElement.scrollHeight - previousScrollHeight + previousScrollTop
+    }
+    updateJumpToLatest()
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : 'Failed to load older messages'
+  } finally {
+    loadingOlder.value = false
   }
 }
 
@@ -324,26 +434,6 @@ const saveCredentials = async () => {
   if (!authError.value) editingCredentials.value = false
 }
 
-const injectMessage = async () => {
-  if (!selectedRoomId.value || !injectText.value.trim()) return
-  injecting.value = true
-  actionError.value = ''
-  try {
-    const input: InjectMessageInput = {
-      sender_id: chatUserId.value.trim() || 'guest',
-      text: injectText.value.trim(),
-      suppress_agent_trigger: false,
-    }
-    await api.injectMessage(credentials.value, selectedRoomId.value, input)
-    injectText.value = ''
-    await Promise.all([loadRooms(), loadTimeline()])
-  } catch (error) {
-    actionError.value = error instanceof Error ? error.message : 'Failed to inject message'
-  } finally {
-    injecting.value = false
-  }
-}
-
 const ackDelivery = async (deliveryId: number) => {
   ackingDeliveryId.value = deliveryId
   actionError.value = ''
@@ -366,6 +456,7 @@ const saveRoomSettings = async () => {
       triggerPolicy = JSON.parse(settingsTriggerPolicy.value)
     }
     const input: RegisterRoomInput = {
+      ...(selectedRoom.value ? { tenant_id: selectedRoom.value.room.tenant_id } : {}),
       channel: settingsChannel.value.trim(),
       channel_room_id: settingsChannelRoomId.value.trim(),
       channel_room_type: settingsChannelRoomType.value.trim(),
@@ -373,6 +464,7 @@ const saveRoomSettings = async () => {
       outbound_alias: settingsOutboundAlias.value.trim() || settingsChannelRoomId.value.trim(),
       agent_enabled: settingsAgentEnabled.value,
       trigger_policy: triggerPolicy,
+      prompt: settingsRoomPrompt.value.trim(),
     }
     const result = await api.registerRoom(credentials.value, input)
     selectedRoomId.value = result.room.id
@@ -595,13 +687,20 @@ onMounted(async () => {
               <Search class="h-4 w-4 text-muted" />
               <input v-model="query" class="min-w-0 flex-1 bg-transparent text-sm outline-none" placeholder="Search channels" />
             </label>
+            <label class="mt-3 flex items-center justify-between gap-3 text-xs text-muted">
+              <span>Show tests</span>
+              <span class="flex items-center gap-2">
+                <span v-if="!showTestRooms && hiddenTestRoomCount">{{ hiddenTestRoomCount }} hidden</span>
+                <input v-model="showTestRooms" type="checkbox" />
+              </span>
+            </label>
             <label class="mt-3 grid gap-1 text-xs text-muted">
               Chat identity
               <input v-model="chatUserId" class="field text-sm" placeholder="guest" />
             </label>
           </div>
 
-          <div class="room-list h-[calc(100vh-173px)] overflow-y-auto">
+          <div class="room-list h-[calc(100vh-208px)] overflow-y-auto">
             <button
               v-for="summary in filteredRooms"
               :key="summary.room.id"
@@ -684,16 +783,24 @@ onMounted(async () => {
             </nav>
           </div>
 
-          <div class="min-h-0 overflow-y-auto p-5">
+          <div class="min-h-0 p-5" :class="activeTab === 'timeline' ? 'overflow-hidden' : 'overflow-y-auto'">
             <p v-if="actionError" class="mb-4 rounded-6px border border-danger/25 bg-white px-3 py-2 text-sm text-danger">
               {{ actionError }}
             </p>
 
             <section v-if="activeTab === 'timeline'" class="chat-layout">
-              <div class="chat-thread">
+              <div ref="chatThreadRef" class="chat-thread" @scroll="updateJumpToLatest">
                 <div v-if="detailLoading" class="empty-state">
                   <Loader2 class="h-4 w-4 animate-spin" />
                   Loading messages
+                </div>
+
+                <div v-if="timeline?.has_more && sortedMessages.length" class="chat-history-actions">
+                  <button class="small-button" type="button" :disabled="loadingOlder" @click="loadOlderMessages">
+                    <Loader2 v-if="loadingOlder" class="h-3.5 w-3.5 animate-spin" />
+                    <ArrowDown v-else class="h-3.5 w-3.5 rotate-180" />
+                    Load older
+                  </button>
                 </div>
 
                 <article
@@ -712,18 +819,22 @@ onMounted(async () => {
                     <div class="chat-bubble">
                       <p>{{ textFromBody(message.body) }}</p>
                     </div>
-                    <p class="chat-id">{{ message.msgid }}</p>
+                    <p class="chat-id" :title="message.msgid">{{ displayMessageID(message.msgid) }}</p>
 
                     <div
                       v-for="delivery in messageDeliveries.get(message.id)"
                       :key="delivery.id"
                       class="chat-delivery"
+                      :class="{ 'chat-delivery-acked': delivery.status === 1 }"
                     >
-                      <div class="chat-bubble chat-bubble-agent">
-                        <p>{{ textFromDelivery(delivery) }}</p>
+                      <div v-if="shouldShowDeliveryBubble(delivery)" class="chat-bubble chat-bubble-agent">
+                        <p>{{ deliveryPreview(delivery) }}</p>
                       </div>
                       <div class="chat-delivery-actions">
                         <span>Delivery #{{ delivery.id }} · {{ deliveryStatusLabel(delivery.status) }}</span>
+                        <span v-if="!shouldShowDeliveryBubble(delivery)" class="chat-delivery-preview">
+                          {{ deliveryPreview(delivery) }}
+                        </span>
                         <button
                           v-if="delivery.status === 0"
                           class="small-button"
@@ -743,23 +854,16 @@ onMounted(async () => {
                 <div v-if="!detailLoading && !sortedMessages.length" class="empty-state">No messages in this channel.</div>
               </div>
 
-              <form class="chat-composer" @submit.prevent="injectMessage">
-                <label class="chat-identity">
-                  <span>as</span>
-                  <input v-model="chatUserId" placeholder="guest" />
-                </label>
-                <textarea
-                  v-model="injectText"
-                  class="chat-composer-input"
-                  :placeholder="selectedRoom ? `Message #${selectedRoom.room.channel_room_id}` : 'Choose a channel first'"
-                  rows="1"
-                />
-                <button class="chat-send-button" :disabled="injecting || !injectText.trim()" title="Send message">
-                    <Loader2 v-if="injecting" class="h-4 w-4 animate-spin" />
-                    <MessageSquarePlus v-else class="h-4 w-4" />
-                    Send
-                  </button>
-              </form>
+              <button
+                v-if="showJumpToLatest"
+                class="chat-latest-button"
+                type="button"
+                title="Jump to latest"
+                @click="scrollTimelineToLatest"
+              >
+                <ArrowDown class="h-4 w-4" />
+                Latest
+              </button>
             </section>
 
             <section v-else-if="activeTab === 'memory'" class="grid gap-4">
@@ -870,6 +974,10 @@ onMounted(async () => {
                 <label class="flex items-center gap-2 text-sm text-muted">
                   <input v-model="settingsAgentEnabled" type="checkbox" />
                   Agent enabled
+                </label>
+                <label class="grid gap-1 text-xs text-muted">
+                  Room Prompt
+                  <textarea v-model="settingsRoomPrompt" class="field min-h-36 resize-y" />
                 </label>
                 <label class="grid gap-1 text-xs text-muted">
                   Trigger Policy JSON

@@ -5,6 +5,13 @@ import (
 	"strings"
 )
 
+type BatchTriggerPolicy struct {
+	Enabled            bool `json:"enabled"`
+	MinIntervalSeconds int  `json:"min_interval_seconds"`
+	MinMessages        int  `json:"min_messages"`
+	MaxIntervalSeconds int  `json:"max_interval_seconds"`
+}
+
 func ShouldTriggerMessage(room Room, session AgentSession, input CreateMessageInput) bool {
 	if decision, ok := EvaluateTriggerPolicy(session.TriggerPolicy, room.ChannelRoomType, input); ok {
 		return decision
@@ -16,16 +23,19 @@ func ShouldTriggerMessage(room Room, session AgentSession, input CreateMessageIn
 	return strings.Contains(text, "虾虾") || strings.Contains(text, "@agent") || strings.Contains(text, "/ask")
 }
 
+// EvaluateTriggerPolicy returns (decision, ok). ok means the policy made an
+// explicit immediate-trigger decision; false ok lets caller use defaults.
 func EvaluateTriggerPolicy(policy json.RawMessage, channelRoomType string, input CreateMessageInput) (bool, bool) {
 	if len(policy) == 0 {
 		return false, false
 	}
 	var parsed struct {
-		Mode           string   `json:"mode"`
-		Mentions       []string `json:"mentions"`
-		Keywords       []string `json:"keywords"`
-		IgnoredSenders []string `json:"ignored_senders"`
-		DirectDefault  *bool    `json:"direct_default"`
+		Mode           string              `json:"mode"`
+		Mentions       []string            `json:"mentions"`
+		Keywords       []string            `json:"keywords"`
+		IgnoredSenders []string            `json:"ignored_senders"`
+		DirectDefault  *bool               `json:"direct_default"`
+		Batch          *BatchTriggerPolicy `json:"batch"`
 	}
 	if err := json.Unmarshal(policy, &parsed); err != nil {
 		return false, false
@@ -56,7 +66,34 @@ func EvaluateTriggerPolicy(policy json.RawMessage, channelRoomType string, input
 	if len(parsed.Mentions) > 0 || len(parsed.Keywords) > 0 || parsed.DirectDefault != nil || parsed.Mode != "" {
 		return false, true
 	}
+	if parsed.Batch != nil && parsed.Batch.Enabled {
+		return false, true
+	}
 	return false, false
+}
+
+func EvaluateBatchTriggerPolicy(policy json.RawMessage, channelRoomType string, input CreateMessageInput) (BatchTriggerPolicy, bool) {
+	if len(policy) == 0 || channelRoomType == RoomChatTypeDirect {
+		return BatchTriggerPolicy{}, false
+	}
+	var parsed struct {
+		Mode           string              `json:"mode"`
+		IgnoredSenders []string            `json:"ignored_senders"`
+		Batch          *BatchTriggerPolicy `json:"batch"`
+	}
+	if err := json.Unmarshal(policy, &parsed); err != nil {
+		return BatchTriggerPolicy{}, false
+	}
+	if matchesPolicyValue(input.FromID, parsed.IgnoredSenders) {
+		return BatchTriggerPolicy{}, false
+	}
+	if strings.EqualFold(strings.TrimSpace(parsed.Mode), "never") {
+		return BatchTriggerPolicy{}, false
+	}
+	if parsed.Batch == nil || !parsed.Batch.Enabled {
+		return BatchTriggerPolicy{}, false
+	}
+	return *parsed.Batch, true
 }
 
 func matchesPolicyValue(value string, candidates []string) bool {

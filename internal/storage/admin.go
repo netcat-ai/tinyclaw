@@ -25,7 +25,7 @@ func (s *CoreStore) ListAdminRooms(ctx context.Context, limit int) ([]core.Admin
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			r.id, r.tenant_id, r.channel, r.channel_room_id, r.channel_room_type, r.display_name, r.outbound_alias, r.created_at, r.updated_at,
+			r.id, r.tenant_id, r.channel, r.channel_room_id, r.channel_room_type, r.display_name, r.outbound_alias, r.prompt, r.created_at, r.updated_at,
 			s.id, s.room_id, s.enabled, s.trigger_policy, s.pending_trigger_message_id, s.caught_up_message_id, s.codex_session_id, s.lock_owner, s.lock_expires_at, s.created_at, s.updated_at,
 			COALESCE(pending.pending_delivery_count, 0),
 			last_message.last_message_time
@@ -275,6 +275,7 @@ func scanAdminRoomSummary(row scanner) (core.AdminRoomSummary, error) {
 		&summary.Room.ChannelRoomType,
 		&displayName,
 		&summary.Room.OutboundAlias,
+		&summary.Room.Prompt,
 		&summary.Room.CreatedAt,
 		&summary.Room.UpdatedAt,
 		&sessionID,

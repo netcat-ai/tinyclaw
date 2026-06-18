@@ -1,9 +1,8 @@
-*
-
-!Dockerfile
-!dist/
-!dist/tinyclaw
-!web/
-!web/control/
-!web/control/dist/
-!web/control/dist/**
+.git
+.local
+.data
+dist
+agent/node_modules
+web/control/node_modules
+web/control/dist
+**/.DS_Store
