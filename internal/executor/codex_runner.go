@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"tinyclaw/internal/command"
 	"tinyclaw/internal/core"
 )
 
@@ -106,15 +105,8 @@ func (r *CodexRunner) runCodexExec(ctx context.Context, run AgentRunRequest) (co
 	}
 	defer cleanupSchema()
 
-	imageFiles, cleanupImages, err := r.prepareCodexImageAttachments(ctx, run.ContextMessages)
-	if err != nil {
-		return core.AgentRunResult{}, err
-	}
-	defer cleanupImages()
-	run.ImageAttachments = codexImageAttachmentMetadata(imageFiles)
-
 	codexSessionID := strings.TrimSpace(run.AgentRun.CodexSessionID)
-	args := r.codexExecArgs(schemaPath, outputPath, codexSessionID, codexImageAttachmentPaths(imageFiles))
+	args := r.codexExecArgs(schemaPath, outputPath, codexSessionID)
 	cmd := exec.CommandContext(ctx, r.config.Bin, args...)
 	cmd.Dir = r.config.WorkDir
 	cmd.Stdin = strings.NewReader(BuildCodexPrompt(run))
@@ -218,7 +210,7 @@ func hasAgentRunResultContent(result core.AgentRunResult) bool {
 		len(result.ImageGenerationRequests) > 0
 }
 
-func (r *CodexRunner) codexExecArgs(schemaPath string, outputPath string, codexSessionID string, imagePaths []string) []string {
+func (r *CodexRunner) codexExecArgs(schemaPath string, outputPath string, codexSessionID string) []string {
 	args := []string{
 		"-a", "never",
 	}
@@ -243,118 +235,10 @@ func (r *CodexRunner) codexExecArgs(schemaPath string, outputPath string, codexS
 	if strings.TrimSpace(r.config.Model) != "" {
 		args = append(args, "--model", r.config.Model)
 	}
-	for _, path := range imagePaths {
-		if strings.TrimSpace(path) != "" {
-			args = append(args, "--image", path)
-		}
-	}
 	if strings.TrimSpace(codexSessionID) != "" {
 		return append(args, "resume", codexSessionID, "-")
 	}
 	return append(args, "--output-schema", schemaPath, "-")
-}
-
-type codexImageFile struct {
-	CodexImageAttachment
-	Path string
-}
-
-func (r *CodexRunner) prepareCodexImageAttachments(ctx context.Context, messages []core.Message) ([]codexImageFile, func(), error) {
-	if strings.TrimSpace(r.config.MediaBaseURL) == "" {
-		return nil, func() {}, nil
-	}
-	candidates := codexImageAttachmentMessages(messages)
-	if len(candidates) == 0 {
-		return nil, func() {}, nil
-	}
-	tempDir, err := os.MkdirTemp("", "tinyclaw-codex-images-*")
-	if err != nil {
-		return nil, func() {}, fmt.Errorf("create codex image temp dir: %w", err)
-	}
-	cleanup := func() { _ = os.RemoveAll(tempDir) }
-	fetcher := command.HTTPMediaFetcher{BaseURL: r.config.MediaBaseURL}
-	files := make([]codexImageFile, 0, len(candidates))
-	for _, message := range candidates {
-		image, err := fetcher.FetchMessageMedia(ctx, message)
-		if err != nil {
-			slog.Warn("fetch codex image attachment failed", "message_id", message.ID, "err", err)
-			continue
-		}
-		if len(image.Bytes) == 0 {
-			slog.Warn("skip empty codex image attachment", "message_id", message.ID)
-			continue
-		}
-		mimeType := strings.TrimSpace(image.MIMEType)
-		if !isSupportedSourceImageMIME(mimeType) {
-			slog.Warn("skip unsupported codex image attachment", "message_id", message.ID, "mime_type", mimeType)
-			continue
-		}
-		filename := fmt.Sprintf("message-%d%s", message.ID, codexImageExtension(mimeType))
-		path := filepath.Join(tempDir, filename)
-		if err := os.WriteFile(path, image.Bytes, 0o600); err != nil {
-			cleanup()
-			return nil, func() {}, fmt.Errorf("write codex image attachment %d: %w", message.ID, err)
-		}
-		files = append(files, codexImageFile{
-			CodexImageAttachment: CodexImageAttachment{
-				MessageID: message.ID,
-				MIMEType:  mimeType,
-				Filename:  filename,
-			},
-			Path: path,
-		})
-	}
-	if len(files) == 0 {
-		cleanup()
-		return nil, func() {}, nil
-	}
-	return files, cleanup, nil
-}
-
-func codexImageAttachmentMessages(messages []core.Message) []core.Message {
-	out := make([]core.Message, 0, min(len(messages), maxAgentSourceImages))
-	seen := make(map[int64]struct{})
-	for _, message := range messages {
-		if len(out) >= maxAgentSourceImages {
-			return out
-		}
-		if message.ID <= 0 || !isAgentSourceImageMessage(message) {
-			continue
-		}
-		if _, ok := seen[message.ID]; ok {
-			continue
-		}
-		seen[message.ID] = struct{}{}
-		out = append(out, message)
-	}
-	return out
-}
-
-func codexImageAttachmentMetadata(files []codexImageFile) []CodexImageAttachment {
-	out := make([]CodexImageAttachment, 0, len(files))
-	for _, file := range files {
-		out = append(out, file.CodexImageAttachment)
-	}
-	return out
-}
-
-func codexImageAttachmentPaths(files []codexImageFile) []string {
-	paths := make([]string, 0, len(files))
-	for _, file := range files {
-		paths = append(paths, file.Path)
-	}
-	return paths
-}
-
-func codexImageExtension(mimeType string) string {
-	switch strings.ToLower(strings.TrimSpace(mimeType)) {
-	case "image/png":
-		return ".png"
-	case "image/webp":
-		return ".webp"
-	default:
-		return ".jpg"
-	}
 }
 
 type codexEventSummary struct {
@@ -507,22 +391,13 @@ func BuildCodexPrompt(run AgentRunRequest) string {
 	builder.WriteString("Conversation messages are JSON Lines. Each line is one normalized message. ")
 	builder.WriteString("If a JSONL message is image, video, emotion, or voice, or its text.quote contains one of these media types, it has media. ")
 	builder.WriteString("Identify media by the top-level JSONL message.id. ")
-	builder.WriteString("Use attached images for image-reading questions and for interpreting image edit requests. ")
-	builder.WriteString("Do not call image providers during the main reply. The async image job will fetch and validate source media for generated media delivery.\n\n")
-	if len(run.ImageAttachments) > 0 {
-		builder.WriteString("Attached Images:\n")
-		builder.WriteString("These images are attached to this Codex turn in the listed order. Match them to conversation messages by message.id.\n")
-		for index, image := range run.ImageAttachments {
-			fmt.Fprintf(&builder, "- #%d message.id=%d mime_type=%s filename=%s\n", index+1, image.MessageID, strings.TrimSpace(image.MIMEType), strings.TrimSpace(image.Filename))
-		}
-		builder.WriteString("\n")
-	}
+	builder.WriteString("Do not download media or call image providers during the main reply. The async image job will fetch and validate source media.\n\n")
 	builder.WriteString("Image Generation:\n")
 	builder.WriteString("- For user requests to generate or edit an image, always return image_generation_requests. Do not only say that you can do it.\n")
 	builder.WriteString("- Request shape: {\"mode\":\"generate|edit\",\"prompt\":\"...\",\"source_message_ids\":[42],\"size\":\"1024x1024\",\"source_image_summary\":\"...\",\"edit_instruction\":\"...\",\"preserve\":[\"...\"],\"negative\":[\"...\"],\"output_format\":\"jpeg\"}.\n")
 	builder.WriteString("- Use mode=generate with an empty source_message_ids array for text-to-image. Use mode=edit only when source_message_ids references exact prior image or emotion messages.\n")
 	builder.WriteString("- For image edits, use the top-level message.id of the JSONL line that contains the image/emotion media or text.quote media reference in source_message_ids.\n")
-	builder.WriteString("- For image edits, source_image_summary may summarize the attached source image if useful; always identify the exact source message and put the user's requested edit in edit_instruction.\n")
+	builder.WriteString("- Do not inspect or download source images in the main agent run. For image edits, set source_image_summary to an empty string, identify the exact source message, and put the user's requested edit in edit_instruction; the async image job will fetch and validate the source image.\n")
 	builder.WriteString("- If several images could be intended, ask a brief clarification instead of guessing.\n")
 	builder.WriteString("- Image edit requests must be conservative and specific: put the single intended edit in edit_instruction, preserve constraints in preserve, and negative constraints in negative. Preserve identity, subject count, pose, layout, background, and all unrelated details unless the user explicitly asks to change them.\n")
 	builder.WriteString("- For vague edits such as 美化, 更可爱, 精修, or 好看一点, default to a local minimal edit. Do not reinterpret, redraw, replace the subject, change identity, or compose a new scene.\n")

@@ -46,16 +46,9 @@ type AgentRunRequest struct {
 	AgentRun            core.AgentRun
 	ContextMessages     []core.Message
 	SelectedAgents      []core.Agent
-	ImageAttachments    []CodexImageAttachment
 	MemorySearchURL     string
 	MemorySearchToken   string
 	MemorySearchResults []core.MemorySearchResult
-}
-
-type CodexImageAttachment struct {
-	MessageID int64
-	MIMEType  string
-	Filename  string
 }
 
 type Scheduler struct {
