@@ -46,6 +46,7 @@ type AgentRunRequest struct {
 	AgentRun            core.AgentRun
 	ContextMessages     []core.Message
 	SelectedAgents      []core.Agent
+	MediaBaseURL        string
 	MemorySearchURL     string
 	MemorySearchToken   string
 	MemorySearchResults []core.MemorySearchResult

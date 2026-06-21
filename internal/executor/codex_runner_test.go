@@ -34,15 +34,13 @@ func TestBuildCodexPromptIncludesContextMessages(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"Agent Session ID: 100",
-		"Room ID: 10",
-		"Message Window: [1, 2]",
-		"Return only one JSON object matching Agent Run Result",
-		"Room Memory Search:",
+		"只返回一个符合 Agent Run Result 的 JSON 对象",
 		"memory_search_requests",
 		"image_generation_requests",
-		"Do not include room_id",
-		"Conversation messages (JSONL):",
+		"不要包含 room_id",
+		"Context messages (JSONL):",
+		`"kind":"capabilities"`,
+		`"memory_search":true`,
 		`"id":1`,
 		`"sender":"Alice"`,
 		`"text":{"content":"hello"}`,
@@ -52,6 +50,16 @@ func TestBuildCodexPromptIncludesContextMessages(t *testing.T) {
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, unwanted := range []string{
+		`"run_context"`,
+		`"agent_session_id"`,
+		`"room_id"`,
+		`"message_window"`,
+	} {
+		if strings.Contains(prompt, unwanted) {
+			t.Fatalf("prompt has redundant context field %q:\n%s", unwanted, prompt)
 		}
 	}
 }
@@ -69,20 +77,24 @@ func TestBuildCodexPromptIncludesImageMediaRule(t *testing.T) {
 		`"sender":"Alice"`,
 		`"type":"image"`,
 		`"image":{"content":"[图片]"}`,
-		"Conversation messages are JSON Lines.",
-		"If a JSONL message is image, video, emotion, or voice",
-		"Identify media by the top-level JSONL message.id",
-		"Do not download media or call image providers during the main reply.",
-		"Image Generation:",
-		"always return image_generation_requests",
-		"Do not only say that you can do it.",
+		"下方输入是 JSONL",
+		"带 kind 的行是 typed context messages",
+		"房间消息的 type 是 image",
+		"使用房间消息顶层 id 作为 message_id",
+		"主回复阶段不要调用 image provider",
+		"媒体：",
+		`curl -L "$TINYCLAW_MEDIA_BASE_URL/internal/media?msgid=$message_id"`,
+		`"$TINYCLAW_MEDIA_DOWNLOAD_DIR/$message_id"`,
+		"只下载对应消息",
+		"读取下载后的本地文件",
+		"生图：",
+		"返回 image_generation_requests",
 		`"mode":"generate|edit"`,
-		"set source_image_summary to an empty string",
-		"Do not inspect or download source images in the main agent run.",
+		"内容相关时先读源图",
+		"source_image_summary",
 		"edit_instruction",
-		"output_format to jpeg",
-		"Image edit requests must be conservative and specific",
-		"Do not reinterpret, redraw, replace the subject",
+		"output_format 固定为 jpeg",
+		"编辑要保守",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
@@ -101,9 +113,9 @@ func TestBuildCodexPromptIncludesRoomPrompt(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"Room Prompt:",
-		"Default to short replies for this room.",
-		"Conversation messages (JSONL):",
+		`"kind":"room_prompt"`,
+		`"content":"Default to short replies for this room."`,
+		"Context messages (JSONL):",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
@@ -144,7 +156,7 @@ func TestBuildCodexPromptMarksHandledCommandMessages(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"Handled command messages are room history events already processed by TinyClaw.",
+		"handled_command 消息已经由 TinyClaw 处理过",
 		`"handled_command":"draw"`,
 		`"command_kind":"draw"`,
 		`"content":"/draw 一朵花"`,
@@ -172,10 +184,11 @@ func TestBuildCodexPromptIncludesRunScopedSubagents(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"Run-scoped Subagents:",
-		"@product (Product): Clarifies requirements.",
-		"Prompt: Focus on scope and tradeoffs.",
-		"do not own Room state or memory writes",
+		"selected_agents",
+		`"key":"product"`,
+		`"display_name":"Product"`,
+		`"description":"Clarifies requirements."`,
+		`"prompt":"Focus on scope and tradeoffs."`,
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
@@ -254,9 +267,14 @@ func TestCodexRunnerLeavesImageMessagesInPrompt(t *testing.T) {
 	bin := filepath.Join(dir, "codex")
 	argsPath := filepath.Join(dir, "args")
 	promptPath := filepath.Join(dir, "prompt")
+	envPath := filepath.Join(dir, "media_env")
 	script := `#!/bin/sh
 output=""
 printf '%s\n' "$@" > "` + argsPath + `"
+{
+  printf '%s\n' "$TINYCLAW_MEDIA_BASE_URL"
+  printf '%s\n' "$TINYCLAW_MEDIA_DOWNLOAD_DIR"
+} > "` + envPath + `"
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "--output-last-message" ]; then
     shift
@@ -306,8 +324,28 @@ printf "image answer" > "$output"
 	if !strings.Contains(prompt, `"image":{"content":"[图片]"}`) {
 		t.Fatalf("prompt missing image metadata:\n%s", promptData)
 	}
-	if strings.Contains(prompt, "http://127.0.0.1:8081/internal/media") {
-		t.Fatalf("prompt exposes internal media URL:\n%s", promptData)
+	if !strings.Contains(prompt, `curl -L "$TINYCLAW_MEDIA_BASE_URL/internal/media?msgid=$message_id"`) {
+		t.Fatalf("prompt missing media env curl command:\n%s", promptData)
+	}
+	if !strings.Contains(prompt, `"$TINYCLAW_MEDIA_DOWNLOAD_DIR/$message_id"`) {
+		t.Fatalf("prompt missing media download dir env:\n%s", promptData)
+	}
+	if strings.Contains(prompt, "http://media.example") {
+		t.Fatalf("prompt should not inline configured media URL:\n%s", promptData)
+	}
+	envData, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read media env: %v", err)
+	}
+	envLines := strings.Split(strings.TrimSpace(string(envData)), "\n")
+	if len(envLines) != 2 {
+		t.Fatalf("media env lines = %q, want base URL and download dir", envData)
+	}
+	if envLines[0] != "http://media.example" {
+		t.Fatalf("media base env = %q, want configured media base URL", envLines[0])
+	}
+	if envLines[1] != "/tmp/tinyclaw/10" {
+		t.Fatalf("media download dir env = %q, want room download dir", envLines[1])
 	}
 }
 
@@ -361,7 +399,7 @@ printf "fallback answer" > "$output"
 		t.Fatalf("read args: %v", err)
 	}
 	if strings.Contains(string(argsData), "--image\n") {
-		t.Fatalf("args include image attachment after failed download:\n%s", argsData)
+		t.Fatalf("args include image attachment:\n%s", argsData)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,6 +22,9 @@ import (
 
 const defaultCodexRunnerTimeout = 5 * time.Minute
 const maxMemorySearchRounds = 2
+
+//go:embed codex_agent_prompt.md
+var codexAgentPromptText string
 
 type CodexRunnerConfig struct {
 	Bin              string
@@ -59,6 +63,9 @@ func NewCodexRunner(config CodexRunnerConfig) *CodexRunner {
 func (r *CodexRunner) RunAgent(ctx context.Context, run AgentRunRequest) (core.AgentRunResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if strings.TrimSpace(run.MediaBaseURL) == "" {
+		run.MediaBaseURL = r.config.MediaBaseURL
 	}
 	runCtx, cancel := context.WithTimeout(ctx, r.config.Timeout)
 	defer cancel()
@@ -107,8 +114,13 @@ func (r *CodexRunner) runCodexExec(ctx context.Context, run AgentRunRequest) (co
 
 	codexSessionID := strings.TrimSpace(run.AgentRun.CodexSessionID)
 	args := r.codexExecArgs(schemaPath, outputPath, codexSessionID)
+
 	cmd := exec.CommandContext(ctx, r.config.Bin, args...)
 	cmd.Dir = r.config.WorkDir
+	cmd.Env = append(os.Environ(),
+		"TINYCLAW_MEDIA_BASE_URL="+codexMediaBaseURL(run.MediaBaseURL),
+		"TINYCLAW_MEDIA_DOWNLOAD_DIR="+codexMediaDownloadDir(run),
+	)
 	cmd.Stdin = strings.NewReader(BuildCodexPrompt(run))
 	var combined bytes.Buffer
 	cmd.Stdout = &combined
@@ -239,6 +251,24 @@ func (r *CodexRunner) codexExecArgs(schemaPath string, outputPath string, codexS
 		return append(args, "resume", codexSessionID, "-")
 	}
 	return append(args, "--output-schema", schemaPath, "-")
+}
+
+func codexMediaBaseURL(value string) string {
+	if trimmed := strings.TrimSpace(value); trimmed != "" {
+		return strings.TrimRight(trimmed, "/")
+	}
+	return "http://127.0.0.1:8081"
+}
+
+func codexMediaDownloadDir(run AgentRunRequest) string {
+	return "/tmp/tinyclaw/" + strconv.FormatInt(run.AgentRun.RoomID, 10)
+}
+
+type codexPromptSubagent struct {
+	Key         string `json:"key"`
+	DisplayName string `json:"display_name"`
+	Description string `json:"description"`
+	Prompt      string `json:"prompt,omitempty"`
 }
 
 type codexEventSummary struct {
@@ -382,73 +412,56 @@ func memorySearchErrorResult(search core.MemorySearchInput, err error) core.Memo
 
 func BuildCodexPrompt(run AgentRunRequest) string {
 	var builder strings.Builder
-	builder.WriteString("Return only one JSON object matching Agent Run Result: {\"final_output\":\"...\",\"memory_write_proposals\":[],\"memory_search_requests\":[],\"image_generation_requests\":[]}. ")
-	builder.WriteString("Put the user-visible reply in final_output, durable Room Memory proposals in memory_write_proposals, and image generation/edit requests in image_generation_requests. ")
-	builder.WriteString("If you need durable Room Memory before answering, put requests in memory_search_requests and leave final_output empty. ")
-	builder.WriteString("Each proposal must include op, type, key, and content; use an empty string for unused content. ")
-	builder.WriteString("Only propose durable Room Memory changes for stable facts, preferences, or todos. Prefer an empty memory_write_proposals array when unsure.\n\n")
-	builder.WriteString("Handled command messages are room history events already processed by TinyClaw. Use them only as context; do not answer, repeat, or execute those commands again.\n\n")
-	builder.WriteString("Conversation messages are JSON Lines. Each line is one normalized message. ")
-	builder.WriteString("If a JSONL message is image, video, emotion, or voice, or its text.quote contains one of these media types, it has media. ")
-	builder.WriteString("Identify media by the top-level JSONL message.id. ")
-	builder.WriteString("Do not download media or call image providers during the main reply. The async image job will fetch and validate source media.\n\n")
-	builder.WriteString("Image Generation:\n")
-	builder.WriteString("- For user requests to generate or edit an image, always return image_generation_requests. Do not only say that you can do it.\n")
-	builder.WriteString("- Request shape: {\"mode\":\"generate|edit\",\"prompt\":\"...\",\"source_message_ids\":[42],\"size\":\"1024x1024\",\"source_image_summary\":\"...\",\"edit_instruction\":\"...\",\"preserve\":[\"...\"],\"negative\":[\"...\"],\"output_format\":\"jpeg\"}.\n")
-	builder.WriteString("- Use mode=generate with an empty source_message_ids array for text-to-image. Use mode=edit only when source_message_ids references exact prior image or emotion messages.\n")
-	builder.WriteString("- For image edits, use the top-level message.id of the JSONL line that contains the image/emotion media or text.quote media reference in source_message_ids.\n")
-	builder.WriteString("- Do not inspect or download source images in the main agent run. For image edits, set source_image_summary to an empty string, identify the exact source message, and put the user's requested edit in edit_instruction; the async image job will fetch and validate the source image.\n")
-	builder.WriteString("- If several images could be intended, ask a brief clarification instead of guessing.\n")
-	builder.WriteString("- Image edit requests must be conservative and specific: put the single intended edit in edit_instruction, preserve constraints in preserve, and negative constraints in negative. Preserve identity, subject count, pose, layout, background, and all unrelated details unless the user explicitly asks to change them.\n")
-	builder.WriteString("- For vague edits such as 美化, 更可爱, 精修, or 好看一点, default to a local minimal edit. Do not reinterpret, redraw, replace the subject, change identity, or compose a new scene.\n")
-	builder.WriteString("- Always set output_format to jpeg; Clawman will normalize stored output to JPEG.\n")
-	builder.WriteString("- Clawman will generate, store, and deliver the image. Keep final_output short when image_generation_requests is non-empty.\n\n")
-	if prompt := strings.TrimSpace(run.AgentRun.RoomPrompt); prompt != "" {
-		builder.WriteString("Room Prompt:\n")
-		builder.WriteString(prompt)
-		builder.WriteString("\n\n")
-	}
-	if strings.TrimSpace(run.MemorySearchURL) != "" && strings.TrimSpace(run.MemorySearchToken) != "" {
-		builder.WriteString("Room Memory Search:\n")
-		builder.WriteString("- Request Memory Search by returning memory_search_requests in Agent Run Result.\n")
-		builder.WriteString("- If the user asks about memory, preferences, prior decisions, todos, or durable context, request memory_search before answering.\n")
-		builder.WriteString("- Do not include room_id; Clawman binds the Room from the capability token.\n")
-		builder.WriteString("- Request shape: {\"query\":\"...\",\"types\":[\"fact\",\"preference\",\"todo\"],\"limit\":5,\"include_inactive\":false}\n\n")
-	}
-	if len(run.MemorySearchResults) > 0 {
-		builder.WriteString("Room Memory Search Results:\n")
-		data, _ := json.Marshal(run.MemorySearchResults)
-		builder.WriteString(string(data))
-		builder.WriteString("\n\n")
-	}
-	if len(run.SelectedAgents) > 0 {
-		builder.WriteString("Run-scoped Subagents:\n")
-		builder.WriteString("Treat these as addressed specialist roles for this run. They do not own Room state or memory writes; synthesize one final reply as the orchestrator.\n")
-		for _, agent := range run.SelectedAgents {
-			fmt.Fprintf(&builder, "- @%s (%s): %s\n", agent.Key, agent.DisplayName, strings.TrimSpace(agent.Description))
-			if prompt := strings.TrimSpace(agent.Prompt); prompt != "" {
-				builder.WriteString("  Prompt: ")
-				builder.WriteString(prompt)
-				builder.WriteString("\n")
-			}
-		}
-		builder.WriteString("\n")
-	}
-	builder.WriteString("Agent Session ID: ")
-	fmt.Fprintf(&builder, "%d", run.AgentRun.AgentSessionID)
-	builder.WriteString("\nRoom ID: ")
-	fmt.Fprintf(&builder, "%d", run.AgentRun.RoomID)
-	builder.WriteString("\nMessage Window: ")
-	fmt.Fprintf(&builder, "[%d, %d]", run.AgentRun.SourceMessageFromID, run.AgentRun.SourceMessageToID)
-	builder.WriteString("\n\nConversation messages (JSONL):\n")
-	if len(run.ContextMessages) == 0 {
-		builder.WriteString("(empty)\n")
-	}
+	builder.WriteString(strings.TrimSpace(codexAgentPromptText))
+	builder.WriteString("\n\nContext messages (JSONL):\n")
+	writeCodexPromptContextMessages(&builder, run)
 	for _, message := range run.ContextMessages {
 		builder.WriteString(formatCodexPromptMessage(message))
 		builder.WriteString("\n")
 	}
 	return builder.String()
+}
+
+func writeCodexPromptContextMessages(builder *strings.Builder, run AgentRunRequest) {
+	if strings.TrimSpace(run.MemorySearchURL) != "" && strings.TrimSpace(run.MemorySearchToken) != "" {
+		writeCodexPromptJSONLine(builder, map[string]any{
+			"kind":          "capabilities",
+			"memory_search": true,
+		})
+	}
+	if prompt := strings.TrimSpace(run.AgentRun.RoomPrompt); prompt != "" {
+		writeCodexPromptJSONLine(builder, map[string]any{
+			"kind":    "room_prompt",
+			"content": prompt,
+		})
+	}
+	if len(run.MemorySearchResults) > 0 {
+		writeCodexPromptJSONLine(builder, map[string]any{
+			"kind":  "memory_search_results",
+			"items": run.MemorySearchResults,
+		})
+	}
+	agents := make([]codexPromptSubagent, 0, len(run.SelectedAgents))
+	for _, agent := range run.SelectedAgents {
+		agents = append(agents, codexPromptSubagent{
+			Key:         strings.TrimSpace(agent.Key),
+			DisplayName: strings.TrimSpace(agent.DisplayName),
+			Description: strings.TrimSpace(agent.Description),
+			Prompt:      strings.TrimSpace(agent.Prompt),
+		})
+	}
+	if len(agents) > 0 {
+		writeCodexPromptJSONLine(builder, map[string]any{
+			"kind":  "selected_agents",
+			"items": agents,
+		})
+	}
+}
+
+func writeCodexPromptJSONLine(builder *strings.Builder, value any) {
+	data, _ := json.Marshal(value)
+	builder.WriteString(string(data))
+	builder.WriteString("\n")
 }
 
 func ParseAgentRunResult(text string) (core.AgentRunResult, error) {
