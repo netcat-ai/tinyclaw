@@ -409,43 +409,6 @@ func (s *CoreStore) AckCoreDelivery(ctx context.Context, id int64) (core.Deliver
 	return delivery, nil
 }
 
-func (s *CoreStore) CreateCommandDelivery(ctx context.Context, message core.Message, payload json.RawMessage) (*core.Delivery, error) {
-	if message.RoomID <= 0 {
-		return nil, fmt.Errorf("message room_id is required")
-	}
-	if message.ID <= 0 {
-		return nil, fmt.Errorf("message id is required")
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin create command delivery tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	room, err := getCoreRoomByIDTx(ctx, tx, message.RoomID)
-	if err != nil {
-		return nil, err
-	}
-	payload, err = deliveryPayloadWithRoute(room, payload)
-	if err != nil {
-		return nil, err
-	}
-	run := core.AgentRun{
-		RoomID:              message.RoomID,
-		SourceMessageFromID: message.ID,
-		SourceMessageToID:   message.ID,
-	}
-	delivery, err := createCoreDeliveryTx(ctx, tx, run, payload)
-	if err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit create command delivery: %w", err)
-	}
-	telemetry.IncDelivery(telemetry.PayloadKind(delivery.Payload), "created")
-	return &delivery, nil
-}
-
 func mustJSON(value any) json.RawMessage {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -472,14 +435,6 @@ func deliveryGeneratedMediaPayload(room core.Room, kind string, media core.Gener
 		"mime_type":      strings.TrimSpace(media.MIMEType),
 		"expires_at":     media.ExpiresAt.UTC().Format(time.RFC3339),
 	}))
-}
-
-func deliveryPayloadWithRoute(room core.Room, payload json.RawMessage) (json.RawMessage, error) {
-	var values map[string]any
-	if err := json.Unmarshal(payload, &values); err != nil {
-		return nil, fmt.Errorf("decode delivery payload: %w", err)
-	}
-	return mustJSON(deliveryRoutePayload(room, values)), nil
 }
 
 func deliveryRoutePayload(room core.Room, values map[string]any) map[string]any {

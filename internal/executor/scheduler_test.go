@@ -73,10 +73,10 @@ func (errorRunner) RunAgent(context.Context, AgentRunRequest) (core.AgentRunResu
 }
 
 type contextRunner struct {
-	contextCount  int
-	text          string
-	imageRequests []core.ImageGenerationRequest
-	lastRun       AgentRunRequest
+	contextCount    int
+	text            string
+	backgroundTasks []core.BackgroundCodexTask
+	lastRun         AgentRunRequest
 }
 
 func (r *contextRunner) RunAgent(_ context.Context, run AgentRunRequest) (core.AgentRunResult, error) {
@@ -87,8 +87,8 @@ func (r *contextRunner) RunAgent(_ context.Context, run AgentRunRequest) (core.A
 		text = "done"
 	}
 	return core.AgentRunResult{
-		FinalOutput:             text,
-		ImageGenerationRequests: r.imageRequests,
+		FinalOutput:          text,
+		BackgroundCodexTasks: r.backgroundTasks,
 		MemoryWriteProposals: []core.MemoryWriteProposal{{
 			Op:      core.MemoryWriteOpUpsertFact,
 			Key:     "project",
@@ -97,14 +97,25 @@ func (r *contextRunner) RunAgent(_ context.Context, run AgentRunRequest) (core.A
 	}, nil
 }
 
-type schedulerImageTool struct {
-	requests chan core.ImageGenerationRequest
-	release  chan struct{}
+type schedulerBackgroundTaskRunner struct {
+	tasks   chan core.BackgroundCodexTask
+	release chan struct{}
 }
 
-func (t schedulerImageTool) GenerateAgentImage(_ context.Context, _ AgentRunRequest, request core.ImageGenerationRequest) (core.GeneratedMediaOutput, error) {
-	t.requests <- request
-	<-t.release
+func (r schedulerBackgroundTaskRunner) RunBackgroundCodexTask(_ context.Context, _ AgentRunRequest, task core.BackgroundCodexTask) (core.BackgroundCodexTaskResult, error) {
+	r.tasks <- task
+	<-r.release
+	return core.BackgroundCodexTaskResult{
+		Artifacts: []core.BackgroundArtifact{{
+			Path:     "/tmp/generated.jpg",
+			MIMEType: "image/jpeg",
+		}},
+	}, nil
+}
+
+type schedulerArtifactStore struct{}
+
+func (s schedulerArtifactStore) StoreBackgroundArtifact(context.Context, core.BackgroundArtifact) (core.GeneratedMediaOutput, error) {
 	return core.GeneratedMediaOutput{
 		MediaID:      "gm_async",
 		MediaURL:     "https://media.example/gm_async.png",
@@ -119,12 +130,12 @@ func (emptyOutputRunner) RunAgent(context.Context, AgentRunRequest) (core.AgentR
 	return core.AgentRunResult{}, nil
 }
 
-type imageRequestRunner struct {
-	requests []core.ImageGenerationRequest
+type backgroundTaskRunner struct {
+	tasks []core.BackgroundCodexTask
 }
 
-func (r imageRequestRunner) RunAgent(context.Context, AgentRunRequest) (core.AgentRunResult, error) {
-	return core.AgentRunResult{ImageGenerationRequests: r.requests}, nil
+func (r backgroundTaskRunner) RunAgent(context.Context, AgentRunRequest) (core.AgentRunResult, error) {
+	return core.AgentRunResult{BackgroundCodexTasks: r.tasks}, nil
 }
 
 func TestRunOnceCompletesAgentRun(t *testing.T) {
@@ -210,22 +221,21 @@ func TestRunOnceCompletesAgentRunWithEmptyOutput(t *testing.T) {
 	}
 }
 
-func TestRunOnceStartsImageGenerationAsync(t *testing.T) {
+func TestRunOnceStartsBackgroundCodexTaskAsync(t *testing.T) {
 	store := &fakeStore{mediaDeliveries: make(chan core.GeneratedMediaOutput, 1)}
-	imageTool := schedulerImageTool{
-		requests: make(chan core.ImageGenerationRequest, 1),
-		release:  make(chan struct{}),
+	taskRunner := schedulerBackgroundTaskRunner{
+		tasks:   make(chan core.BackgroundCodexTask, 1),
+		release: make(chan struct{}),
 	}
-	runner := imageRequestRunner{
-		requests: []core.ImageGenerationRequest{{
-			Mode:         "generate",
-			Prompt:       "draw flower",
-			Size:         "1024x1024",
-			OutputFormat: "jpeg",
+	runner := backgroundTaskRunner{
+		tasks: []core.BackgroundCodexTask{{
+			Instruction:       "create flower",
+			ExpectedArtifacts: []string{"image/jpeg"},
 		}},
 	}
 	scheduler := NewScheduler(context.Background(), store, runner)
-	scheduler.SetImageGenerationTool(imageTool)
+	scheduler.SetBackgroundCodexTaskRunner(taskRunner)
+	scheduler.SetBackgroundArtifactStore(schedulerArtifactStore{})
 
 	if !scheduler.RunOnce(context.Background()) {
 		t.Fatal("RunOnce = false, want true")
@@ -233,21 +243,21 @@ func TestRunOnceStartsImageGenerationAsync(t *testing.T) {
 	if !store.completed {
 		t.Fatal("completed = false, want true")
 	}
-	if store.completedResult.FinalOutput != "收到，开始生成图片。" {
+	if store.completedResult.FinalOutput != "收到，开始处理。" {
 		t.Fatalf("final output = %q", store.completedResult.FinalOutput)
 	}
 
-	request := <-imageTool.requests
-	if request.Prompt != "draw flower" {
-		t.Fatalf("image prompt = %q", request.Prompt)
+	task := <-taskRunner.tasks
+	if task.Instruction != "create flower" {
+		t.Fatalf("task instruction = %q", task.Instruction)
 	}
 	select {
 	case media := <-store.mediaDeliveries:
-		t.Fatalf("media delivery created before image generation released: %+v", media)
+		t.Fatalf("media delivery created before background task released: %+v", media)
 	default:
 	}
 
-	close(imageTool.release)
+	close(taskRunner.release)
 	select {
 	case media := <-store.mediaDeliveries:
 		if media.MediaID != "gm_async" {

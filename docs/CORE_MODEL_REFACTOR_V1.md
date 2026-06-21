@@ -50,7 +50,7 @@ Message 不再使用企业微信 archive `seq` 作为身份。第三方平台消
 
 Message 保留 channel header facts 和 type-specific Message Body 的边界。对企业微信/微信归档风格消息，header facts 包括 `msgid`、`action`、`from`、`tolist`、`roomid`、`msgtime`、`msgtype`；Message Body 是与 `msgtype` 对应的 typed field，例如 `text`、`file`、`image`。
 
-Message 不保存全局可见性状态。是否触发 agent、是否进入某次 Agent Run 上下文，由 Trigger Policy、Command handler 和 Agent Session 的读取策略决定。
+Message 不保存全局可见性状态。是否触发 agent、是否进入某次 Agent Run 上下文，由 Trigger Policy 和 Agent Session 的读取策略决定。
 
 ### Agent
 
@@ -68,7 +68,7 @@ Message 不保存全局可见性状态。是否触发 agent、是否进入某次
 
 ### Delivery
 
-`Delivery` 是 agent run 或 Command 产生的 channel-bound outbound intent。agent run 完成只表示 agent 执行完成，不要求 Delivery 已发送成功，也不表示目标 channel 已出现该消息。
+`Delivery` 是 agent run 产生的 channel-bound outbound intent。agent run 完成只表示 agent 执行完成，不要求 Delivery 已发送成功，也不表示目标 channel 已出现该消息。
 
 第一版 agent final output 非空时，clawman 自动创建一条 Delivery；final output 为空时，只推进 Agent Session 的处理边界，不产生 Delivery。Delivery ack 不要求同步写回 Message；consumer 可主动写回 `source = agent` 的 Message，也可等待平台 self echo 后由 adapter 写入。
 
@@ -196,7 +196,7 @@ Delivery 不冗余保存 `channel` / `channel_room_id`；外发时通过 `room_i
 
 Delivery 消费成功后，consumer ack Delivery。若真实外发失败，Delivery 可失败或重试，但不会污染 Room 的 Message 时间线。Delivery 与后续 Message 的关联由 `source + msgid`、平台消息 id 或结构化日志 best-effort 追踪，不在 Delivery 核心表中保存强关联字段。
 
-`source_message_from_id` 和 `source_message_to_id` 记录产生该 Delivery 的 Message 闭区间，语义等同于 `source_message_from_id <= message.id AND message.id <= source_message_to_id`。普通 Agent Run 使用本次处理窗口的第一条 Message 和触发边界；Command Delivery 使用命令 Message 自身作为单点闭区间，即 `source_message_from_id = source_message_to_id = command_message.id`。
+`source_message_from_id` 和 `source_message_to_id` 记录产生该 Delivery 的 Message 闭区间，语义等同于 `source_message_from_id <= message.id AND message.id <= source_message_to_id`。普通 Agent Run 使用本次处理窗口的第一条 Message 和触发边界。
 
 ### memory_items
 
@@ -359,15 +359,15 @@ clawman 行为：
 6. 对 Room 的 Agent Session 应用 Trigger Policy；为空时使用 channel default rule。
 7. 命中立即触发或 batch 审阅触发时，更新该 Agent Session 的 `pending_trigger_message_id`。
 
-Duplicate Message never triggers side effects. Only a newly inserted Message may update Agent Session trigger boundaries, enqueue or start command handling, or produce Deliveries.
+Duplicate Message never triggers side effects. Only a newly inserted Message may update Agent Session trigger boundaries or produce Deliveries.
 
-Message API success only means the inbound Message was accepted or deduplicated by TinyClaw. Downstream Agent Run or Command execution errors are reported asynchronously through Deliveries, not as synchronous `POST /api/messages` failures.
+Message API success only means the inbound Message was accepted or deduplicated by TinyClaw. Downstream Agent Run errors are reported asynchronously through Deliveries, not as synchronous `POST /api/messages` failures.
 
 ## 5. Message 与 Agent Session 规则
 
 Message 入库后不再改所属关系。未触发消息仍保留在 room message log 中，可在后续触发时作为上下文。
 
-Message 本身不记录全局 agent 可见性。命令、第三方只读镜像和其它非对话消息是否进入 Agent Run 上下文，由 Command handler、Trigger Policy 和 runner 上下文选择决定。
+Message 本身不记录全局 agent 可见性。第三方只读镜像和其它非对话消息是否进入 Agent Run 上下文，由 Trigger Policy 和 runner 上下文选择决定。
 
 当 Message 命中某个 Agent Session 的 Trigger Policy：
 
@@ -400,52 +400,38 @@ Agent Run Result 包含：
 - user-visible final output
 - Memory Search Requests
 - Memory Write Proposals
-- Image Generation Requests
+- Background Codex Tasks
 
 Codex run 会收到 memory search endpoint 和短期 capability token。Codex 可以在运行中主动调用 Memory Search；Clawman 从 token 绑定 Room，不信任 agent 传入的 `room_id`。Memory Search backend 或 endpoint 短暂失败时，runner 将失败作为带 `error` 字段的 search result 回传给下一轮 Codex，不直接让 Agent Run 失败。
 
-Codex run 的 Message window 中存在 media 消息时，Clawman 不预先下载或用 `--image` 注入所有图片。Runner 通过环境变量传入 `TINYCLAW_MEDIA_BASE_URL` 和 `TINYCLAW_MEDIA_DOWNLOAD_DIR`。Room Prompt、selected agents、Memory Search results 等本轮语义输入用 typed JSONL context messages 表达。Codex 只有在回答或准备图生图请求确实需要 media 内容时才按需用 `curl -L "$TINYCLAW_MEDIA_BASE_URL/internal/media?msgid=$message_id" -o "$TINYCLAW_MEDIA_DOWNLOAD_DIR/$message_id"` 下载，并用本地图片查看能力读取下载后的文件。Codex 需要生成图片或图生图时，不直接调用 image provider，也不处理对象存储；它在 Agent Run Result 中返回 `image_generation_requests`：
+Codex run 的 Message window 中存在 media 消息时，Clawman 不预先下载或用 `--image` 注入所有图片。Runner 通过环境变量传入 `TINYCLAW_MEDIA_BASE_URL` 和 `TINYCLAW_MEDIA_DOWNLOAD_DIR`。Room Prompt、selected agents、Memory Search results 等本轮语义输入用 typed JSONL context messages 表达。Codex 只有在回答或准备图生图请求确实需要 media 内容时才按需用 `curl -L "$TINYCLAW_MEDIA_BASE_URL/internal/media?msgid=$message_id" -o "$TINYCLAW_MEDIA_DOWNLOAD_DIR/$message_id"` 下载，并用本地图片查看能力读取下载后的文件。Codex 需要生成图片或图生图等耗时产物时，主 Agent Run 不直接生成或编辑图片，也不处理对象存储；它在 Agent Run Result 中返回 `background_codex_tasks`：
 
 ```json
 {
-  "prompt": "把这张图改成水彩风格",
+  "instruction": "把 source_message_ids 对应图片改成水彩风格，输出 jpeg 图片",
   "source_message_ids": [42],
-  "size": "1024x1024"
+  "expected_artifacts": ["image/jpeg"]
 }
 ```
 
-`source_message_ids` 只允许引用当前 Agent Run 上下文中的 image/emotion Message 或 quoted image/emotion Message。Clawman 的异步 image job 会重新校验并下载源图、调用 image provider、上传 Generated Media，并创建 image Delivery。
+后台 Codex Task 是独立 `codex exec`。它拿同一组 context messages 和 media env，优先复用 `$TINYCLAW_MEDIA_DOWNLOAD_DIR/$message_id` 中主 Run 已下载的媒体；不存在时再按需 curl 下载。Task 自己读取源图、生成或编辑图片，并把 artifact 写入 `$TINYCLAW_TASK_OUTPUT_DIR`。Clawman 只负责异步运行 task、校验 artifact 路径、上传 Generated Media，并创建 image Delivery。
 
 Agent final output 处理：
 
 ```text
-non-empty output       -> create text delivery(status=pending)
-image generation output -> create image delivery(status=pending)
-empty output           -> no delivery
-failure                -> create failure delivery(status=pending)
+non-empty output        -> create text delivery(status=pending)
+background task artifact -> create image delivery(status=pending)
+empty output            -> no delivery
+failure                 -> create failure delivery(status=pending)
 ```
 
 Agent Run 成功不会直接追加 agent Message。Message 只在 channel consumer 或后续平台回流通过 `POST /api/messages` 写入后出现。若 consumer 主动写回，建议使用 `source = agent` 且 `msgid = "delivery:<delivery_id>"` 保证幂等；若等待外部平台 self echo，则由 Channel Adapter 使用平台消息 id 写入并按需关联 Delivery。
 
-第一版 `/draw <prompt>` 作为 Clawman-owned Command shortcut 处理，不进入 Codex Agent Run，也不更新 Agent Session trigger boundary。Command 是有效 Room Message，但由 Command handler 消费。普通 Codex Agent Run 也可以通过 `image_generation_requests` 产生 Generated Media。
-
-第一版 Draw Command 采用轻量执行模型：`POST /api/messages` 只有在插入新 Message 且命中 `/draw` 时，才启动一个 in-process background goroutine 执行生图；重复 Message 不启动副作用。该版本不提供 crash recovery，clawman 重启会丢失正在执行的 `/draw`。
-
-Draw Command 默认启用；显式设置 `DRAW_COMMAND_ENABLED=false` 时禁用。Image provider 默认使用 `IMAGE_PROVIDER_BASE_URL=https://code.v4.chat` 和 `IMAGE_PROVIDER_MODEL=gpt-image-2`。`IMAGE_PROVIDER_API_KEY` 优先；为空时第一版可从 `CODEX_AUTH_JSON.OPENAI_API_KEY` 兼容读取。
-
-Clawman 直接调用 image provider 生成 Generated Media，并产生三条 Delivery：
-
-```text
-command_progress text -> "正在画图..."
-command_output text   -> "图片已生成：<generated_media_id>"
-command_output image  -> references <generated_media_id>
-```
-
-Generated Media 只用于当前 Room 的短期外发，不作为长期 Artifact。第一版不新增 `generated_media` 表；media metadata 持久化在现有 `deliveries.payload` 中。Delivery list 不内嵌图片 bytes；Clawman 将图片 bytes 写入 S3-compatible object storage，image Delivery 携带 24h presigned S3 URL：
+Generated Media 只用于当前 Room 的短期外发，不作为长期 Artifact。第一版不新增 `generated_media` 表；media metadata 持久化在现有 `deliveries.payload` 中。Delivery list 不内嵌图片 bytes；Clawman 将后台 Codex Task 产出的 artifact bytes 写入 S3-compatible object storage，image Delivery 携带 24h presigned S3 URL：
 
 ```json
 {
-  "kind": "command_output",
+  "kind": "agent_output",
   "type": "image",
   "media_id": "gm_20260522_7f3a9c",
   "media_url": "https://...",

@@ -36,7 +36,7 @@ func TestBuildCodexPromptIncludesContextMessages(t *testing.T) {
 	for _, want := range []string{
 		"只返回一个符合 Agent Run Result 的 JSON 对象",
 		"memory_search_requests",
-		"image_generation_requests",
+		"background_codex_tasks",
 		"不要包含 room_id",
 		"Context messages (JSONL):",
 		`"kind":"capabilities"`,
@@ -81,20 +81,17 @@ func TestBuildCodexPromptIncludesImageMediaRule(t *testing.T) {
 		"带 kind 的行是 typed context messages",
 		"房间消息的 type 是 image",
 		"使用房间消息顶层 id 作为 message_id",
-		"主回复阶段不要调用 image provider",
+		"主回复阶段不要直接生成或编辑图片",
 		"媒体：",
 		`curl -L "$TINYCLAW_MEDIA_BASE_URL/internal/media?msgid=$message_id"`,
 		`"$TINYCLAW_MEDIA_DOWNLOAD_DIR/$message_id"`,
 		"只下载对应消息",
 		"读取下载后的本地文件",
-		"生图：",
-		"返回 image_generation_requests",
-		`"mode":"generate|edit"`,
-		"内容相关时先读源图",
-		"source_image_summary",
-		"edit_instruction",
-		"output_format 固定为 jpeg",
-		"编辑要保守",
+		"后台任务：",
+		"返回 background_codex_tasks",
+		`"instruction":"..."`,
+		`"source_message_ids":[42]`,
+		`"expected_artifacts":["image/jpeg"]`,
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
@@ -146,21 +143,28 @@ func TestBuildCodexPromptIncludesReferencedImageMetadata(t *testing.T) {
 	}
 }
 
-func TestBuildCodexPromptMarksHandledCommandMessages(t *testing.T) {
-	prompt := BuildCodexPrompt(AgentRunRequest{
+func TestBuildCodexBackgroundTaskPromptIncludesMediaReuseRule(t *testing.T) {
+	prompt := BuildCodexBackgroundTaskPrompt(AgentRunRequest{
 		AgentRun: testAgentRun,
 		ContextMessages: []core.Message{
-			{ID: 1, SenderName: "Alice", MsgType: "text", Body: []byte(`{"content":"/draw 一朵花","command_kind":"draw"}`)},
-			{ID: 2, SenderID: "bob", MsgType: "text", Body: []byte(`{"content":"@agent 后续问题"}`)},
+			{ID: 42, SenderName: "Alice", MsgType: "image", Body: []byte(`{"content":"[图片]"}`)},
 		},
+	}, core.BackgroundCodexTask{
+		Instruction:       "把图片改成水彩风格",
+		SourceMessageIDs:  []int64{42},
+		ExpectedArtifacts: []string{"image/jpeg"},
 	})
 
 	for _, want := range []string{
-		"handled_command 消息已经由 TinyClaw 处理过",
-		`"handled_command":"draw"`,
-		`"command_kind":"draw"`,
-		`"content":"/draw 一朵花"`,
-		`"text":{"content":"@agent 后续问题"}`,
+		"你是 TinyClaw 后台 Codex Task",
+		`"instruction":"把图片改成水彩风格"`,
+		`"source_message_ids":[42]`,
+		`"$TINYCLAW_MEDIA_DOWNLOAD_DIR/$message_id"`,
+		`curl -L "$TINYCLAW_MEDIA_BASE_URL/internal/media?msgid=$message_id"`,
+		`"$TINYCLAW_TASK_OUTPUT_DIR"`,
+		"Context messages (JSONL):",
+		`"id":42`,
+		`"type":"image"`,
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
@@ -403,11 +407,18 @@ printf "fallback answer" > "$output"
 	}
 }
 
-func TestCodexRunnerReturnsImageGenerationRequests(t *testing.T) {
+func TestCodexRunnerRunsBackgroundCodexTask(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "codex")
+	envPath := filepath.Join(dir, "env")
+	promptPath := filepath.Join(dir, "prompt")
 	script := `#!/bin/sh
 output=""
+{
+  printf '%s\n' "$TINYCLAW_MEDIA_BASE_URL"
+  printf '%s\n' "$TINYCLAW_MEDIA_DOWNLOAD_DIR"
+  printf '%s\n' "$TINYCLAW_TASK_OUTPUT_DIR"
+} > "` + envPath + `"
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "--output-last-message" ]; then
     shift
@@ -415,35 +426,71 @@ while [ "$#" -gt 0 ]; do
   fi
   shift
 done
-cat >/dev/null
-printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
-printf '%s' '{"final_output":"图片已生成","memory_search_requests":[],"memory_write_proposals":[],"image_generation_requests":[{"mode":"generate","prompt":"画一朵花","source_message_ids":[],"size":"1024x1024","source_image_summary":"","edit_instruction":"","preserve":[],"negative":[],"output_format":"jpeg"}]}' > "$output"
+cat > "` + promptPath + `"
+printf 'fake image bytes' > "$TINYCLAW_TASK_OUTPUT_DIR/result.jpg"
+printf '%s' '{"final_output":"done","artifacts":[{"path":"result.jpg","mime_type":"image/jpeg"}]}' > "$output"
 `
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake codex: %v", err)
 	}
 	runner := NewCodexRunner(CodexRunnerConfig{
-		Bin:     bin,
-		WorkDir: dir,
-		Timeout: 5 * time.Second,
+		Bin:          bin,
+		WorkDir:      dir,
+		MediaBaseURL: "http://media.example",
+		Timeout:      5 * time.Second,
 	})
 
-	result, err := runner.RunAgent(context.Background(), AgentRunRequest{AgentRun: testAgentRun})
+	result, err := runner.RunBackgroundCodexTask(context.Background(), AgentRunRequest{
+		AgentRun: testAgentRun,
+		ContextMessages: []core.Message{
+			{ID: 42, SenderName: "Alice", MsgType: "image", Body: []byte(`{"content":"[图片]"}`)},
+		},
+	}, core.BackgroundCodexTask{
+		Instruction:       "生成图片",
+		SourceMessageIDs:  []int64{42},
+		ExpectedArtifacts: []string{"image/jpeg"},
+	})
 	if err != nil {
-		t.Fatalf("RunAgent error: %v", err)
+		t.Fatalf("RunBackgroundCodexTask error: %v", err)
 	}
-	if result.FinalOutput != "图片已生成" {
-		t.Fatalf("output = %q", result.FinalOutput)
+	defer func() { _ = os.RemoveAll(result.OutputDir) }()
+	if len(result.Artifacts) != 1 {
+		t.Fatalf("artifacts = %+v, want one", result.Artifacts)
 	}
-	if result.ImageGenerationCount != 1 || len(result.ImageGenerationRequests) != 1 {
-		t.Fatalf("image request count=%d requests=%+v", result.ImageGenerationCount, result.ImageGenerationRequests)
+	if result.Artifacts[0].MIMEType != "image/jpeg" {
+		t.Fatalf("artifact mime = %q", result.Artifacts[0].MIMEType)
 	}
-	if result.ImageGenerationRequests[0].Prompt != "画一朵花" {
-		t.Fatalf("image request prompt = %q", result.ImageGenerationRequests[0].Prompt)
+	if !filepath.IsAbs(result.Artifacts[0].Path) {
+		t.Fatalf("artifact path = %q, want absolute", result.Artifacts[0].Path)
+	}
+	if _, err := os.Stat(result.Artifacts[0].Path); err != nil {
+		t.Fatalf("stat artifact: %v", err)
+	}
+	envData, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	envLines := strings.Split(strings.TrimSpace(string(envData)), "\n")
+	if len(envLines) != 3 {
+		t.Fatalf("env lines = %q", envData)
+	}
+	if envLines[0] != "http://media.example" || envLines[1] != "/tmp/tinyclaw/10" {
+		t.Fatalf("env = %q", envData)
+	}
+	expectedOutputRoot := filepath.Join(os.TempDir(), "tinyclaw", "tasks", "10") + string(filepath.Separator)
+	if !strings.HasPrefix(envLines[2], expectedOutputRoot) {
+		t.Fatalf("task output dir = %q", envLines[2])
+	}
+	promptData, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("read prompt: %v", err)
+	}
+	if !strings.Contains(string(promptData), `"instruction":"生成图片"`) {
+		t.Fatalf("prompt missing task JSON:\n%s", promptData)
 	}
 }
 
-func TestCodexRunnerAllowsImageGenerationRequestsWithoutTool(t *testing.T) {
+func TestCodexRunnerReturnsBackgroundCodexTasks(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "codex")
 	script := `#!/bin/sh
@@ -457,7 +504,7 @@ while [ "$#" -gt 0 ]; do
 done
 cat >/dev/null
 printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
-printf '%s' '{"final_output":"图片已生成","memory_search_requests":[],"memory_write_proposals":[],"image_generation_requests":[{"mode":"generate","prompt":"画一朵花","source_message_ids":[],"size":"1024x1024","source_image_summary":"","edit_instruction":"","preserve":[],"negative":[],"output_format":"jpeg"}]}' > "$output"
+printf '%s' '{"final_output":"开始生成图片","memory_search_requests":[],"memory_write_proposals":[],"background_codex_tasks":[{"instruction":"画一朵花","source_message_ids":[],"expected_artifacts":["image/jpeg"]}]}' > "$output"
 `
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake codex: %v", err)
@@ -472,8 +519,48 @@ printf '%s' '{"final_output":"图片已生成","memory_search_requests":[],"memo
 	if err != nil {
 		t.Fatalf("RunAgent error: %v", err)
 	}
-	if len(result.ImageGenerationRequests) != 1 {
-		t.Fatalf("image requests = %+v, want one request", result.ImageGenerationRequests)
+	if result.FinalOutput != "开始生成图片" {
+		t.Fatalf("output = %q", result.FinalOutput)
+	}
+	if result.BackgroundTaskCount != 1 || len(result.BackgroundCodexTasks) != 1 {
+		t.Fatalf("background task count=%d tasks=%+v", result.BackgroundTaskCount, result.BackgroundCodexTasks)
+	}
+	if result.BackgroundCodexTasks[0].Instruction != "画一朵花" {
+		t.Fatalf("task instruction = %q", result.BackgroundCodexTasks[0].Instruction)
+	}
+}
+
+func TestCodexRunnerAllowsBackgroundCodexTasksWithoutTool(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "codex")
+	script := `#!/bin/sh
+output=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-last-message" ]; then
+    shift
+    output="$1"
+  fi
+  shift
+done
+cat >/dev/null
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
+printf '%s' '{"final_output":"开始生成图片","memory_search_requests":[],"memory_write_proposals":[],"background_codex_tasks":[{"instruction":"画一朵花","source_message_ids":[],"expected_artifacts":["image/jpeg"]}]}' > "$output"
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	runner := NewCodexRunner(CodexRunnerConfig{
+		Bin:     bin,
+		WorkDir: dir,
+		Timeout: 5 * time.Second,
+	})
+
+	result, err := runner.RunAgent(context.Background(), AgentRunRequest{AgentRun: testAgentRun})
+	if err != nil {
+		t.Fatalf("RunAgent error: %v", err)
+	}
+	if len(result.BackgroundCodexTasks) != 1 {
+		t.Fatalf("background tasks = %+v, want one task", result.BackgroundCodexTasks)
 	}
 }
 

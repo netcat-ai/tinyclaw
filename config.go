@@ -2,9 +2,7 @@ package main
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -33,12 +31,6 @@ type Config struct {
 	CodexDisabledFeatures  []string
 	CodexRunnerTimeout     time.Duration
 
-	DrawCommandEnabled   bool
-	ImageProviderBaseURL string
-	ImageProviderModel   string
-	ImageProviderAPIKey  string
-	DrawImageSize        string
-
 	GeneratedMediaS3Endpoint        string
 	GeneratedMediaS3Bucket          string
 	GeneratedMediaS3Region          string
@@ -56,10 +48,6 @@ func LoadConfig() (Config, error) {
 	generatedMediaURLTTL, err := time.ParseDuration(envOrDefault("GENERATED_MEDIA_URL_TTL", "24h"))
 	if err != nil {
 		return Config{}, err
-	}
-	imageProviderAPIKey := os.Getenv("IMAGE_PROVIDER_API_KEY")
-	if strings.TrimSpace(imageProviderAPIKey) == "" {
-		imageProviderAPIKey = codexAuthOpenAIAPIKey()
 	}
 	cfg := Config{
 		DatabaseURL: os.Getenv("DATABASE_URL"),
@@ -89,12 +77,6 @@ func LoadConfig() (Config, error) {
 			"plugins",
 		}),
 		CodexRunnerTimeout: timeout,
-
-		DrawCommandEnabled:   parseBoolEnvDefault("DRAW_COMMAND_ENABLED", true),
-		ImageProviderBaseURL: envOrDefault("IMAGE_PROVIDER_BASE_URL", "https://code.v4.chat"),
-		ImageProviderModel:   envOrDefault("IMAGE_PROVIDER_MODEL", "gpt-image-2"),
-		ImageProviderAPIKey:  imageProviderAPIKey,
-		DrawImageSize:        envOrDefault("DRAW_IMAGE_SIZE", "1024x1024"),
 
 		GeneratedMediaS3Endpoint:        os.Getenv("GENERATED_MEDIA_S3_ENDPOINT"),
 		GeneratedMediaS3Bucket:          os.Getenv("GENERATED_MEDIA_S3_BUCKET"),
@@ -169,36 +151,4 @@ func parseCSVEnv(key string, def []string) []string {
 		}
 	}
 	return values
-}
-
-func codexAuthOpenAIAPIKey() string {
-	for _, raw := range []string{os.Getenv("CODEX_AUTH_JSON"), readCodexAuthFile()} {
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
-			continue
-		}
-		var parsed struct {
-			OpenAIAPIKey string `json:"OPENAI_API_KEY"`
-		}
-		if err := json.Unmarshal([]byte(raw), &parsed); err == nil && strings.TrimSpace(parsed.OpenAIAPIKey) != "" {
-			return strings.TrimSpace(parsed.OpenAIAPIKey)
-		}
-	}
-	return ""
-}
-
-func readCodexAuthFile() string {
-	path := strings.TrimSpace(os.Getenv("CODEX_AUTH_PATH"))
-	if path == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		path = filepath.Join(home, ".codex", "auth.json")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return string(data)
 }

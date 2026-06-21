@@ -26,6 +26,9 @@ const maxMemorySearchRounds = 2
 //go:embed codex_agent_prompt.md
 var codexAgentPromptText string
 
+//go:embed codex_background_task_prompt.md
+var codexBackgroundTaskPromptText string
+
 type CodexRunnerConfig struct {
 	Bin              string
 	WorkDir          string
@@ -81,7 +84,7 @@ func (r *CodexRunner) RunAgent(ctx context.Context, run AgentRunRequest) (core.A
 			run.AgentRun.CodexSessionID = strings.TrimSpace(result.CodexSessionID)
 		}
 		if len(result.MemorySearchRequests) == 0 {
-			result.ImageGenerationCount = len(result.ImageGenerationRequests)
+			result.BackgroundTaskCount = len(result.BackgroundCodexTasks)
 			result.MemorySearchCount = len(run.MemorySearchResults)
 			return result, nil
 		}
@@ -219,7 +222,7 @@ func hasAgentRunResultContent(result core.AgentRunResult) bool {
 	return strings.TrimSpace(result.FinalOutput) != "" ||
 		len(result.MemorySearchRequests) > 0 ||
 		len(result.MemoryWriteProposals) > 0 ||
-		len(result.ImageGenerationRequests) > 0
+		len(result.BackgroundCodexTasks) > 0
 }
 
 func (r *CodexRunner) codexExecArgs(schemaPath string, outputPath string, codexSessionID string) []string {
@@ -489,21 +492,25 @@ func ParseAgentRunResult(text string) (core.AgentRunResult, error) {
 }
 
 func writeAgentRunResultSchema() (string, func(), error) {
-	file, err := os.CreateTemp("", "tinyclaw-agent-run-result-schema-*.json")
+	return writeCodexSchemaTempFile("tinyclaw-agent-run-result-schema-*.json", agentRunResultSchema)
+}
+
+func writeCodexSchemaTempFile(pattern string, schema string) (string, func(), error) {
+	file, err := os.CreateTemp("", pattern)
 	if err != nil {
-		return "", nil, fmt.Errorf("create agent run result schema: %w", err)
+		return "", nil, fmt.Errorf("create codex schema: %w", err)
 	}
 	path := file.Name()
 	cleanup := func() { _ = os.Remove(path) }
-	_, writeErr := file.WriteString(agentRunResultSchema)
+	_, writeErr := file.WriteString(schema)
 	closeErr := file.Close()
 	if writeErr != nil {
 		cleanup()
-		return "", nil, fmt.Errorf("write agent run result schema: %w", writeErr)
+		return "", nil, fmt.Errorf("write codex schema: %w", writeErr)
 	}
 	if closeErr != nil {
 		cleanup()
-		return "", nil, fmt.Errorf("close agent run result schema: %w", closeErr)
+		return "", nil, fmt.Errorf("close codex schema: %w", closeErr)
 	}
 	return path, cleanup, nil
 }
@@ -565,18 +572,14 @@ const agentRunResultSchema = `{
         "required": ["query", "types", "limit", "include_inactive"]
       }
     },
-    "image_generation_requests": {
+    "background_codex_tasks": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "prompt": {
+          "instruction": {
             "type": "string"
-          },
-          "mode": {
-            "type": "string",
-            "enum": ["generate", "edit"]
           },
           "source_message_ids": {
             "type": "array",
@@ -584,37 +587,18 @@ const agentRunResultSchema = `{
               "type": "integer"
             }
           },
-          "size": {
-            "type": "string"
-          },
-          "source_image_summary": {
-            "type": "string"
-          },
-          "edit_instruction": {
-            "type": "string"
-          },
-          "preserve": {
+          "expected_artifacts": {
             "type": "array",
             "items": {
               "type": "string"
             }
-          },
-          "negative": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "output_format": {
-            "type": "string",
-            "enum": ["jpeg"]
           }
         },
-        "required": ["mode", "prompt", "source_message_ids", "size", "source_image_summary", "edit_instruction", "preserve", "negative", "output_format"]
+        "required": ["instruction", "source_message_ids", "expected_artifacts"]
       }
     }
   },
-  "required": ["final_output", "memory_write_proposals", "memory_search_requests", "image_generation_requests"]
+  "required": ["final_output", "memory_write_proposals", "memory_search_requests", "background_codex_tasks"]
 }`
 
 func extractTaggedBlock(text string, tag string) (string, bool) {
@@ -650,25 +634,12 @@ func formatCodexPromptMessage(message core.Message) string {
 		"type":   msgType,
 		msgType:  json.RawMessage(message.Body),
 	}
-	if commandKind := extractMessageCommandKind(message.Body); commandKind != "" {
-		output["handled_command"] = commandKind
-	}
 	data, err := json.Marshal(output)
 	if err != nil {
 		text := extractMessageText(message.Body)
 		return fmt.Sprintf(`{"id":%d,"sender":%q,"type":"text","text":{"content":%q}}`, message.ID, sender, text)
 	}
 	return string(data)
-}
-
-func extractMessageCommandKind(payload json.RawMessage) string {
-	var parsed struct {
-		CommandKind string `json:"command_kind"`
-	}
-	if err := json.Unmarshal(payload, &parsed); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(parsed.CommandKind)
 }
 
 func extractMessageText(payload json.RawMessage) string {

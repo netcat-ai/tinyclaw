@@ -7,8 +7,7 @@ TinyClaw is a room-scoped agent runtime control plane. The current implementatio
 - **Agent**: user-owned configurable agent definition. Private Agents are editable user assets; shared Agents may be addressed in Rooms and injected as run-scoped Subagents.
 - **Message**: append-only channel-shaped fact resolved into exactly one Room.
 - **Room Memory**: durable Room-owned knowledge searched during Agent Runs.
-- **Delivery**: channel-bound outbound intent produced by an agent run or command.
-- **Command**: explicit Room message handled by Clawman without ordinary agent conversation.
+- **Delivery**: channel-bound outbound intent produced by an agent run.
 
 ## Current State
 
@@ -27,13 +26,13 @@ Set `AGENT_RUNNER=codex` to run triggered Agent Sessions through `codex exec`. O
 - `CODEX_RUNNER_TIMEOUT`: execution timeout, defaults to `5m`.
 - `AGENT_WORKER_CONCURRENCY`: number of concurrent Agent Run workers, defaults to `2`. Runs stay serialized per Room through Agent Session locks while different Rooms can run concurrently.
 
-Codex runs receive a short-lived Room Memory Search capability. The capability calls Clawman's internal memory endpoint with a run-bound token; it does not accept `room_id` from the agent. Runner output is parsed as an Agent Run Result with user-visible final output, optional Memory Write Proposals, and optional image generation requests. Memory Search failures are returned to Codex as error results so the run can continue; memory writes are persisted as background jobs and do not block Delivery creation.
+Codex runs receive a short-lived Room Memory Search capability. The capability calls Clawman's internal memory endpoint with a run-bound token; it does not accept `room_id` from the agent. Runner output is parsed as an Agent Run Result with user-visible final output, optional Memory Write Proposals, and optional background Codex tasks. Memory Search failures are returned to Codex as error results so the run can continue; memory writes are persisted as background jobs and do not block Delivery creation.
 
 Media-bearing context messages are not preattached to Codex. The Codex runner passes `TINYCLAW_MEDIA_BASE_URL` and `TINYCLAW_MEDIA_DOWNLOAD_DIR` through the process environment. Run-scoped semantic input, such as Room Prompt, selected agents, and Memory Search results, is represented as typed JSONL context messages. Codex should download only needed media with `curl -L "$TINYCLAW_MEDIA_BASE_URL/internal/media?msgid=$message_id" -o "$TINYCLAW_MEDIA_DOWNLOAD_DIR/$message_id"` and then inspect the local file.
 
 The Codex runner reuses one Codex CLI thread per Agent Session. Clawman stores the Codex `thread_id` on `agent_sessions.codex_session_id`; subsequent runs call `codex exec resume <codex_session_id> -`. If the saved thread is stale, the runner falls back to a fresh Codex thread and stores the new id.
 
-First-version `/draw <prompt>` is a Clawman-owned Command shortcut rather than ordinary Codex conversation. It saves the Message, does not advance the Agent Session trigger boundary, starts an in-process background draw task for new non-duplicate Messages, calls `gpt-image-2`, uploads the PNG to S3-compatible object storage, and emits command Deliveries. The image Delivery carries a 24h presigned S3 URL instead of embedding image bytes. `/draw 图生图 <prompt>` and `/draw 把上图...` use the latest previous image Message in the same Room as the source image and call the image edit endpoint after downloading that source through Clawman's internal media URL. Ordinary Codex Agent Runs can also request generated media through structured `image_generation_requests`; Clawman performs provider calls, storage, and image Deliveries.
+Ordinary Codex Agent Runs can request slow generated media through structured `background_codex_tasks`; the background Codex task produces artifacts, and Clawman only stores artifacts and emits image Deliveries.
 
 Kubernetes deployment pins `api.openai.com` and `chatgpt.com` through `hostAliases` because the current cluster DNS resolves those domains incorrectly. Refresh those IPs if Codex CLI connectivity starts timing out before `thread.started`.
 
@@ -153,13 +152,8 @@ Main service:
 - `CONTROL_API_ADDR` default `:8081`
 - `METRICS_ADDR` default `:9090`
 
-Draw command and generated media:
+Generated media:
 
-- `DRAW_COMMAND_ENABLED`: enable `/draw`, defaults to true.
-- `IMAGE_PROVIDER_BASE_URL`: image provider endpoint, defaults to `https://code.v4.chat`.
-- `IMAGE_PROVIDER_MODEL`: image model, defaults to `gpt-image-2`.
-- `IMAGE_PROVIDER_API_KEY`: optional image provider key; when empty, first-version `/draw` may read `OPENAI_API_KEY` from Codex auth JSON via `CODEX_AUTH_JSON` or `CODEX_AUTH_PATH`.
-- `DRAW_IMAGE_SIZE`: image size sent to the provider, defaults to `1024x1024`.
 - `GENERATED_MEDIA_S3_ENDPOINT`
 - `GENERATED_MEDIA_S3_BUCKET`
 - `GENERATED_MEDIA_S3_REGION`

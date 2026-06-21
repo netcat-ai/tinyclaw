@@ -236,20 +236,20 @@ func TestLatestImageMessageBeforeReturnsPreviousImage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create image message: %v", err)
 	}
-	commandMessage, err := store.CreateMessage(ctx, core.CreateMessageInput{
+	textMessage, err := store.CreateMessage(ctx, core.CreateMessageInput{
 		RoomID:    roomResult.Room.ID,
 		Source:    "storage-core-test",
-		MsgID:     fmt.Sprintf("command-%d", suffix),
+		MsgID:     fmt.Sprintf("text-%d", suffix),
 		Action:    "send",
 		FromID:    "bob",
 		MsgTime:   time.Now().UTC().Unix(),
 		MsgType:   "text",
-		Body:      json.RawMessage(`{"content":"/draw 把上图改成水彩"}`),
+		Body:      json.RawMessage(`{"content":"把上图改成水彩"}`),
 		ToList:    []string{"tinyclaw"},
 		RoomIDRaw: "room",
 	})
 	if err != nil {
-		t.Fatalf("create command message: %v", err)
+		t.Fatalf("create text message: %v", err)
 	}
 	_, err = store.CreateMessage(ctx, core.CreateMessageInput{
 		RoomID:    roomResult.Room.ID,
@@ -267,7 +267,7 @@ func TestLatestImageMessageBeforeReturnsPreviousImage(t *testing.T) {
 		t.Fatalf("create later image message: %v", err)
 	}
 
-	got, err := store.LatestImageMessageBefore(ctx, roomResult.Room.ID, commandMessage.Message.ID)
+	got, err := store.LatestImageMessageBefore(ctx, roomResult.Room.ID, textMessage.Message.ID)
 	if err != nil {
 		t.Fatalf("latest image before: %v", err)
 	}

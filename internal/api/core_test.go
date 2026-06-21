@@ -115,17 +115,6 @@ func (f fakeCoreStore) GetCoreRoomByIdentity(ctx context.Context, tenantID strin
 	return f.getRoomByIdentityFn(ctx, tenantID, channel, channelRoomID)
 }
 
-type fakeCommandHandler struct {
-	calls   int
-	message core.Message
-}
-
-func (h *fakeCommandHandler) HandleMessage(_ context.Context, message core.Message) bool {
-	h.calls++
-	h.message = message
-	return true
-}
-
 func TestHealthz(t *testing.T) {
 	api := NewServer(nil, "api-secret")
 
@@ -400,88 +389,6 @@ func TestHandleInternalMediaRedirectsQuotedWOCEmotion(t *testing.T) {
 	}
 }
 
-func TestHandleMessagesSuppressesAgentTriggerForDrawCommand(t *testing.T) {
-	commands := &fakeCommandHandler{}
-	api := NewServerWithCommandHandler(fakeCoreStore{
-		messageFn: func(_ context.Context, input core.CreateMessageInput) (core.CreateMessageResult, error) {
-			if !input.SuppressAgentTrigger {
-				t.Fatal("SuppressAgentTrigger = false, want true")
-			}
-			return core.CreateMessageResult{
-				Message: core.Message{
-					ID:              20,
-					RoomID:          input.RoomID,
-					SourceMessageID: input.SourceMessageID,
-					Source:          input.Source,
-					SenderID:        input.SenderID,
-					Payload:         input.Payload,
-				},
-			}, nil
-		},
-	}, commands, "api-secret")
-
-	req := httptest.NewRequest(http.MethodPost, "/api/messages", strings.NewReader(`{
-		"room_id":10,
-		"source_message_id":"msg-1",
-		"sender_id":"alice",
-		"payload":{"type":"text","text":"/draw 一朵花"}
-	}`))
-	req.Header.Set("Authorization", "Bearer api-secret")
-	rec := httptest.NewRecorder()
-
-	api.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	var payload createMessageResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if payload.Triggered {
-		t.Fatal("triggered = true, want false")
-	}
-	if commands.calls != 1 || commands.message.ID != 20 {
-		t.Fatalf("command calls=%d message=%+v, want one call for message 20", commands.calls, commands.message)
-	}
-}
-
-func TestHandleMessagesDoesNotHandleDuplicateDrawCommand(t *testing.T) {
-	commands := &fakeCommandHandler{}
-	api := NewServerWithCommandHandler(fakeCoreStore{
-		messageFn: func(_ context.Context, input core.CreateMessageInput) (core.CreateMessageResult, error) {
-			return core.CreateMessageResult{
-				Message: core.Message{
-					ID:              20,
-					RoomID:          input.RoomID,
-					SourceMessageID: input.SourceMessageID,
-					SenderID:        input.SenderID,
-					Payload:         input.Payload,
-				},
-				Duplicate: true,
-			}, nil
-		},
-	}, commands, "api-secret")
-
-	req := httptest.NewRequest(http.MethodPost, "/api/messages", strings.NewReader(`{
-		"room_id":10,
-		"source_message_id":"msg-1",
-		"sender_id":"alice",
-		"payload":{"type":"text","text":"/draw 一朵花"}
-	}`))
-	req.Header.Set("Authorization", "Bearer api-secret")
-	rec := httptest.NewRecorder()
-
-	api.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if commands.calls != 0 {
-		t.Fatalf("command calls = %d, want 0", commands.calls)
-	}
-}
-
 func TestHandleMessagesAcceptsCoreMessageContract(t *testing.T) {
 	now := time.Unix(1779175200, 0).UTC()
 	api := NewServer(fakeCoreStore{
@@ -715,7 +622,7 @@ func TestHandleAdminRoomsRequiresAdminClient(t *testing.T) {
 }
 
 func TestHandleAdminRoomsAcceptsBuiltInAdminSecret(t *testing.T) {
-	api := NewServerWithCommandHandler(fakeCoreStore{
+	api := NewServer(fakeCoreStore{
 		authFn: func(context.Context, string, string) (core.APIClient, error) {
 			t.Fatal("AuthenticateAPIClient should not be called for built-in admin")
 			return core.APIClient{}, nil
@@ -726,7 +633,7 @@ func TestHandleAdminRoomsAcceptsBuiltInAdminSecret(t *testing.T) {
 			}
 			return nil, nil
 		},
-	}, nil, "api-secret", "admin-secret")
+	}, "api-secret", "admin-secret")
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/api/rooms?limit=10", nil)
 	req.SetBasicAuth("admin", "admin-secret")
@@ -740,7 +647,7 @@ func TestHandleAdminRoomsAcceptsBuiltInAdminSecret(t *testing.T) {
 }
 
 func TestHandleAdminRoomsRegistersRoomWithAdminAuth(t *testing.T) {
-	api := NewServerWithCommandHandler(fakeCoreStore{
+	api := NewServer(fakeCoreStore{
 		registerFn: func(_ context.Context, input core.RegisterRoomInput) (core.RegisterRoomResult, error) {
 			if input.Channel != "wecom" || input.ChannelRoomID != "room-1" || input.OutboundAlias != "测试群" || !input.AgentEnabled {
 				t.Fatalf("unexpected input: %+v", input)
@@ -766,7 +673,7 @@ func TestHandleAdminRoomsRegistersRoomWithAdminAuth(t *testing.T) {
 				},
 			}, nil
 		},
-	}, nil, "api-secret", "admin-secret")
+	}, "api-secret", "admin-secret")
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/api/rooms", strings.NewReader(`{
 		"channel":"wecom",
@@ -797,11 +704,11 @@ func TestHandleAdminRoomsRegistersRoomWithAdminAuth(t *testing.T) {
 }
 
 func TestHandleAdminAgentsListReturnsEmptyArray(t *testing.T) {
-	api := NewServerWithCommandHandler(fakeCoreStore{
+	api := NewServer(fakeCoreStore{
 		agentsFn: func(context.Context) ([]core.Agent, error) {
 			return nil, nil
 		},
-	}, nil, "api-secret", "admin-secret")
+	}, "api-secret", "admin-secret")
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/api/agents", nil)
 	req.SetBasicAuth("admin", "admin-secret")
@@ -817,11 +724,11 @@ func TestHandleAdminAgentsListReturnsEmptyArray(t *testing.T) {
 }
 
 func TestHandleAdminRoomMemoryReturnsEmptyArray(t *testing.T) {
-	api := NewServerWithCommandHandler(fakeCoreStore{
+	api := NewServer(fakeCoreStore{
 		adminMemFn: func(context.Context, core.AdminMemoryListInput) ([]core.MemoryItem, error) {
 			return nil, nil
 		},
-	}, nil, "api-secret", "admin-secret")
+	}, "api-secret", "admin-secret")
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/api/rooms/10/memory?status=active", nil)
 	req.SetBasicAuth("admin", "admin-secret")
@@ -837,7 +744,7 @@ func TestHandleAdminRoomMemoryReturnsEmptyArray(t *testing.T) {
 }
 
 func TestHandleAdminAgentsCreatesMutableAgent(t *testing.T) {
-	api := NewServerWithCommandHandler(fakeCoreStore{
+	api := NewServer(fakeCoreStore{
 		createAgentFn: func(_ context.Context, input core.UpsertAgentInput) (core.Agent, error) {
 			if input.Key != "product" || input.DisplayName != "产品" || input.OwnerID != "alice" || input.Visibility != "shared" || input.Prompt != "You are product." {
 				t.Fatalf("unexpected input: %+v", input)
@@ -856,7 +763,7 @@ func TestHandleAdminAgentsCreatesMutableAgent(t *testing.T) {
 				Enabled:      input.Enabled,
 			}, nil
 		},
-	}, nil, "api-secret", "admin-secret")
+	}, "api-secret", "admin-secret")
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/api/agents", strings.NewReader(`{
 		"key":"product",
@@ -884,7 +791,7 @@ func TestHandleAdminAgentsCreatesMutableAgent(t *testing.T) {
 }
 
 func TestHandleAdminAgentsUpdatesAgentWithoutVersioning(t *testing.T) {
-	api := NewServerWithCommandHandler(fakeCoreStore{
+	api := NewServer(fakeCoreStore{
 		updateAgentFn: func(_ context.Context, id int64, input core.UpsertAgentInput) (core.Agent, error) {
 			if id != 7 {
 				t.Fatalf("id = %d, want 7", id)
@@ -903,7 +810,7 @@ func TestHandleAdminAgentsUpdatesAgentWithoutVersioning(t *testing.T) {
 				Enabled:      input.Enabled,
 			}, nil
 		},
-	}, nil, "api-secret", "admin-secret")
+	}, "api-secret", "admin-secret")
 
 	req := httptest.NewRequest(http.MethodPut, "/admin/api/agents/7", strings.NewReader(`{
 		"key":"product",

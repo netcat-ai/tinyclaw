@@ -52,10 +52,6 @@ type MemorySearchStore interface {
 	SearchRoomMemoryByToken(ctx context.Context, token string, input core.MemorySearchInput) ([]core.MemoryItem, error)
 }
 
-type CommandHandler interface {
-	HandleMessage(ctx context.Context, message core.Message) bool
-}
-
 type MessageIngestor interface {
 	IngestMessage(ctx context.Context, input core.CreateMessageInput) (core.CreateMessageResult, error)
 }
@@ -70,14 +66,10 @@ type Server struct {
 	mux          *http.ServeMux
 }
 
-func NewServer(core CoreStore, apiToken string) *Server {
-	return NewServerWithCommandHandler(core, nil, apiToken)
-}
-
-func NewServerWithCommandHandler(core CoreStore, commands CommandHandler, apiToken string, adminSecret ...string) *Server {
+func NewServer(core CoreStore, apiToken string, adminSecret ...string) *Server {
 	server := &Server{
 		core:         core,
-		messages:     ingest.NewMessageIngestor(core, commands),
+		messages:     ingest.NewMessageIngestor(core),
 		apiToken:     strings.TrimSpace(apiToken),
 		adminSecret:  strings.TrimSpace(firstString(adminSecret)),
 		mediaBaseURL: "http://127.0.0.1:36080",

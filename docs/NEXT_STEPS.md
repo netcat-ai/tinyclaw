@@ -5,16 +5,15 @@
 - Core Model 已收敛为 `Room -> Message -> Agent Session -> Delivery -> Ack`。
 - 每个 Room 只有一个长期 Agent Session；用户可创建私有 Agent，并可将其共享为 run-scoped Subagent，被 `@key` / `@display_name` 寻址。
 - Adapter 注册入口先查询 Room；已存在则直接返回，不覆盖 Room Prompt、显示名、外发别名或 Agent Session 配置。
-- Message 是 channel-shaped append-only 事实；是否触发、是否进入上下文由 Trigger Policy、Command handler 和 runner 选择决定。
+- Message 是 channel-shaped append-only 事实；是否触发、是否进入上下文由 Trigger Policy 和 runner 选择决定。
 - Delivery 是 outbound intent；ack 只表示 consumer 已处理成功，不要求写回 Message。
 - Room Prompt 是 `rooms.prompt` 上的行为设定；Codex prompt 会注入当前 Room Prompt。
 - Room Memory 归属于 Room；Codex run 通过短期 token 做 Memory Search，通过 Memory Write Jobs 异步写入。
-- `/draw <prompt>` 是 Clawman-owned Command，不进入普通 Agent Run。
 - Control UI 已转向在线聊天室形态，支持 Channel Chat、Channel Memory、Channel Settings、Room Prompt、Delivery ack，以及用户创建 / 共享 Agent。
 - Schema 当前仍由 `InitSchema` 应用；`agents.owner_id` / `agents.visibility` 使用兼容 `ALTER TABLE` 补列。
 - 基础指标已覆盖 room registration、message ingestion、agent run、delivery、ack、memory write。
 - Agent Run 结构化日志已覆盖 run 边界、context message count、selected subagent keys/ids、memory search count、memory write job count 和 delivery id。
-- 数据库 E2E 已覆盖重复 Message、运行中新触发消息、Delivery 重复 ack、Memory Search、Memory Write 和 `/draw` 幂等副作用。
+- 数据库 E2E 已覆盖重复 Message、运行中新触发消息、Delivery 重复 ack、Memory Search 和 Memory Write。
 - 本地 PostgreSQL + Clawman + Control Plane + Codex runner smoke 已验证；企业微信 Linux SDK 链路暂不作为 macOS 本地验收项。
 
 ## 剩余优先级
@@ -47,8 +46,7 @@
 5. Agent Run 可通过 token-bound Memory Search 召回当前 Room 的 active Memory Items。
 6. Agent Run Result 可创建 Memory Write Jobs，后台 worker 应用后下一轮可召回。
 7. `@agent` 命中的可配置 Agent 会作为 run-scoped Subagent 进入 prompt，但不创建长期 Session。
-8. `/draw <prompt>` 只在新插入 Message 时启动一次副作用，重复 Message 不重复扣费或重复发图。
-9. Control Plane UI 可完成 Room 排障、Room Prompt 编辑、Agent 定义编辑、Inject Message 和 Delivery ack。
+8. Control Plane UI 可完成 Room 排障、Room Prompt 编辑、Agent 定义编辑、Inject Message 和 Delivery ack。
 
 ## 本地验收证据
 
@@ -59,7 +57,7 @@
 - `./scripts/local_wechat_adapter_smoke.sh` 覆盖 `tinybridge/cmd/wechat-adapter` 通过 fake `wx history` 注册 `wechat` Room、写入 provider-shaped Message，并用 `{"mode":"never"}` 验证 adapter contract 时不触发 Agent Run。
 - `./scripts/local_verify.sh` 覆盖 Control Plane lint/build、Clawman lint/test、TinyBridge lint/test、本地 smoke、微信 adapter smoke 和最终 status。
 - `TINYCLAW_VERIFY_FULL=true ./scripts/local_verify.sh` 额外覆盖 PostgreSQL-backed E2E；该路径会重置本地测试库，再通过 smoke 回填一个本地 Room。
-- `core_e2e_test.go` 覆盖重复 Message、Delivery 重复 ack、Memory Search、Memory Write、`/draw` 幂等副作用和微信形态 Delivery。
+- `core_e2e_test.go` 覆盖重复 Message、Delivery 重复 ack、Memory Search、Memory Write 和微信形态 Delivery。
 - `internal/storage/core_test.go` 覆盖运行中新触发 Message 时当前 Agent Run 不扩窗，以及 batch trigger 按累计消息触发。
 - `internal/executor/scheduler_test.go` 覆盖 Agent Run 成功、失败、空输出和 `@agent` run-scoped Subagent 选择。
 - `internal/executor/codex_runner_test.go` 覆盖 Codex prompt、Room Prompt 注入、Codex thread resume/fallback、Memory Search loop 和 Memory Write Proposal 解析。

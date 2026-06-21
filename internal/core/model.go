@@ -264,26 +264,31 @@ type CreateMessageResult struct {
 }
 
 type AgentRunResult struct {
-	FinalOutput             string                   `json:"final_output"`
-	MemorySearchRequests    []MemorySearchInput      `json:"memory_search_requests,omitempty"`
-	MemoryWriteProposals    []MemoryWriteProposal    `json:"memory_write_proposals,omitempty"`
-	ImageGenerationRequests []ImageGenerationRequest `json:"image_generation_requests,omitempty"`
-	GeneratedMediaOutputs   []GeneratedMediaOutput   `json:"-"`
-	CodexSessionID          string                   `json:"-"`
-	MemorySearchCount       int                      `json:"-"`
-	ImageGenerationCount    int                      `json:"-"`
+	FinalOutput           string                 `json:"final_output"`
+	MemorySearchRequests  []MemorySearchInput    `json:"memory_search_requests,omitempty"`
+	MemoryWriteProposals  []MemoryWriteProposal  `json:"memory_write_proposals,omitempty"`
+	BackgroundCodexTasks  []BackgroundCodexTask  `json:"background_codex_tasks,omitempty"`
+	GeneratedMediaOutputs []GeneratedMediaOutput `json:"-"`
+	CodexSessionID        string                 `json:"-"`
+	MemorySearchCount     int                    `json:"-"`
+	BackgroundTaskCount   int                    `json:"-"`
 }
 
-type ImageGenerationRequest struct {
-	Mode               string   `json:"mode,omitempty"`
-	Prompt             string   `json:"prompt"`
-	SourceMessageIDs   []int64  `json:"source_message_ids,omitempty"`
-	Size               string   `json:"size,omitempty"`
-	SourceImageSummary string   `json:"source_image_summary,omitempty"`
-	EditInstruction    string   `json:"edit_instruction,omitempty"`
-	Preserve           []string `json:"preserve,omitempty"`
-	Negative           []string `json:"negative,omitempty"`
-	OutputFormat       string   `json:"output_format,omitempty"`
+type BackgroundCodexTask struct {
+	Instruction       string   `json:"instruction"`
+	SourceMessageIDs  []int64  `json:"source_message_ids,omitempty"`
+	ExpectedArtifacts []string `json:"expected_artifacts,omitempty"`
+}
+
+type BackgroundCodexTaskResult struct {
+	FinalOutput string               `json:"final_output"`
+	Artifacts   []BackgroundArtifact `json:"artifacts"`
+	OutputDir   string               `json:"-"`
+}
+
+type BackgroundArtifact struct {
+	Path     string `json:"path"`
+	MIMEType string `json:"mime_type"`
 }
 
 type GeneratedMediaOutput struct {

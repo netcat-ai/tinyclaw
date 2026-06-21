@@ -30,6 +30,14 @@ type GeneratedMediaDeliveryStore interface {
 	CreateGeneratedMediaDelivery(ctx context.Context, run core.AgentRun, media core.GeneratedMediaOutput) (*core.Delivery, error)
 }
 
+type BackgroundCodexTaskRunner interface {
+	RunBackgroundCodexTask(ctx context.Context, run AgentRunRequest, task core.BackgroundCodexTask) (core.BackgroundCodexTaskResult, error)
+}
+
+type BackgroundArtifactStore interface {
+	StoreBackgroundArtifact(ctx context.Context, artifact core.BackgroundArtifact) (core.GeneratedMediaOutput, error)
+}
+
 type MemoryCapabilityTokenStore interface {
 	CreateMemoryCapabilityToken(ctx context.Context, run core.AgentRun, ttl time.Duration) (string, error)
 }
@@ -61,7 +69,8 @@ type Scheduler struct {
 	lockTTL         time.Duration
 	memorySearchURL string
 	memoryTokenTTL  time.Duration
-	imageTool       ImageGenerationTool
+	taskRunner      BackgroundCodexTaskRunner
+	artifactStore   BackgroundArtifactStore
 }
 
 func NewScheduler(ctx context.Context, store Store, runner Runner) *Scheduler {
@@ -86,9 +95,15 @@ func (s *Scheduler) SetMemorySearchURL(url string) {
 	}
 }
 
-func (s *Scheduler) SetImageGenerationTool(tool ImageGenerationTool) {
+func (s *Scheduler) SetBackgroundCodexTaskRunner(runner BackgroundCodexTaskRunner) {
 	if s != nil {
-		s.imageTool = tool
+		s.taskRunner = runner
+	}
+}
+
+func (s *Scheduler) SetBackgroundArtifactStore(store BackgroundArtifactStore) {
+	if s != nil {
+		s.artifactStore = store
 	}
 }
 
@@ -216,13 +231,13 @@ func (s *Scheduler) runOnceWithOwner(ctx context.Context, owner string) bool {
 		)
 		return true
 	}
-	if len(result.ImageGenerationRequests) > 0 && !s.canRunAsyncImageGeneration() {
-		result.FinalOutput = "图片生成能力未配置"
-		result.ImageGenerationRequests = nil
-		result.ImageGenerationCount = 0
+	if len(result.BackgroundCodexTasks) > 0 && !s.canRunBackgroundTasks() {
+		result.FinalOutput = "后台任务能力未配置"
+		result.BackgroundCodexTasks = nil
+		result.BackgroundTaskCount = 0
 	}
-	if len(result.ImageGenerationRequests) > 0 && strings.TrimSpace(result.FinalOutput) == "" {
-		result.FinalOutput = "收到，开始生成图片。"
+	if len(result.BackgroundCodexTasks) > 0 && strings.TrimSpace(result.FinalOutput) == "" {
+		result.FinalOutput = "收到，开始处理。"
 	}
 	delivery, err := s.store.CompleteAgentRun(ctx, run, result)
 	if err != nil {
@@ -230,7 +245,7 @@ func (s *Scheduler) runOnceWithOwner(ctx context.Context, owner string) bool {
 		slog.Error("complete agent run failed", "agent_session_id", run.AgentSessionID, "err", err)
 		return true
 	}
-	s.runImageGenerationRequestsAsync(request, result.ImageGenerationRequests)
+	s.runBackgroundCodexTasksAsync(request, result.BackgroundCodexTasks)
 	deliveryID := int64(0)
 	if delivery != nil {
 		deliveryID = delivery.ID
@@ -242,35 +257,35 @@ func (s *Scheduler) runOnceWithOwner(ctx context.Context, owner string) bool {
 		"selected_agent_keys", selectedAgentKeys,
 		"memory_search_count", result.MemorySearchCount,
 		"memory_write_job_count", len(result.MemoryWriteProposals),
-		"image_generation_count", result.ImageGenerationCount,
+		"background_task_count", result.BackgroundTaskCount,
 		"delivery_id", deliveryID,
 	)
 	telemetry.IncAgentRun("success")
 	return true
 }
 
-func (s *Scheduler) canRunAsyncImageGeneration() bool {
-	if s == nil || s.imageTool == nil {
+func (s *Scheduler) canRunBackgroundTasks() bool {
+	if s == nil || s.taskRunner == nil || s.artifactStore == nil {
 		return false
 	}
 	_, ok := s.store.(GeneratedMediaDeliveryStore)
 	return ok
 }
 
-func (s *Scheduler) runImageGenerationRequestsAsync(run AgentRunRequest, requests []core.ImageGenerationRequest) {
-	if len(requests) == 0 {
+func (s *Scheduler) runBackgroundCodexTasksAsync(run AgentRunRequest, tasks []core.BackgroundCodexTask) {
+	if len(tasks) == 0 {
 		return
 	}
-	store, ok := s.store.(GeneratedMediaDeliveryStore)
+	deliveryStore, ok := s.store.(GeneratedMediaDeliveryStore)
 	if !ok {
-		slog.Error("image generation delivery store is not configured", "agent_session_id", run.AgentRun.AgentSessionID)
+		slog.Error("background task delivery store is not configured", "agent_session_id", run.AgentRun.AgentSessionID)
 		return
 	}
-	if s.imageTool == nil {
-		slog.Error("image generation tool is not configured", "agent_session_id", run.AgentRun.AgentSessionID)
+	if s.taskRunner == nil || s.artifactStore == nil {
+		slog.Error("background task dependencies are not configured", "agent_session_id", run.AgentRun.AgentSessionID)
 		return
 	}
-	requests = append([]core.ImageGenerationRequest(nil), requests...)
+	tasks = append([]core.BackgroundCodexTask(nil), tasks...)
 	go func() {
 		ctx := s.ctx
 		if ctx == nil {
@@ -278,50 +293,70 @@ func (s *Scheduler) runImageGenerationRequestsAsync(run AgentRunRequest, request
 		}
 		ctx, cancel := context.WithTimeout(ctx, defaultCodexRunnerTimeout)
 		defer cancel()
-		for _, request := range requests {
-			slog.Info("async agent image generation started",
+		for _, task := range tasks {
+			slog.Info("background codex task started",
 				"agent_session_id", run.AgentRun.AgentSessionID,
 				"room_id", run.AgentRun.RoomID,
-				"mode", request.Mode,
-				"source_message_ids", request.SourceMessageIDs,
-				"prompt", truncateLogValue(request.Prompt, 500),
-				"edit_instruction", truncateLogValue(request.EditInstruction, 500),
+				"source_message_ids", task.SourceMessageIDs,
+				"instruction", truncateLogValue(task.Instruction, 500),
+				"expected_artifacts", task.ExpectedArtifacts,
 			)
-			output, err := s.imageTool.GenerateAgentImage(ctx, run, request)
+			result, err := s.taskRunner.RunBackgroundCodexTask(ctx, run, task)
 			if err != nil {
-				slog.Error("async agent image generation failed",
+				slog.Error("background codex task failed",
 					"agent_session_id", run.AgentRun.AgentSessionID,
 					"room_id", run.AgentRun.RoomID,
-					"mode", request.Mode,
-					"source_message_ids", request.SourceMessageIDs,
-					"prompt", request.Prompt,
-					"edit_instruction", request.EditInstruction,
+					"source_message_ids", task.SourceMessageIDs,
+					"instruction", task.Instruction,
 					"err", err,
 				)
 				continue
 			}
-			delivery, err := store.CreateGeneratedMediaDelivery(ctx, run.AgentRun, output)
-			if err != nil {
-				slog.Error("create async generated media delivery failed",
+			if strings.TrimSpace(result.OutputDir) != "" {
+				defer func(path string) {
+					if err := os.RemoveAll(path); err != nil {
+						slog.Warn("remove background task output dir failed", "path", path, "err", err)
+					}
+				}(result.OutputDir)
+			}
+			slog.Info("background codex task completed",
+				"agent_session_id", run.AgentRun.AgentSessionID,
+				"room_id", run.AgentRun.RoomID,
+				"source_message_ids", task.SourceMessageIDs,
+				"artifact_count", len(result.Artifacts),
+			)
+			for _, artifact := range result.Artifacts {
+				output, err := s.artifactStore.StoreBackgroundArtifact(ctx, artifact)
+				if err != nil {
+					slog.Error("store background artifact failed",
+						"agent_session_id", run.AgentRun.AgentSessionID,
+						"room_id", run.AgentRun.RoomID,
+						"artifact_path", artifact.Path,
+						"err", err,
+					)
+					continue
+				}
+				delivery, err := deliveryStore.CreateGeneratedMediaDelivery(ctx, run.AgentRun, output)
+				if err != nil {
+					slog.Error("create background artifact delivery failed",
+						"agent_session_id", run.AgentRun.AgentSessionID,
+						"room_id", run.AgentRun.RoomID,
+						"media_id", output.MediaID,
+						"err", err,
+					)
+					continue
+				}
+				deliveryID := int64(0)
+				if delivery != nil {
+					deliveryID = delivery.ID
+				}
+				slog.Info("background artifact delivered",
 					"agent_session_id", run.AgentRun.AgentSessionID,
 					"room_id", run.AgentRun.RoomID,
 					"media_id", output.MediaID,
-					"err", err,
+					"delivery_id", deliveryID,
 				)
-				continue
 			}
-			deliveryID := int64(0)
-			if delivery != nil {
-				deliveryID = delivery.ID
-			}
-			slog.Info("async agent image generation completed",
-				"agent_session_id", run.AgentRun.AgentSessionID,
-				"room_id", run.AgentRun.RoomID,
-				"source_message_ids", request.SourceMessageIDs,
-				"prompt", truncateLogValue(request.Prompt, 500),
-				"media_id", output.MediaID,
-				"delivery_id", deliveryID,
-			)
 		}
 	}()
 }

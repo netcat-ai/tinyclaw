@@ -68,7 +68,7 @@ LIMIT 20;
 Use these checks to separate the common cases:
 
 - No matching `messages` row: the Channel Adapter did not submit the message or submitted it to the wrong Room.
-- Message exists but `pending_trigger_message_id` did not advance: trigger policy did not match, the Agent Session is disabled, the message was duplicate, or command handling suppressed normal agent trigger.
+- Message exists but `pending_trigger_message_id` did not advance: trigger policy did not match, the Agent Session is disabled, or the message was duplicate.
 - `pending_trigger_message_id > caught_up_message_id`: the execution loop has pending agent work; check locks, runner logs, and process health.
 - `caught_up_message_id` reached `pending_trigger_message_id` but no delivery exists: the runner produced empty output or delivery creation failed.
 

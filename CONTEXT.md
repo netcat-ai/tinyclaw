@@ -120,9 +120,13 @@ _Avoid_: Channel cursor, WeCom seq, Delivery
 The message-type-specific content of a **Message**, interpreted according to the channel message type.
 _Avoid_: Normalized payload, runner input, Delivery body
 
-**Command**:
-A user-authored **Message** that requests a specific Clawman-owned action instead of ordinary agent conversation.
-_Avoid_: Agent prompt, channel command, tool call
+**Message Media**:
+Media-bearing content referenced by a **Message Body** and retrievable through channel-owned media locators.
+_Avoid_: Background Artifact, Delivery attachment, arbitrary URL
+
+**Message Media Download Capability**:
+A runner-provided internal media URL pattern and download directory that let Codex retrieve only the **Message Media** it needs during an **Agent Run** or **Background Codex Task**.
+_Avoid_: Generic file download, URL fetcher, Generated Media download, preattached media
 
 **Source Message ID**:
 The idempotency key assigned by a **Channel Adapter** to one external inbound message.
@@ -133,23 +137,27 @@ One execution attempt for an **Agent Session** over a bounded **Message** window
 _Avoid_: Message, task, scheduler job
 
 **Agent Run Result**:
-The structured result of an **Agent Run**, including user-visible output and optional **Memory Write Proposals**.
+The structured result of an **Agent Run**, including user-visible output, optional **Memory Write Proposals**, and optional **Background Codex Tasks**.
 _Avoid_: Raw runner text, Delivery
 
+**Background Codex Task**:
+An asynchronous Codex execution requested by an **Agent Run** for slow artifact-producing work.
+_Avoid_: Synchronous image job, provider call, Delivery
+
+**Background Artifact**:
+A file produced by a **Background Codex Task** under the task output directory before Clawman stores it for delivery.
+_Avoid_: Message Media, Room Memory, long-term artifact
+
 **Generated Media**:
-A user-visible media item produced for delivery to the current **Room**.
-_Avoid_: Room Memory, Artifact, attachment cache
+A stored media item derived from a **Background Artifact** for delivery to the current **Room**.
+_Avoid_: Room Memory, Background Artifact, attachment cache
 
 **Generated Media ID**:
 A user-visible identifier for one **Generated Media** item.
 _Avoid_: Database id, download token, artifact name
 
-**Draw Command**:
-A user-authored command message that requests **Generated Media** for the current **Room**.
-_Avoid_: Agent prompt, Memory Todo, scheduled task
-
 **Delivery**:
-A channel-bound outbound intent produced from an **Agent Run** or **Command**.
+A channel-bound outbound intent produced from an **Agent Run**.
 _Avoid_: Job, reply row
 
 **Trigger Policy**:
@@ -207,15 +215,14 @@ _Avoid_: Clawman state, Message id, processing seq
 - A **Message** belongs to exactly one **Room**.
 - A **Message** keeps channel-shaped header facts separately from its **Message Body**.
 - A **Message Body** contains only the content specific to the **Message** type.
-- A **Command** is a **Message**.
-- A **Draw Command** is a **Command**.
-- A **Command** may produce **Deliveries** without triggering ordinary agent conversation.
-- A **Command** remains part of the **Room** message history even when it does not trigger ordinary agent conversation.
+- **Message Media** may be carried directly by a media **Message** or referenced by a quoted media payload inside another **Message Body**.
+- A **Message Media Download Capability** may retrieve **Message Media** from historical **Messages** in the same **Room**.
 - A **Source Message ID** is unique within one tenant, channel, and **Channel Room**.
 - An **Agent Run** belongs to exactly one **Agent Session**.
 - An **Agent Run** produces one **Agent Run Result**.
-- An **Agent Run Result** may include **Generated Media** for the current **Room**.
-- A **Draw Command** may produce **Generated Media** without a general-purpose **Agent Run Result**.
+- An **Agent Run Result** may include **Background Codex Tasks**.
+- A **Background Codex Task** may produce **Background Artifacts**.
+- A **Background Artifact** may be stored as **Generated Media** for the current **Room**.
 - **Generated Media** has one **Generated Media ID** for user-visible reference.
 - An **Agent Run** may produce zero or more **Deliveries**.
 - An **Agent Run Result** may produce zero or more **Deliveries**.
@@ -284,6 +291,5 @@ _Avoid_: Clawman state, Message id, processing seq
 - Cross-room schedule creation was considered; resolved: a **Schedule** created during an agent interaction belongs to the current **Agent Session** only.
 - Generated images were considered as reusable long-term artifacts; resolved: first-version **Generated Media** is delivered directly to the current **Room**.
 - Generated image bytes were considered for embedding in **Delivery** payloads; resolved: **Deliveries** reference **Generated Media** instead of carrying media bytes in the delivery list.
-- Generated images were considered as raw free-form agent output; resolved: generated images are requested through structured **Image Generation Requests**, while **Draw Command** remains an explicit shortcut.
-- Generated Media IDs were considered as reusable artifact handles; resolved: first-version **Generated Media IDs** are for user-visible reference and troubleshooting, not for `/show` or `/resend` commands.
-- Commands were considered as messages hidden from the Room timeline; resolved: a **Command** is a valid **Room** message history item, but it does not trigger ordinary agent conversation when consumed by a command handler.
+- Generated images were considered as raw free-form agent output; resolved: slow generated media is requested through structured **Background Codex Tasks**.
+- Generated Media IDs were considered as reusable artifact handles; resolved: first-version **Generated Media IDs** are for user-visible reference and troubleshooting, not retrieval handles.

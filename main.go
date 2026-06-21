@@ -54,13 +54,21 @@ func main() {
 	runCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	imageGenerator, mediaStore := buildImageServices(cfg)
-	agentScheduler := executor.NewScheduler(runCtx, coreStore, buildAgentRunner(cfg))
+	mediaStore := buildMediaStore(cfg)
+	agentRunner := buildAgentRunner(cfg)
+	agentScheduler := executor.NewScheduler(runCtx, coreStore, agentRunner)
 	agentScheduler.SetMemorySearchURL(memorySearchEndpoint(cfg.ControlAPIAddr))
-	agentScheduler.SetImageGenerationTool(buildAgentImageTool(cfg, coreStore, imageGenerator, mediaStore))
+	if taskRunner, ok := agentRunner.(executor.BackgroundCodexTaskRunner); ok {
+		agentScheduler.SetBackgroundCodexTaskRunner(taskRunner)
+	}
+	if mediaStore != nil {
+		agentScheduler.SetBackgroundArtifactStore(executor.MediaBackgroundArtifactStore{
+			Media:       mediaStore,
+			MediaURLTTL: cfg.GeneratedMediaURLTTL,
+		})
+	}
 	memoryWriteWorker := executor.NewMemoryWriteWorker(runCtx, coreStore)
-	commandHandler := buildCommandHandler(cfg, coreStore, imageGenerator, mediaStore)
-	coreAPI := httpapi.NewServerWithCommandHandler(coreStore, commandHandler, cfg.ClawmanAPIToken, cfg.ClawmanAdminSecret)
+	coreAPI := httpapi.NewServer(coreStore, cfg.ClawmanAPIToken, cfg.ClawmanAdminSecret)
 	coreAPI.SetMediaRedirectConfig(cfg.WOCPanelBaseURL, cfg.WOCMediaToken)
 	controlHandler := withAdminUI(coreAPI, "web/control/dist")
 
@@ -110,15 +118,7 @@ func shouldServeAdminFile(distDir string, relativePath string) bool {
 	return !info.IsDir()
 }
 
-func buildImageServices(cfg Config) (command.ImageGenerator, command.MediaStore) {
-	var image command.ImageGenerator
-	if strings.TrimSpace(cfg.ImageProviderAPIKey) != "" {
-		image = command.OpenAIImageClient{
-			BaseURL: cfg.ImageProviderBaseURL,
-			APIKey:  cfg.ImageProviderAPIKey,
-			Model:   cfg.ImageProviderModel,
-		}
-	}
+func buildMediaStore(cfg Config) command.MediaStore {
 	var media command.MediaStore
 	if strings.TrimSpace(cfg.GeneratedMediaS3Endpoint) != "" ||
 		strings.TrimSpace(cfg.GeneratedMediaS3Bucket) != "" ||
@@ -139,16 +139,7 @@ func buildImageServices(cfg Config) (command.ImageGenerator, command.MediaStore)
 			media = store
 		}
 	}
-	return image, media
-}
-
-func buildCommandHandler(cfg Config, coreStore *storage.CoreStore, image command.ImageGenerator, media command.MediaStore) *command.Handler {
-	handler := command.NewHandler(coreStore, image, media)
-	handler.Enabled = cfg.DrawCommandEnabled
-	handler.ImageSize = cfg.DrawImageSize
-	handler.MediaURLTTL = cfg.GeneratedMediaURLTTL
-	handler.MediaFetcher = command.HTTPMediaFetcher{BaseURL: controlAPIBaseURL(cfg.ControlAPIAddr)}
-	return handler
+	return media
 }
 
 func memorySearchEndpoint(addr string) string {
@@ -182,20 +173,6 @@ func controlAPIBaseURL(addr string) string {
 		host = "127.0.0.1"
 	}
 	return "http://" + net.JoinHostPort(host, port)
-}
-
-func buildAgentImageTool(cfg Config, coreStore *storage.CoreStore, image command.ImageGenerator, media command.MediaStore) executor.ImageGenerationTool {
-	if image == nil && media == nil {
-		return nil
-	}
-	return executor.AgentImageTool{
-		Image:              image,
-		Media:              media,
-		MediaFetcher:       command.HTTPMediaFetcher{BaseURL: controlAPIBaseURL(cfg.ControlAPIAddr)},
-		SourceMessageStore: coreStore,
-		ImageSize:          cfg.DrawImageSize,
-		MediaURLTTL:        cfg.GeneratedMediaURLTTL,
-	}
 }
 
 func buildAgentRunner(cfg Config) executor.Runner {
