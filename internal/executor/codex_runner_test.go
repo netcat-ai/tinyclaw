@@ -72,13 +72,13 @@ func TestBuildCodexPromptIncludesImageMediaRule(t *testing.T) {
 		"Conversation messages are JSON Lines.",
 		"If a JSONL message is image, video, emotion, or voice",
 		"Identify media by the top-level JSONL message.id",
-		"Do not download media or call image providers during the main reply.",
+		"Use attached images for image-reading questions",
+		"Do not call image providers during the main reply.",
 		"Image Generation:",
 		"always return image_generation_requests",
 		"Do not only say that you can do it.",
 		`"mode":"generate|edit"`,
-		"set source_image_summary to an empty string",
-		"Do not inspect or download source images in the main agent run.",
+		"source_image_summary may summarize the attached source image",
 		"edit_instruction",
 		"output_format to jpeg",
 		"Image edit requests must be conservative and specific",
@@ -189,9 +189,20 @@ func TestCodexExecArgsIncludesOpenAIBaseURL(t *testing.T) {
 		OpenAIBaseURL: "https://code.v4.chat",
 	})
 
-	args := strings.Join(runner.codexExecArgs("/tmp/schema.json", "/tmp/output.txt", ""), "\n")
+	args := strings.Join(runner.codexExecArgs("/tmp/schema.json", "/tmp/output.txt", "", nil), "\n")
 	if !strings.Contains(args, "-c\nopenai_base_url=\"https://code.v4.chat\"") {
 		t.Fatalf("args missing openai_base_url config:\n%s", args)
+	}
+}
+
+func TestCodexExecArgsIncludesImageAttachments(t *testing.T) {
+	runner := NewCodexRunner(CodexRunnerConfig{
+		WorkDir: "/workspace",
+	})
+
+	args := strings.Join(runner.codexExecArgs("/tmp/schema.json", "/tmp/output.txt", "", []string{"/tmp/message-42.png"}), "\n")
+	if !strings.Contains(args, "--image\n/tmp/message-42.png\n--output-schema\n") {
+		t.Fatalf("args missing image attachment before prompt options:\n%s", args)
 	}
 }
 
@@ -256,14 +267,22 @@ func TestCodexRunnerLeavesImageMessagesInPrompt(t *testing.T) {
 	promptPath := filepath.Join(dir, "prompt")
 	script := `#!/bin/sh
 output=""
+image=""
 printf '%s\n' "$@" > "` + argsPath + `"
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "--output-last-message" ]; then
     shift
     output="$1"
+  elif [ "$1" = "--image" ]; then
+    shift
+    image="$1"
   fi
   shift
 done
+if [ ! -s "$image" ]; then
+  echo "missing image attachment" >&2
+  exit 7
+fi
 cat > "` + promptPath + `"
 printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
 printf "image answer" > "$output"
@@ -271,10 +290,18 @@ printf "image answer" > "$output"
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake codex: %v", err)
 	}
+	mediaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/media" || r.URL.Query().Get("msgid") != "42" {
+			t.Fatalf("unexpected media request: %s", r.URL.String())
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("fake image bytes"))
+	}))
+	defer mediaServer.Close()
 	runner := NewCodexRunner(CodexRunnerConfig{
 		Bin:          bin,
 		WorkDir:      dir,
-		MediaBaseURL: "http://media.example",
+		MediaBaseURL: mediaServer.URL,
 		Timeout:      5 * time.Second,
 	})
 
@@ -295,8 +322,8 @@ printf "image answer" > "$output"
 		t.Fatalf("read args: %v", err)
 	}
 	args := string(argsData)
-	if strings.Contains(args, "--image\n") {
-		t.Fatalf("args include image attachment:\n%s", args)
+	if !strings.Contains(args, "--image\n") {
+		t.Fatalf("args missing image attachment:\n%s", args)
 	}
 	promptData, err := os.ReadFile(promptPath)
 	if err != nil {
@@ -306,14 +333,19 @@ printf "image answer" > "$output"
 	if !strings.Contains(prompt, `"image":{"content":"[图片]"}`) {
 		t.Fatalf("prompt missing image metadata:\n%s", promptData)
 	}
+	if !strings.Contains(prompt, "Attached Images:") || !strings.Contains(prompt, "message.id=42") {
+		t.Fatalf("prompt missing attached image map:\n%s", promptData)
+	}
 	if strings.Contains(prompt, "http://127.0.0.1:8081/internal/media") {
 		t.Fatalf("prompt exposes internal media URL:\n%s", promptData)
 	}
 }
 
-func TestCodexRunnerDoesNotFetchImageAttachments(t *testing.T) {
+func TestCodexRunnerContinuesWhenImageAttachmentFetchFails(t *testing.T) {
+	mediaRequests := 0
 	mediaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		t.Fatal("unexpected image fetch")
+		mediaRequests++
+		http.Error(w, "not found", http.StatusNotFound)
 	}))
 	defer mediaServer.Close()
 
@@ -352,6 +384,9 @@ printf "fallback answer" > "$output"
 	})
 	if err != nil {
 		t.Fatalf("RunAgent error: %v", err)
+	}
+	if mediaRequests != 1 {
+		t.Fatalf("media requests = %d, want 1", mediaRequests)
 	}
 	if result.FinalOutput != "fallback answer" {
 		t.Fatalf("output = %q, want fallback answer", result.FinalOutput)
