@@ -254,7 +254,7 @@ type CreateMessageInput struct {
 	MessageTime     time.Time       `json:"message_time,omitempty"`
 	Payload         json.RawMessage `json:"payload,omitempty"`
 
-	SuppressAgentTrigger bool `json:"-"`
+	SuppressAgentTrigger bool `json:"suppress_agent_trigger,omitempty"`
 }
 
 type CreateMessageResult struct {
@@ -264,14 +264,30 @@ type CreateMessageResult struct {
 }
 
 type AgentRunResult struct {
-	FinalOutput           string                 `json:"final_output"`
-	MemorySearchRequests  []MemorySearchInput    `json:"memory_search_requests,omitempty"`
-	MemoryWriteProposals  []MemoryWriteProposal  `json:"memory_write_proposals,omitempty"`
-	BackgroundCodexTasks  []BackgroundCodexTask  `json:"background_codex_tasks,omitempty"`
-	GeneratedMediaOutputs []GeneratedMediaOutput `json:"-"`
-	CodexSessionID        string                 `json:"-"`
-	MemorySearchCount     int                    `json:"-"`
-	BackgroundTaskCount   int                    `json:"-"`
+	FinalOutput                   string                         `json:"final_output"`
+	MemorySearchRequests          []MemorySearchInput            `json:"memory_search_requests,omitempty"`
+	MemoryWriteProposals          []MemoryWriteProposal          `json:"memory_write_proposals,omitempty"`
+	AttachmentObservationRequests []AttachmentObservationRequest `json:"attachment_observation_requests,omitempty"`
+	BackgroundCodexTasks          []BackgroundCodexTask          `json:"background_codex_tasks,omitempty"`
+	GeneratedMediaOutputs         []GeneratedMediaOutput         `json:"-"`
+	CodexSessionID                string                         `json:"-"`
+	MemorySearchCount             int                            `json:"-"`
+	AttachmentObservationCount    int                            `json:"-"`
+	BackgroundTaskCount           int                            `json:"-"`
+}
+
+type AttachmentObservationRequest struct {
+	MessageID int64  `json:"message_id"`
+	MediaType string `json:"media_type,omitempty"`
+	Purpose   string `json:"purpose"`
+}
+
+type AttachmentObservationResult struct {
+	MessageID   int64  `json:"message_id"`
+	MediaType   string `json:"media_type,omitempty"`
+	Purpose     string `json:"purpose,omitempty"`
+	Observation string `json:"observation,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 type BackgroundCodexTask struct {

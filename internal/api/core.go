@@ -181,7 +181,7 @@ func isWOCMediaMessage(message core.Message, wocType string, quotedType string) 
 
 func isWOCMediaType(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "image", "图片", "video", "视频", "emotion", "表情", "voice", "语音":
+	case "image", "图片", "video", "视频", "emotion", "表情", "voice", "语音", "file", "文件":
 		return true
 	default:
 		return false

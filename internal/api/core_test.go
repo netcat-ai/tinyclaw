@@ -38,7 +38,7 @@ func TestIsWOCMediaMessageAcceptsQuoteImage(t *testing.T) {
 }
 
 func TestIsWOCMediaMessageAcceptsKnownMediaTypes(t *testing.T) {
-	for _, msgType := range []string{"image", "video", "emotion", "voice", "图片", "视频", "表情", "语音"} {
+	for _, msgType := range []string{"image", "video", "emotion", "voice", "file", "图片", "视频", "表情", "语音", "文件"} {
 		if !isWOCMediaMessage(core.Message{MsgType: msgType}, msgType, "") {
 			t.Fatalf("isWOCMediaMessage = false, want true for %q", msgType)
 		}
@@ -402,6 +402,7 @@ func TestHandleMessagesAcceptsCoreMessageContract(t *testing.T) {
 				input.MsgTime != now.Unix() ||
 				input.MsgType != "text" ||
 				string(input.Body) != `{"content":"虾虾 hello"}` ||
+				input.SuppressAgentTrigger ||
 				len(input.ToList) != 1 ||
 				input.ToList[0] != "wxid_bot" {
 				t.Fatalf("unexpected input: %+v", input)
@@ -452,6 +453,52 @@ func TestHandleMessagesAcceptsCoreMessageContract(t *testing.T) {
 	}
 	if !payload.Triggered || payload.Message.MsgID != "wechat-msg-1" || payload.Message.FromID != "wxid_alice" {
 		t.Fatalf("payload = %+v, want core message response", payload)
+	}
+}
+
+func TestHandleMessagesAcceptsSuppressAgentTrigger(t *testing.T) {
+	api := NewServer(fakeCoreStore{
+		messageFn: func(_ context.Context, input core.CreateMessageInput) (core.CreateMessageResult, error) {
+			if !input.SuppressAgentTrigger {
+				t.Fatalf("SuppressAgentTrigger = false, want true")
+			}
+			return core.CreateMessageResult{
+				Message: core.Message{
+					ID:      21,
+					RoomID:  input.RoomID,
+					Source:  input.Source,
+					MsgID:   input.MsgID,
+					FromID:  input.FromID,
+					MsgType: input.MsgType,
+					Body:    input.Body,
+				},
+			}, nil
+		},
+	}, "api-secret")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/messages", strings.NewReader(`{
+		"room_id":10,
+		"source":"wechat",
+		"msgid":"wechat-msg-self",
+		"from":"wxid_bot",
+		"msgtype":"text",
+		"body":{"content":"bot reply"},
+		"suppress_agent_trigger":true
+	}`))
+	req.Header.Set("Authorization", "Bearer api-secret")
+	rec := httptest.NewRecorder()
+
+	api.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload createMessageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Triggered {
+		t.Fatalf("triggered = true, want false")
 	}
 }
 

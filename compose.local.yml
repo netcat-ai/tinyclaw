@@ -16,6 +16,49 @@ services:
       timeout: 3s
       retries: 20
 
+  msghub-postgres:
+    image: postgres:18-alpine
+    container_name: tinyclaw-msghub-postgres-local
+    environment:
+      POSTGRES_USER: tinyclaw
+      POSTGRES_PASSWORD: tinyclaw
+      POSTGRES_DB: msghub
+    ports:
+      - "54330:5432"
+    volumes:
+      - tinyclaw-msghub-postgres-local:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tinyclaw -d msghub"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  msghub:
+    build:
+      context: .
+      dockerfile: cmd/msghub/Dockerfile.local
+    image: tinyclaw/msghub:local
+    container_name: tinyclaw-msghub-local
+    depends_on:
+      msghub-postgres:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MSGHUB_ADDR: :8082
+      MSGHUB_DATABASE_URL: postgres://tinyclaw:tinyclaw@msghub-postgres:5432/msghub?sslmode=disable
+      MSGHUB_TERMINAL_TOKEN: ${MSGHUB_TERMINAL_TOKEN:-dev-msghub-terminal}
+      MSGHUB_TERMINAL_ACTOR_KEY: ${MSGHUB_TERMINAL_ACTOR_KEY:-woc-terminal}
+      MSGHUB_TERMINAL_NAME: ${MSGHUB_TERMINAL_NAME:-WOC Terminal Agent}
+      MSGHUB_TERMINAL_CHANNEL: ${MSGHUB_TERMINAL_CHANNEL:-wechat}
+      MSGHUB_TERMINAL_PROVIDER_ACCOUNT_ID: ${MSGHUB_PROVIDER_ACCOUNT_ID:-woc-local}
+      MSGHUB_AIAGENT_TOKEN: ${MSGHUB_AIAGENT_TOKEN:-dev-msghub-aiagent}
+      MSGHUB_AIAGENT_ACTOR_KEY: ${MSGHUB_AIAGENT_ACTOR_KEY:-local-aiagent}
+      MSGHUB_AIAGENT_NAME: ${MSGHUB_AIAGENT_NAME:-Local AI Agent}
+    ports:
+      - "8082:8082"
+
   clawman:
     build:
       context: .
@@ -44,6 +87,7 @@ services:
       CODEX_AUTH_PATH: /codex/auth.json
       CODEX_SANDBOX: ${CODEX_SANDBOX:-danger-full-access}
       CODEX_OPENAI_BASE_URL: ${CODEX_OPENAI_BASE_URL:-https://code.v4.chat}
+      CODEX_AUTO_COMPACT_TOKEN_LIMIT: ${CODEX_AUTO_COMPACT_TOKEN_LIMIT:-40000}
       CODEX_RUNNER_TIMEOUT: ${CODEX_RUNNER_TIMEOUT:-5m}
     ports:
       - "8081:8081"
@@ -66,14 +110,18 @@ services:
     image: tinyclaw/tinybridge-woc-adapter:local
     container_name: tinyclaw-tinybridge-local
     depends_on:
-      clawman:
-        condition: service_healthy
+      msghub:
+        condition: service_started
     env_file:
       - path: .env
         required: false
     environment:
+      WOC_MESSAGE_BACKEND: ${WOC_MESSAGE_BACKEND:-msghub}
       CLAWMAN_BASE_URL: http://clawman:8081
       CLAWMAN_API_TOKEN: ${CLAWMAN_API_TOKEN:-dev-token}
+      MSGHUB_BASE_URL: http://msghub:8082
+      MSGHUB_TERMINAL_TOKEN: ${MSGHUB_TERMINAL_TOKEN:-dev-msghub-terminal}
+      MSGHUB_PROVIDER_ACCOUNT_ID: ${MSGHUB_PROVIDER_ACCOUNT_ID:-woc-local}
       WOC_BASE_URL: ${WOC_BASE_URL:-http://host.docker.internal:36080}
       WOC_USERNAME: ${WOC_USERNAME:-admin}
       WOC_PASSWORD: ${WOC_PASSWORD:-wechat}
@@ -91,4 +139,5 @@ services:
 
 volumes:
   tinyclaw-postgres-local:
+  tinyclaw-msghub-postgres-local:
   tinybridge-local:

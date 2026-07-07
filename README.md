@@ -22,17 +22,18 @@ Set `AGENT_RUNNER=codex` to run triggered Agent Sessions through `codex exec`. O
 - `CODEX_MODEL`: optional model override.
 - `CODEX_SANDBOX`: Codex sandbox mode, defaults to `workspace-write`; use `danger-full-access` when headless runs need external network/DNS from shell tools.
 - `CODEX_OPENAI_BASE_URL`: optional OpenAI-compatible API base URL passed to `codex exec` as `openai_base_url`.
+- `CODEX_AUTO_COMPACT_TOKEN_LIMIT`: token threshold passed to `codex exec` as `model_auto_compact_token_limit`, defaults to `40000`; set `0` to disable TinyClaw's override.
 - `CODEX_DISABLED_FEATURES`: comma-separated Codex CLI features disabled for headless runs, defaults to `apps,tool_suggest,plugins`; set to `none` to disable no features.
 - `CODEX_RUNNER_TIMEOUT`: execution timeout, defaults to `5m`.
 - `AGENT_WORKER_CONCURRENCY`: number of concurrent Agent Run workers, defaults to `2`. Runs stay serialized per Room through Agent Session locks while different Rooms can run concurrently.
 
-Codex runs receive a short-lived Room Memory Search capability. The capability calls Clawman's internal memory endpoint with a run-bound token; it does not accept `room_id` from the agent. Runner output is parsed as an Agent Run Result with user-visible final output, optional Memory Write Proposals, and optional background Codex tasks. Memory Search failures are returned to Codex as error results so the run can continue; memory writes are persisted as background jobs and do not block Delivery creation.
+Codex runs receive a short-lived Room Memory Search capability. The capability calls Clawman's internal memory endpoint with a run-bound token; it does not accept `room_id` from the agent. Runner output is parsed as an Agent Run Result with user-visible final output, optional Memory Write Proposals, optional attachment observation requests, and optional background Codex tasks. Memory Search failures are returned to Codex as error results so the run can continue; memory writes are persisted as background jobs and do not block Delivery creation.
 
-Media-bearing context messages are not preattached to Codex. The Codex runner passes `TINYCLAW_MEDIA_BASE_URL` and `TINYCLAW_MEDIA_DOWNLOAD_DIR` through the process environment. Run-scoped semantic input, such as Room Prompt, selected agents, and Memory Search results, is represented as typed JSONL context messages. Codex should download only needed media with `curl -L "$TINYCLAW_MEDIA_BASE_URL/internal/media?msgid=$message_id" -o "$TINYCLAW_MEDIA_DOWNLOAD_DIR/$message_id"` and then inspect the local file.
+Media-bearing context messages are not preattached to the long-lived room Codex thread. When the main Agent needs attachment content, it returns `attachment_observation_requests`; the runner downloads only the requested `message_id`, starts a short-lived Codex attachment subagent, and feeds the resulting text observation back as typed JSONL context. Image observations use `codex exec --image` when possible so image data does not enter the room thread.
 
-The Codex runner reuses one Codex CLI thread per Agent Session. Clawman stores the Codex `thread_id` on `agent_sessions.codex_session_id`; subsequent runs call `codex exec resume <codex_session_id> -`. If the saved thread is stale, the runner falls back to a fresh Codex thread and stores the new id.
+The Codex runner reuses one Codex CLI thread per Agent Session. Clawman stores the Codex `thread_id` on `agent_sessions.codex_session_id`; subsequent runs call `codex exec resume <codex_session_id> -`. If the saved thread is stale, the runner falls back to a fresh Codex thread and stores the new id. Each run injects a compact prompt and `model_auto_compact_token_limit` so long-lived room threads compact before media tool history makes first-token latency large.
 
-Ordinary Codex Agent Runs can request slow generated media through structured `background_codex_tasks`; the background Codex task produces artifacts, and Clawman only stores artifacts and emits image Deliveries.
+Ordinary Codex Agent Runs can request slow generated media through structured `background_codex_tasks`; the background Codex task reuses previously downloaded source attachments when available, produces artifacts, and Clawman only stores artifacts and emits image Deliveries.
 
 Kubernetes deployment pins `api.openai.com` and `chatgpt.com` through `hostAliases` because the current cluster DNS resolves those domains incorrectly. Refresh those IPs if Codex CLI connectivity starts timing out before `thread.started`.
 
@@ -105,10 +106,20 @@ Container local run:
 
 ```bash
 ./scripts/local_stop.sh
-docker compose -f compose.local.yml up -d postgres clawman tinybridge
+docker compose -f compose.local.yml up -d msghub-postgres msghub tinybridge
 ```
 
-`compose.local.yml` runs Postgres, Clawman, and `tinybridge/cmd/woc-adapter`. Clawman exposes `8081` and `9090`; `tinybridge` talks to Clawman at `http://clawman:8081` and to a host-local WechatOnCloud Panel through `http://host.docker.internal:36080` by default. Codex sends requests through `CODEX_OPENAI_BASE_URL` which defaults to `https://code.v4.chat`.
+`compose.local.yml` can run Clawman and the new msghub path side by side. The msghub local path uses a separate PostgreSQL service/database (`msghub-postgres` / `msghub`) and exposes the iLink-shaped API on `http://127.0.0.1:8082`. `tinybridge/cmd/woc-adapter` defaults to `WOC_MESSAGE_BACKEND=msghub` in Compose, writes WOC inbound messages to `http://msghub:8082/ilink/sendmessage`, and pulls outbound tasks through `/ilink/getupdates`.
+
+Use these default local msghub tokens unless overridden in `.env`:
+
+```text
+MSGHUB_TERMINAL_TOKEN=dev-msghub-terminal
+MSGHUB_AIAGENT_TOKEN=dev-msghub-aiagent
+MSGHUB_PROVIDER_ACCOUNT_ID=woc-local
+```
+
+Clawman still exposes `8081` and `9090` when the `clawman` service is started. Codex sends requests through `CODEX_OPENAI_BASE_URL` which defaults to `https://code.v4.chat`.
 
 For container local run with `AGENT_RUNNER=codex`, put Codex CLI state under `.local/codex/`. At minimum it must contain `auth.json` and `config.toml`; the directory is mounted to `/codex` and is intentionally ignored by Git.
 

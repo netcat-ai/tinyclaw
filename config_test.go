@@ -10,6 +10,7 @@ func TestLoadConfigUsesServiceDefaults(t *testing.T) {
 	t.Setenv("METRICS_ADDR", "")
 	t.Setenv("CODEX_OPENAI_BASE_URL", "")
 	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("CODEX_AUTO_COMPACT_TOKEN_LIMIT", "")
 	t.Setenv("CODEX_RUNNER_TIMEOUT", "")
 
 	cfg, err := LoadConfig()
@@ -42,6 +43,9 @@ func TestLoadConfigUsesServiceDefaults(t *testing.T) {
 	}
 	if cfg.CodexOpenAIBaseURL != "" {
 		t.Fatalf("CodexOpenAIBaseURL = %q, want empty", cfg.CodexOpenAIBaseURL)
+	}
+	if cfg.CodexAutoCompactTokenLimit != 40000 {
+		t.Fatalf("CodexAutoCompactTokenLimit = %d, want 40000", cfg.CodexAutoCompactTokenLimit)
 	}
 	if cfg.GeneratedMediaURLTTL.String() != "24h0m0s" {
 		t.Fatalf("GeneratedMediaURLTTL = %s, want 24h0m0s", cfg.GeneratedMediaURLTTL)
@@ -90,6 +94,34 @@ func TestLoadConfigReadsCodexOpenAIBaseURL(t *testing.T) {
 	}
 	if cfg.CodexOpenAIBaseURL != "https://code.v4.chat" {
 		t.Fatalf("CodexOpenAIBaseURL = %q, want https://code.v4.chat", cfg.CodexOpenAIBaseURL)
+	}
+}
+
+func TestLoadConfigReadsCodexAutoCompactTokenLimit(t *testing.T) {
+	t.Setenv("CODEX_AUTO_COMPACT_TOKEN_LIMIT", "32000")
+	t.Setenv("CODEX_RUNNER_TIMEOUT", "")
+	t.Setenv("GENERATED_MEDIA_URL_TTL", "")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+	if cfg.CodexAutoCompactTokenLimit != 32000 {
+		t.Fatalf("CodexAutoCompactTokenLimit = %d, want 32000", cfg.CodexAutoCompactTokenLimit)
+	}
+}
+
+func TestLoadConfigAllowsDisablingCodexAutoCompact(t *testing.T) {
+	t.Setenv("CODEX_AUTO_COMPACT_TOKEN_LIMIT", "0")
+	t.Setenv("CODEX_RUNNER_TIMEOUT", "")
+	t.Setenv("GENERATED_MEDIA_URL_TTL", "")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+	if cfg.CodexAutoCompactTokenLimit != 0 {
+		t.Fatalf("CodexAutoCompactTokenLimit = %d, want 0", cfg.CodexAutoCompactTokenLimit)
 	}
 }
 

@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-
 ARG GO_IMAGE=golang:1.26-bookworm
 ARG NODE_IMAGE=node:22-bookworm-slim
 
@@ -18,6 +16,7 @@ RUN go mod download
 COPY . ./
 COPY --from=control-builder /src/web/control/dist ./web/control/dist
 RUN CGO_ENABLED=0 go build -o /out/clawman .
+RUN CGO_ENABLED=0 go build -o /out/msghub ./cmd/msghub
 
 FROM ${NODE_IMAGE}
 WORKDIR /app
@@ -27,7 +26,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     ripgrep \
     && rm -rf /var/lib/apt/lists/*
-RUN npm install -g @openai/codex@0.131.0
+ARG CODEX_VERSION=0.142.5
+RUN npm install -g @openai/codex@${CODEX_VERSION}
 COPY --from=go-builder /out/clawman /app/clawman
+COPY --from=go-builder /out/msghub /app/msghub
 COPY --from=control-builder /src/web/control/dist /app/web/control/dist
 ENTRYPOINT ["/app/clawman"]

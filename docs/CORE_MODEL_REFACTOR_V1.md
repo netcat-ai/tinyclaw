@@ -393,6 +393,8 @@ Agent run 由 clawman 进程内 execution loop 启动，不设计外部 claim AP
 
 Fresh run 使用 `--output-schema` 约束 Agent Run Result。`codex exec resume` 当前不支持 `--output-schema`，因此 runner prompt 必须自描述 Agent Run Result JSON 形状。
 
+CodexRunner 保持一个 Room 一个长期 Codex CLI thread 的设计，但每次 `codex exec` 都会注入 `model_auto_compact_token_limit` 和 TinyClaw compact prompt。compact 规则保留房间长期偏好、当前任务状态、媒体 message_id 与识图结论，丢弃 base64 图片内容、原始工具输出和过期中间过程，避免长期会话因图片工具历史膨胀导致首 token 延迟过高。
+
 Headless runner 默认通过 `CODEX_DISABLED_FEATURES=apps,tool_suggest,plugins` 关闭 Codex CLI 的交互式 app/plugin 发现路径，避免生产 pod 在不需要这些能力时阻塞在外部 connector 刷新上。当前 K8s 部署还通过 `hostAliases` 固定 `api.openai.com` 与 `chatgpt.com`，因为现有集群 DNS 会把这两个域名解析到错误 IP。
 
 Agent Run Result 包含：
@@ -400,11 +402,14 @@ Agent Run Result 包含：
 - user-visible final output
 - Memory Search Requests
 - Memory Write Proposals
+- Attachment Observation Requests
 - Background Codex Tasks
 
 Codex run 会收到 memory search endpoint 和短期 capability token。Codex 可以在运行中主动调用 Memory Search；Clawman 从 token 绑定 Room，不信任 agent 传入的 `room_id`。Memory Search backend 或 endpoint 短暂失败时，runner 将失败作为带 `error` 字段的 search result 回传给下一轮 Codex，不直接让 Agent Run 失败。
 
-Codex run 的 Message window 中存在 media 消息时，Clawman 不预先下载或用 `--image` 注入所有图片。Runner 通过环境变量传入 `TINYCLAW_MEDIA_BASE_URL` 和 `TINYCLAW_MEDIA_DOWNLOAD_DIR`。Room Prompt、selected agents、Memory Search results 等本轮语义输入用 typed JSONL context messages 表达。Codex 只有在回答或准备图生图请求确实需要 media 内容时才按需用 `curl -L "$TINYCLAW_MEDIA_BASE_URL/internal/media?msgid=$message_id" -o "$TINYCLAW_MEDIA_DOWNLOAD_DIR/$message_id"` 下载，并用本地图片查看能力读取下载后的文件。Codex 需要生成图片或图生图等耗时产物时，主 Agent Run 不直接生成或编辑图片，也不处理对象存储；它在 Agent Run Result 中返回 `background_codex_tasks`：
+Codex run 的 Message window 中存在 media 消息时，Clawman 不预先下载或用 `--image` 注入所有图片。主 Room Codex thread 只有在回答或准备图生图请求确实需要附件内容时才返回 `attachment_observation_requests`。Runner 收到请求后只下载指定 `message_id` 到 `$TINYCLAW_MEDIA_DOWNLOAD_DIR/$message_id`，启动短生命周期 Codex attachment subagent；图片/表情优先通过 `codex exec --image` 注入短任务，文件、视频、语音等通过本地路径交给短任务处理。短任务只返回文本 observation 或 error，runner 将结果作为 `attachment_observations` typed JSONL context 回灌主 thread。主 thread 不直接读取大附件内容，避免图片 data URL、文件内容或工具日志污染长期会话。
+
+Codex 需要生成图片或图生图等耗时产物时，主 Agent Run 不直接生成或编辑图片，也不处理对象存储；它在 Agent Run Result 中返回 `background_codex_tasks`：
 
 ```json
 {
@@ -414,7 +419,7 @@ Codex run 的 Message window 中存在 media 消息时，Clawman 不预先下载
 }
 ```
 
-后台 Codex Task 是独立 `codex exec`。它拿同一组 context messages 和 media env，优先复用 `$TINYCLAW_MEDIA_DOWNLOAD_DIR/$message_id` 中主 Run 已下载的媒体；不存在时再按需 curl 下载。Task 自己读取源图、生成或编辑图片，并把 artifact 写入 `$TINYCLAW_TASK_OUTPUT_DIR`。Clawman 只负责异步运行 task、校验 artifact 路径、上传 Generated Media，并创建 image Delivery。
+后台 Codex Task 是独立 `codex exec`。它拿同一组 context messages 和 media env，优先复用 attachment subagent 已下载到 `$TINYCLAW_MEDIA_DOWNLOAD_DIR/$message_id` 的媒体；不存在时再按需 curl 下载。Task 自己读取源图、生成或编辑图片，并把 artifact 写入 `$TINYCLAW_TASK_OUTPUT_DIR`。Clawman 只负责异步运行 task、校验 artifact 路径、上传 Generated Media，并创建 image Delivery。
 
 Agent final output 处理：
 

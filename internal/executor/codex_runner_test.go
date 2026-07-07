@@ -36,6 +36,7 @@ func TestBuildCodexPromptIncludesContextMessages(t *testing.T) {
 	for _, want := range []string{
 		"只返回一个符合 Agent Run Result 的 JSON 对象",
 		"memory_search_requests",
+		"attachment_observation_requests",
 		"background_codex_tasks",
 		"不要包含 room_id",
 		"Context messages (JSONL):",
@@ -81,12 +82,14 @@ func TestBuildCodexPromptIncludesImageMediaRule(t *testing.T) {
 		"带 kind 的行是 typed context messages",
 		"房间消息的 type 是 image",
 		"使用房间消息顶层 id 作为 message_id",
+		"主回复阶段不要自己下载、打开或读取媒体文件",
+		"需要理解附件内容时，先返回 attachment_observation_requests",
+		`"message_id":42`,
+		`"media_type":"image"`,
+		`"purpose":"描述图片内容"`,
+		"有 attachment_observations 时",
 		"主回复阶段不要直接生成或编辑图片",
 		"媒体：",
-		`curl -L "$TINYCLAW_MEDIA_BASE_URL/internal/media?msgid=$message_id"`,
-		`"$TINYCLAW_MEDIA_DOWNLOAD_DIR/$message_id"`,
-		"只下载对应消息",
-		"读取下载后的本地文件",
 		"后台任务：",
 		"返回 background_codex_tasks",
 		`"instruction":"..."`,
@@ -95,6 +98,15 @@ func TestBuildCodexPromptIncludesImageMediaRule(t *testing.T) {
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, unwanted := range []string{
+		`curl -L "$TINYCLAW_MEDIA_BASE_URL/internal/media?msgid=$message_id"`,
+		`view_image`,
+		`读取下载后的本地文件`,
+	} {
+		if strings.Contains(prompt, unwanted) {
+			t.Fatalf("prompt has main-thread media read instruction %q:\n%s", unwanted, prompt)
 		}
 	}
 }
@@ -143,6 +155,33 @@ func TestBuildCodexPromptIncludesReferencedImageMetadata(t *testing.T) {
 	}
 }
 
+func TestBuildCodexPromptIncludesAttachmentObservations(t *testing.T) {
+	prompt := BuildCodexPrompt(AgentRunRequest{
+		AgentRun: testAgentRun,
+		AttachmentObservations: []core.AttachmentObservationResult{{
+			MessageID:   42,
+			MediaType:   "image",
+			Purpose:     "描述图片内容",
+			Observation: "图里是一只粉发二次元头像。",
+		}},
+		ContextMessages: []core.Message{
+			{ID: 42, SenderName: "Alice", MsgType: "image", Body: []byte(`{"content":"[图片]"}`)},
+		},
+	})
+
+	for _, want := range []string{
+		`"kind":"attachment_observations"`,
+		`"message_id":42`,
+		`"media_type":"image"`,
+		`"purpose":"描述图片内容"`,
+		`"observation":"图里是一只粉发二次元头像。"`,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestBuildCodexBackgroundTaskPromptIncludesMediaReuseRule(t *testing.T) {
 	prompt := BuildCodexBackgroundTaskPrompt(AgentRunRequest{
 		AgentRun: testAgentRun,
@@ -161,6 +200,7 @@ func TestBuildCodexBackgroundTaskPromptIncludesMediaReuseRule(t *testing.T) {
 		`"source_message_ids":[42]`,
 		`"$TINYCLAW_MEDIA_DOWNLOAD_DIR/$message_id"`,
 		`curl -L "$TINYCLAW_MEDIA_BASE_URL/internal/media?msgid=$message_id"`,
+		"不要使用 original 细节模式",
 		`"$TINYCLAW_TASK_OUTPUT_DIR"`,
 		"Context messages (JSONL):",
 		`"id":42`,
@@ -206,9 +246,30 @@ func TestCodexExecArgsIncludesOpenAIBaseURL(t *testing.T) {
 		OpenAIBaseURL: "https://code.v4.chat",
 	})
 
-	args := strings.Join(runner.codexExecArgs("/tmp/schema.json", "/tmp/output.txt", ""), "\n")
+	args := strings.Join(runner.codexExecArgs("/tmp/schema.json", "/tmp/output.txt", "", ""), "\n")
 	if !strings.Contains(args, "-c\nopenai_base_url=\"https://code.v4.chat\"") {
 		t.Fatalf("args missing openai_base_url config:\n%s", args)
+	}
+}
+
+func TestCodexExecArgsIncludesAutoCompactConfig(t *testing.T) {
+	runner := NewCodexRunner(CodexRunnerConfig{
+		WorkDir:               "/workspace",
+		AutoCompactTokenLimit: 40000,
+	})
+
+	args := strings.Join(runner.codexExecArgs("/tmp/schema.json", "/tmp/output.txt", "thread-1", "/tmp/compact.md"), "\n")
+	for _, want := range []string{
+		"-c\nmodel_auto_compact_token_limit=40000",
+		"-c\nexperimental_compact_prompt_file=\"/tmp/compact.md\"",
+		"resume\nthread-1\n",
+	} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("args missing %q:\n%s", want, args)
+		}
+	}
+	if strings.Contains(args, "--output-schema\n") {
+		t.Fatalf("resume args include unsupported output schema:\n%s", args)
 	}
 }
 
@@ -328,11 +389,11 @@ printf "image answer" > "$output"
 	if !strings.Contains(prompt, `"image":{"content":"[图片]"}`) {
 		t.Fatalf("prompt missing image metadata:\n%s", promptData)
 	}
-	if !strings.Contains(prompt, `curl -L "$TINYCLAW_MEDIA_BASE_URL/internal/media?msgid=$message_id"`) {
-		t.Fatalf("prompt missing media env curl command:\n%s", promptData)
+	if !strings.Contains(prompt, `attachment_observation_requests`) {
+		t.Fatalf("prompt missing attachment observation request rule:\n%s", promptData)
 	}
-	if !strings.Contains(prompt, `"$TINYCLAW_MEDIA_DOWNLOAD_DIR/$message_id"`) {
-		t.Fatalf("prompt missing media download dir env:\n%s", promptData)
+	if strings.Contains(prompt, `curl -L "$TINYCLAW_MEDIA_BASE_URL/internal/media?msgid=$message_id"`) {
+		t.Fatalf("prompt should not ask main agent to curl media:\n%s", promptData)
 	}
 	if strings.Contains(prompt, "http://media.example") {
 		t.Fatalf("prompt should not inline configured media URL:\n%s", promptData)
@@ -404,6 +465,190 @@ printf "fallback answer" > "$output"
 	}
 	if strings.Contains(string(argsData), "--image\n") {
 		t.Fatalf("args include image attachment:\n%s", argsData)
+	}
+}
+
+func TestCodexRunnerRunsAttachmentObservationSubagent(t *testing.T) {
+	roomRun := testAgentRun
+	roomRun.RoomID = 987654321
+	downloadDir := codexMediaDownloadDir(AgentRunRequest{AgentRun: roomRun})
+	_ = os.RemoveAll(downloadDir)
+	defer func() { _ = os.RemoveAll(downloadDir) }()
+
+	var mediaCalls int
+	mediaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mediaCalls++
+		if r.URL.Path != "/internal/media" {
+			t.Fatalf("path = %q, want /internal/media", r.URL.Path)
+		}
+		if r.URL.Query().Get("msgid") != "42" {
+			t.Fatalf("msgid = %q, want 42", r.URL.Query().Get("msgid"))
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("fake image bytes"))
+	}))
+	defer mediaServer.Close()
+
+	dir := t.TempDir()
+	countPath := filepath.Join(dir, "count")
+	argsPath := filepath.Join(dir, "args")
+	promptPath := filepath.Join(dir, "prompt")
+	bin := filepath.Join(dir, "codex")
+	script := fmt.Sprintf(`#!/bin/sh
+output=""
+count=0
+if [ -f %[1]q ]; then
+  count=$(cat %[1]q)
+fi
+count=$((count + 1))
+printf "%%s" "$count" > %[1]q
+printf '--- call %%s ---\n' "$count" >> %[2]q
+printf '%%s\n' "$@" >> %[2]q
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-last-message" ]; then
+    shift
+    output="$1"
+  fi
+  shift
+done
+cat > "%[3]s.$count"
+if [ "$count" -eq 1 ]; then
+  printf '%%s' '{"final_output":"","memory_write_proposals":[],"memory_search_requests":[],"attachment_observation_requests":[{"message_id":42,"media_type":"image","purpose":"描述图片"}],"background_codex_tasks":[]}' > "$output"
+elif [ "$count" -eq 2 ]; then
+  printf '%%s' '{"message_id":42,"media_type":"image","purpose":"描述图片","observation":"图里是粉发头像。","error":""}' > "$output"
+elif [ "$count" -eq 3 ]; then
+  if ! grep -q '"kind":"attachment_observations"' "%[3]s.$count"; then
+    echo "missing attachment observations" >&2
+    exit 1
+  fi
+  if grep -q 'data:image' "%[3]s.$count"; then
+    echo "main prompt contains image data" >&2
+    exit 1
+  fi
+  printf '%%s' '{"final_output":"图里是粉发头像。","memory_write_proposals":[],"memory_search_requests":[],"attachment_observation_requests":[],"background_codex_tasks":[]}' > "$output"
+else
+  echo "unexpected call count $count" >&2
+  exit 1
+fi
+`, countPath, argsPath, promptPath)
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+
+	runner := NewCodexRunner(CodexRunnerConfig{
+		Bin:          bin,
+		WorkDir:      dir,
+		MediaBaseURL: mediaServer.URL,
+		Timeout:      5 * time.Second,
+	})
+	result, err := runner.RunAgent(context.Background(), AgentRunRequest{
+		AgentRun: roomRun,
+		ContextMessages: []core.Message{
+			{ID: 42, SenderName: "Alice", MsgType: "image", Body: []byte(`{"content":"[图片]"}`)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgent error: %v", err)
+	}
+	if result.FinalOutput != "图里是粉发头像。" {
+		t.Fatalf("output = %q", result.FinalOutput)
+	}
+	if result.AttachmentObservationCount != 1 {
+		t.Fatalf("attachment observation count = %d, want 1", result.AttachmentObservationCount)
+	}
+	if mediaCalls != 1 {
+		t.Fatalf("media calls = %d, want 1", mediaCalls)
+	}
+	countData, err := os.ReadFile(countPath)
+	if err != nil {
+		t.Fatalf("read count: %v", err)
+	}
+	if strings.TrimSpace(string(countData)) != "3" {
+		t.Fatalf("codex call count = %q, want 3", countData)
+	}
+	argsData, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	imageArg := "--image\n" + filepath.Join(downloadDir, "42")
+	if !strings.Contains(string(argsData), imageArg) {
+		t.Fatalf("subagent args missing image attachment %q:\n%s", imageArg, argsData)
+	}
+}
+
+func TestCodexAttachmentObservationPassesNonImageAsLocalPath(t *testing.T) {
+	roomRun := testAgentRun
+	roomRun.RoomID = 987654322
+	downloadDir := codexMediaDownloadDir(AgentRunRequest{AgentRun: roomRun})
+	_ = os.RemoveAll(downloadDir)
+	defer func() { _ = os.RemoveAll(downloadDir) }()
+
+	mediaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("fake video bytes"))
+	}))
+	defer mediaServer.Close()
+
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "args")
+	promptPath := filepath.Join(dir, "prompt")
+	bin := filepath.Join(dir, "codex")
+	script := fmt.Sprintf(`#!/bin/sh
+output=""
+printf '%%s\n' "$@" > %[1]q
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-last-message" ]; then
+    shift
+    output="$1"
+  fi
+  shift
+done
+cat > %[2]q
+printf '%%s' '{"message_id":43,"media_type":"video","purpose":"概括视频","observation":"这是一个短视频文件。","error":""}' > "$output"
+`, argsPath, promptPath)
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+
+	runner := NewCodexRunner(CodexRunnerConfig{
+		Bin:          bin,
+		WorkDir:      dir,
+		MediaBaseURL: mediaServer.URL,
+		Timeout:      5 * time.Second,
+	})
+	result := runner.runAttachmentObservation(context.Background(), AgentRunRequest{
+		AgentRun: roomRun,
+	}, core.AttachmentObservationRequest{
+		MessageID: 43,
+		MediaType: "video",
+		Purpose:   "概括视频",
+	})
+	if result.Error != "" {
+		t.Fatalf("observation error = %q", result.Error)
+	}
+	if result.Observation != "这是一个短视频文件。" {
+		t.Fatalf("observation = %q", result.Observation)
+	}
+	argsData, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	if strings.Contains(string(argsData), "--image\n") {
+		t.Fatalf("video observation should not use --image:\n%s", argsData)
+	}
+	promptData, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("read prompt: %v", err)
+	}
+	for _, want := range []string{
+		`"message_id":43`,
+		`"media_type":"video"`,
+		`"content_type":"video/mp4"`,
+		`"local_path":"` + filepath.Join(downloadDir, "43") + `"`,
+	} {
+		if !strings.Contains(string(promptData), want) {
+			t.Fatalf("prompt missing %q:\n%s", want, promptData)
+		}
 	}
 }
 

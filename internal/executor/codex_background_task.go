@@ -47,7 +47,12 @@ func (r *CodexRunner) RunBackgroundCodexTask(ctx context.Context, run AgentRunRe
 		return core.BackgroundCodexTaskResult{}, fmt.Errorf("create background task output dir: %w", err)
 	}
 
-	args := r.codexExecArgs(schemaPath, outputPath, "")
+	compactPromptPath, cleanupCompactPrompt, err := r.writeCodexCompactPromptTempFile()
+	if err != nil {
+		return core.BackgroundCodexTaskResult{}, err
+	}
+	defer cleanupCompactPrompt()
+	args := r.codexExecArgs(schemaPath, outputPath, "", compactPromptPath)
 	cmd := exec.CommandContext(ctx, r.config.Bin, args...)
 	cmd.Dir = r.config.WorkDir
 	cmd.Env = append(os.Environ(),

@@ -6,6 +6,7 @@
 - 如果需要读取 source_message_ids 中的媒体，优先复用 "$TINYCLAW_MEDIA_DOWNLOAD_DIR/$message_id"。
 - 如果文件不存在，再用 curl 下载：
   mkdir -p "$TINYCLAW_MEDIA_DOWNLOAD_DIR" && curl -L "$TINYCLAW_MEDIA_BASE_URL/internal/media?msgid=$message_id" -o "$TINYCLAW_MEDIA_DOWNLOAD_DIR/$message_id"
+- 读取图片时优先使用默认/高效清晰度，不要使用 original 细节模式，除非任务需要 OCR、小字、局部对象或精细图生图引用。
 - 生成的文件必须写入 "$TINYCLAW_TASK_OUTPUT_DIR" 下。
 - artifacts 只返回生成文件的绝对路径和 mime_type。
 

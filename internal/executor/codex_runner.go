@@ -22,6 +22,9 @@ import (
 
 const defaultCodexRunnerTimeout = 5 * time.Minute
 const maxMemorySearchRounds = 2
+const maxAttachmentObservationRounds = 2
+const maxAgentToolRounds = 4
+const maxAttachmentDownloadBytes = 64 << 20
 
 //go:embed codex_agent_prompt.md
 var codexAgentPromptText string
@@ -29,15 +32,22 @@ var codexAgentPromptText string
 //go:embed codex_background_task_prompt.md
 var codexBackgroundTaskPromptText string
 
+//go:embed codex_attachment_observation_prompt.md
+var codexAttachmentObservationPromptText string
+
+//go:embed codex_compact_prompt.md
+var codexCompactPromptText string
+
 type CodexRunnerConfig struct {
-	Bin              string
-	WorkDir          string
-	Model            string
-	Sandbox          string
-	OpenAIBaseURL    string
-	DisabledFeatures []string
-	MediaBaseURL     string
-	Timeout          time.Duration
+	Bin                   string
+	WorkDir               string
+	Model                 string
+	Sandbox               string
+	OpenAIBaseURL         string
+	AutoCompactTokenLimit int
+	DisabledFeatures      []string
+	MediaBaseURL          string
+	Timeout               time.Duration
 }
 
 type CodexRunner struct {
@@ -74,7 +84,9 @@ func (r *CodexRunner) RunAgent(ctx context.Context, run AgentRunRequest) (core.A
 	defer cancel()
 
 	var result core.AgentRunResult
-	for round := 0; round <= maxMemorySearchRounds; round++ {
+	memorySearchRounds := 0
+	attachmentObservationRounds := 0
+	for round := 0; round <= maxAgentToolRounds; round++ {
 		var err error
 		result, err = r.runCodexExec(runCtx, run)
 		if err != nil {
@@ -83,21 +95,33 @@ func (r *CodexRunner) RunAgent(ctx context.Context, run AgentRunRequest) (core.A
 		if strings.TrimSpace(result.CodexSessionID) != "" {
 			run.AgentRun.CodexSessionID = strings.TrimSpace(result.CodexSessionID)
 		}
-		if len(result.MemorySearchRequests) == 0 {
+		if len(result.MemorySearchRequests) == 0 && len(result.AttachmentObservationRequests) == 0 {
 			result.BackgroundTaskCount = len(result.BackgroundCodexTasks)
 			result.MemorySearchCount = len(run.MemorySearchResults)
+			result.AttachmentObservationCount = len(run.AttachmentObservations)
 			return result, nil
 		}
-		if strings.TrimSpace(run.MemorySearchURL) == "" || strings.TrimSpace(run.MemorySearchToken) == "" {
-			return core.AgentRunResult{}, fmt.Errorf("agent requested memory search but no memory capability is configured")
+		if len(result.MemorySearchRequests) > 0 {
+			if strings.TrimSpace(run.MemorySearchURL) == "" || strings.TrimSpace(run.MemorySearchToken) == "" {
+				return core.AgentRunResult{}, fmt.Errorf("agent requested memory search but no memory capability is configured")
+			}
+			if memorySearchRounds >= maxMemorySearchRounds {
+				return core.AgentRunResult{}, fmt.Errorf("agent exceeded memory search round limit")
+			}
+			searchResults := runMemorySearchRequests(runCtx, run, result.MemorySearchRequests)
+			run.MemorySearchResults = append(run.MemorySearchResults, searchResults...)
+			memorySearchRounds++
 		}
-		if round == maxMemorySearchRounds {
-			return core.AgentRunResult{}, fmt.Errorf("agent exceeded memory search round limit")
+		if len(result.AttachmentObservationRequests) > 0 {
+			if attachmentObservationRounds >= maxAttachmentObservationRounds {
+				return core.AgentRunResult{}, fmt.Errorf("agent exceeded attachment observation round limit")
+			}
+			observations := r.runAttachmentObservationRequests(runCtx, run, result.AttachmentObservationRequests)
+			run.AttachmentObservations = append(run.AttachmentObservations, observations...)
+			attachmentObservationRounds++
 		}
-		searchResults := runMemorySearchRequests(runCtx, run, result.MemorySearchRequests)
-		run.MemorySearchResults = append(run.MemorySearchResults, searchResults...)
 	}
-	return result, nil
+	return core.AgentRunResult{}, fmt.Errorf("agent exceeded tool round limit")
 }
 
 func (r *CodexRunner) runCodexExec(ctx context.Context, run AgentRunRequest) (core.AgentRunResult, error) {
@@ -116,7 +140,12 @@ func (r *CodexRunner) runCodexExec(ctx context.Context, run AgentRunRequest) (co
 	defer cleanupSchema()
 
 	codexSessionID := strings.TrimSpace(run.AgentRun.CodexSessionID)
-	args := r.codexExecArgs(schemaPath, outputPath, codexSessionID)
+	compactPromptPath, cleanupCompactPrompt, err := r.writeCodexCompactPromptTempFile()
+	if err != nil {
+		return core.AgentRunResult{}, err
+	}
+	defer cleanupCompactPrompt()
+	args := r.codexExecArgs(schemaPath, outputPath, codexSessionID, compactPromptPath)
 
 	cmd := exec.CommandContext(ctx, r.config.Bin, args...)
 	cmd.Dir = r.config.WorkDir
@@ -222,10 +251,11 @@ func hasAgentRunResultContent(result core.AgentRunResult) bool {
 	return strings.TrimSpace(result.FinalOutput) != "" ||
 		len(result.MemorySearchRequests) > 0 ||
 		len(result.MemoryWriteProposals) > 0 ||
+		len(result.AttachmentObservationRequests) > 0 ||
 		len(result.BackgroundCodexTasks) > 0
 }
 
-func (r *CodexRunner) codexExecArgs(schemaPath string, outputPath string, codexSessionID string) []string {
+func (r *CodexRunner) codexExecArgs(schemaPath string, outputPath string, codexSessionID string, compactPromptPath string, imagePaths ...string) []string {
 	args := []string{
 		"-a", "never",
 	}
@@ -247,8 +277,21 @@ func (r *CodexRunner) codexExecArgs(schemaPath string, outputPath string, codexS
 	if strings.TrimSpace(r.config.OpenAIBaseURL) != "" {
 		args = append(args, "-c", "openai_base_url="+strconv.Quote(strings.TrimSpace(r.config.OpenAIBaseURL)))
 	}
+	if r.config.AutoCompactTokenLimit > 0 {
+		args = append(args, "-c", "model_auto_compact_token_limit="+strconv.Itoa(r.config.AutoCompactTokenLimit))
+	}
+	if strings.TrimSpace(compactPromptPath) != "" {
+		args = append(args, "-c", "experimental_compact_prompt_file="+strconv.Quote(strings.TrimSpace(compactPromptPath)))
+	}
 	if strings.TrimSpace(r.config.Model) != "" {
 		args = append(args, "--model", r.config.Model)
+	}
+	for _, imagePath := range imagePaths {
+		imagePath = strings.TrimSpace(imagePath)
+		if imagePath == "" {
+			continue
+		}
+		args = append(args, "--image", imagePath)
 	}
 	if strings.TrimSpace(codexSessionID) != "" {
 		return append(args, "resume", codexSessionID, "-")
@@ -444,6 +487,12 @@ func writeCodexPromptContextMessages(builder *strings.Builder, run AgentRunReque
 			"items": run.MemorySearchResults,
 		})
 	}
+	if len(run.AttachmentObservations) > 0 {
+		writeCodexPromptJSONLine(builder, map[string]any{
+			"kind":  "attachment_observations",
+			"items": run.AttachmentObservations,
+		})
+	}
 	agents := make([]codexPromptSubagent, 0, len(run.SelectedAgents))
 	for _, agent := range run.SelectedAgents {
 		agents = append(agents, codexPromptSubagent{
@@ -493,6 +542,29 @@ func ParseAgentRunResult(text string) (core.AgentRunResult, error) {
 
 func writeAgentRunResultSchema() (string, func(), error) {
 	return writeCodexSchemaTempFile("tinyclaw-agent-run-result-schema-*.json", agentRunResultSchema)
+}
+
+func (r *CodexRunner) writeCodexCompactPromptTempFile() (string, func(), error) {
+	if r.config.AutoCompactTokenLimit <= 0 {
+		return "", func() {}, nil
+	}
+	file, err := os.CreateTemp("", "tinyclaw-codex-compact-prompt-*.md")
+	if err != nil {
+		return "", nil, fmt.Errorf("create codex compact prompt: %w", err)
+	}
+	path := file.Name()
+	cleanup := func() { _ = os.Remove(path) }
+	_, writeErr := file.WriteString(strings.TrimSpace(codexCompactPromptText) + "\n")
+	closeErr := file.Close()
+	if writeErr != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("write codex compact prompt: %w", writeErr)
+	}
+	if closeErr != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("close codex compact prompt: %w", closeErr)
+	}
+	return path, cleanup, nil
 }
 
 func writeCodexSchemaTempFile(pattern string, schema string) (string, func(), error) {
@@ -572,6 +644,25 @@ const agentRunResultSchema = `{
         "required": ["query", "types", "limit", "include_inactive"]
       }
     },
+    "attachment_observation_requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "message_id": {
+            "type": "integer"
+          },
+          "media_type": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          }
+        },
+        "required": ["message_id", "media_type", "purpose"]
+      }
+    },
     "background_codex_tasks": {
       "type": "array",
       "items": {
@@ -598,7 +689,7 @@ const agentRunResultSchema = `{
       }
     }
   },
-  "required": ["final_output", "memory_write_proposals", "memory_search_requests", "background_codex_tasks"]
+  "required": ["final_output", "memory_write_proposals", "memory_search_requests", "attachment_observation_requests", "background_codex_tasks"]
 }`
 
 func extractTaggedBlock(text string, tag string) (string, bool) {

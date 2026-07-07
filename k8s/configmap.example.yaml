@@ -10,6 +10,7 @@ data:
   CODEX_WORKDIR: "/tmp"
   CODEX_MODEL: "gpt-5.5"
   CODEX_SANDBOX: "danger-full-access"
+  CODEX_AUTO_COMPACT_TOKEN_LIMIT: "40000"
   CODEX_DISABLED_FEATURES: "apps,tool_suggest,plugins"
   GENERATED_MEDIA_S3_ENDPOINT: "https://cos.ap-guangzhou.myqcloud.com"
   GENERATED_MEDIA_S3_BUCKET: "claw-1371598192"

@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Msghub 架构报告</title>
+<meta name="author" content="TinyClaw">
+<meta name="description" content="Msghub 是从 TinyClaw 中抽出的消息中心，采用 mailbox-shaped actor broker 模型。">
+<meta name="keywords" content="msghub,TinyClaw,Actor Broker,iLink,Room,Message">
+<meta name="generator" content="Kami">
+<style>
+  @font-face {
+    font-family: "TsangerJinKai02";
+    src: url("https://cdn.jsdelivr.net/gh/tw93/Kami@main/assets/fonts/TsangerJinKai02-W04.ttf") format("truetype");
+    font-weight: 400;
+    font-style: normal;
+  }
+  @font-face {
+    font-family: "TsangerJinKai02";
+    src: url("https://cdn.jsdelivr.net/gh/tw93/Kami@main/assets/fonts/TsangerJinKai02-W05.ttf") format("truetype");
+    font-weight: 500;
+    font-style: normal;
+  }
+  @page {
+    size: A4;
+    margin: 20mm 22mm 22mm 22mm;
+    background: #f5f4ed;
+    @top-right {
+      content: string(section-title);
+      font-family: "TsangerJinKai02", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", Georgia, serif;
+      font-size: 8pt;
+      color: #6b6a64;
+    }
+    @bottom-center {
+      content: counter(page) "  ·  Msghub 架构报告";
+      font-family: "TsangerJinKai02", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", Georgia, serif;
+      font-size: 9pt;
+      color: #6b6a64;
+    }
+  }
+  @page:first {
+    @top-right { content: ""; }
+    @bottom-center { content: ""; }
+  }
+  * { box-sizing: border-box; }
+  :root {
+    --parchment: #f5f4ed;
+    --ivory: #faf9f5;
+    --near-black: #141413;
+    --dark-warm: #3d3d3a;
+    --olive: #504e49;
+    --stone: #6b6a64;
+    --brand: #1B365D;
+    --brand-light: #2D5A8A;
+    --brand-tint: #EEF2F7;
+    --border: #e8e6dc;
+    --border-soft: #e5e3d8;
+    --store-fill: #EAE9E2;
+    --external-fill: #E9E8E1;
+    --cloud-fill: #EEEDE6;
+    --serif: "TsangerJinKai02", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "STSong", Georgia, serif;
+    --mono: "JetBrains Mono", "SF Mono", Consolas, "TsangerJinKai02", "Source Han Serif SC", monospace;
+  }
+  html, body {
+    margin: 0;
+    background: var(--parchment);
+    color: var(--near-black);
+    font-family: var(--serif);
+    font-size: 16px;
+    line-height: 1.62;
+    letter-spacing: 0.02em;
+  }
+  body {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 56px 48px 72px;
+  }
+  .cover {
+    min-height: 78vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 56px 0 40px;
+    border-bottom: 1px solid var(--border);
+  }
+  .eyebrow {
+    color: var(--brand);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    margin: 0 0 24px;
+  }
+  h1 {
+    max-width: 760px;
+    margin: 0;
+    font-size: 54px;
+    line-height: 1.12;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+  }
+  .subtitle {
+    max-width: 760px;
+    margin: 24px 0 0;
+    color: var(--olive);
+    font-size: 21px;
+    line-height: 1.55;
+  }
+  .meta {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-top: 56px;
+    color: var(--stone);
+    font-size: 14px;
+  }
+  .meta strong {
+    display: block;
+    color: var(--dark-warm);
+    font-weight: 500;
+  }
+  nav.toc {
+    padding: 40px 0 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  .toc-title,
+  h2 {
+    margin: 0 0 18px;
+    padding-left: 12px;
+    border-left: 4px solid var(--brand);
+    border-radius: 2px;
+    color: var(--near-black);
+    font-size: 28px;
+    line-height: 1.24;
+    font-weight: 500;
+    string-set: section-title content();
+  }
+  .toc-list {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .toc-list a {
+    display: grid;
+    grid-template-columns: 52px 1fr;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px dotted var(--border);
+    color: var(--near-black);
+    text-decoration: none;
+  }
+  .toc-list span:first-child {
+    color: var(--brand);
+    font-family: var(--mono);
+    letter-spacing: 0.12em;
+  }
+  section {
+    padding: 44px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  h3 {
+    margin: 28px 0 10px;
+    color: var(--dark-warm);
+    font-size: 20px;
+    line-height: 1.3;
+    font-weight: 500;
+  }
+  p {
+    margin: 0 0 14px;
+  }
+  .lead {
+    color: var(--dark-warm);
+    font-size: 19px;
+    line-height: 1.62;
+  }
+  .grid {
+    display: grid;
+    gap: 16px;
+  }
+  .grid.two { grid-template-columns: repeat(2, 1fr); }
+  .grid.three { grid-template-columns: repeat(3, 1fr); }
+  .panel {
+    background: var(--ivory);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px 20px;
+  }
+  .panel h3 {
+    margin-top: 0;
+  }
+  .metric {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .metric-value {
+    color: var(--brand);
+    font-size: 26px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  .metric-label {
+    color: var(--olive);
+    font-size: 14px;
+  }
+  .tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--brand-tint);
+    color: var(--brand);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  code {
+    font-family: var(--mono);
+    font-size: 0.92em;
+    color: var(--brand);
+  }
+  pre {
+    overflow-x: auto;
+    margin: 16px 0;
+    padding: 16px 18px;
+    border-radius: 8px;
+    background: #30302e;
+    color: #faf9f5;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 18px 0;
+    font-size: 14px;
+  }
+  th {
+    padding: 10px;
+    border-bottom: 2px solid var(--border);
+    color: var(--dark-warm);
+    text-align: left;
+    font-weight: 500;
+  }
+  td {
+    padding: 10px;
+    border-bottom: 1px solid var(--border-soft);
+    vertical-align: top;
+  }
+  .callout {
+    margin: 18px 0;
+    padding: 14px 18px;
+    border-left: 4px solid var(--brand);
+    background: var(--ivory);
+    color: var(--dark-warm);
+  }
+  figure {
+    margin: 24px 0;
+    padding: 18px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--ivory);
+    break-inside: avoid;
+  }
+  figcaption {
+    margin-top: 12px;
+    color: var(--olive);
+    font-size: 14px;
+  }
+  svg {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+  .muted {
+    color: var(--stone);
+  }
+  .chapter-break {
+    break-before: page;
+  }
+  @media (max-width: 760px) {
+    body { padding: 32px 20px 56px; }
+    h1 { font-size: 38px; }
+    .subtitle { font-size: 18px; }
+    .meta,
+    .grid.two,
+    .grid.three {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+</head>
+<body>
+  <header class="cover">
+    <div>
+      <p class="eyebrow">Technical Architecture Report</p>
+      <h1>Msghub 架构报告</h1>
+      <p class="subtitle">
+        将 TinyClaw 的消息协议层抽象为独立的 mailbox-shaped actor broker：所有终端和 AI 服务通过同一套 iLink-like HTTP 接口连接，消息事实、收件箱投递和可执行任务分离。
+      </p>
+    </div>
+    <div class="meta">
+      <div><strong>项目</strong>tinyclaw / msghub</div>
+      <div><strong>日期</strong>2026-07-07</div>
+      <div><strong>状态</strong>v0 implemented · e2e passed</div>
+    </div>
+  </header>
+
+  <nav class="toc" aria-label="目录">
+    <h2 class="toc-title">目录</h2>
+    <ol class="toc-list">
+      <li><a href="#summary"><span>01</span><span>执行摘要</span></a></li>
+      <li><a href="#context"><span>02</span><span>背景与边界</span></a></li>
+      <li><a href="#model"><span>03</span><span>领域模型</span></a></li>
+      <li><a href="#flow"><span>04</span><span>协议与数据流</span></a></li>
+      <li><a href="#modules"><span>05</span><span>模块与调用者</span></a></li>
+      <li><a href="#database"><span>06</span><span>数据库设计</span></a></li>
+      <li><a href="#validation"><span>07</span><span>验收结果</span></a></li>
+      <li><a href="#risks"><span>08</span><span>剩余决策</span></a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <section id="summary">
+      <h2>执行摘要</h2>
+      <p class="lead">
+        msghub 的核心判断是：终端 agent 和 AI agent 的协议动作可以统一，但它们的角色语义不能混在同一个业务分支里。统一接口，分离 Actor Kind，是当前最小且可扩展的设计。
+      </p>
+      <div class="grid three">
+        <div class="panel">
+          <div class="metric"><span class="metric-value">3</span><span class="metric-label">个 HTTP endpoint</span></div>
+          <p>只暴露 <code>/ilink/sendmessage</code>、<code>/ilink/getupdates</code>、<code>/ilink/ack</code>。</p>
+        </div>
+        <div class="panel">
+          <div class="metric"><span class="metric-value">7</span><span class="metric-label">张核心表</span></div>
+          <p>Actors、Rooms、Messages、Subscriptions、Inbox、Tasks、Capability Tokens。</p>
+        </div>
+        <div class="panel">
+          <div class="metric"><span class="metric-value">1</span><span class="metric-label">套 iLink-like 协议</span></div>
+          <p>terminal-agent 与 aiagent 共享同一套拉取、发送、确认模型。</p>
+        </div>
+      </div>
+      <div class="callout">
+        <strong>当前状态：</strong>内存 store、Postgres store、进程级 HTTP e2e 和 DB 数据检查均已通过。msghub 使用独立数据库，不修改现有 Clawman 表。
+      </div>
+    </section>
+
+    <section id="context" class="chapter-break">
+      <h2>背景与边界</h2>
+      <p>
+        现有 Clawman 是 <strong>Room-scoped agent runtime control plane</strong>。它的核心对象是 Room、Message、Agent Session、Agent、Room Memory 和 Delivery。它负责触发 Agent Run、调用 Codex、写 Memory、产出 Delivery。
+      </p>
+      <p>
+        msghub 则是 <strong>mailbox-shaped actor broker</strong>。它不负责 AI 运行时，不拥有 prompt，不管理 memory，也不持有 Codex thread。它只处理协议客户端之间的消息事实、订阅投递和任务分派。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>维度</th>
+            <th>Clawman Core Model</th>
+            <th>msghub Actor Broker</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>系统职责</td>
+            <td>Agent Runtime Control Plane</td>
+            <td>Message Hub / Actor Broker</td>
+          </tr>
+          <tr>
+            <td>Room 语义</td>
+            <td>带 Agent Session、trigger policy、memory 的运行空间</td>
+            <td>外部会话身份和消息时间线</td>
+          </tr>
+          <tr>
+            <td>Outbound</td>
+            <td><code>deliveries</code>，由 Agent Run 产出</td>
+            <td><code>actor_tasks</code>，分派给 Actor 执行</td>
+          </tr>
+          <tr>
+            <td>协议入口</td>
+            <td><code>/api/rooms</code>、<code>/api/messages</code>、<code>/api/deliveries</code></td>
+            <td><code>/ilink/sendmessage</code>、<code>/ilink/getupdates</code>、<code>/ilink/ack</code></td>
+          </tr>
+          <tr>
+            <td>数据库</td>
+            <td>现有 TinyClaw DB</td>
+            <td>独立 msghub DB</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        这意味着 msghub 不是对 Clawman 的兼容层，也不是 Clawman 表结构的迁移版本。它复用的是思想：Room 作为消息载体、Message 作为 append-only fact、Delivery 思路演化为 Actor Task、token 表思路演化为 scoped capability。
+      </p>
+    </section>
+
+    <section id="model" class="chapter-break">
+      <h2>领域模型</h2>
+      <p class="lead">
+        v0 的领域模型故意保持小。它只保留消息中心必须知道的事实，不引入 agent runtime 的状态字段。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>对象</th>
+            <th>定义</th>
+            <th>关键规则</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>Actor</code></td>
+            <td>协议客户端，可以是 terminal、aiagent、admin。</td>
+            <td>Actor 不是微信里的消息发送人；它是连接 msghub 的系统身份。</td>
+          </tr>
+          <tr>
+            <td><code>Room</code></td>
+            <td>外部会话载体，私聊和群聊都映射成 Room。</td>
+            <td>每条 Message 必须属于一个 Room。</td>
+          </tr>
+          <tr>
+            <td><code>Message</code></td>
+            <td>append-only 原始消息事实。</td>
+            <td>幂等键是 <code>room_id + source_actor_id + external_message_id</code>。</td>
+          </tr>
+          <tr>
+            <td><code>Actor Subscription</code></td>
+            <td>Actor 订阅哪些 Room 的消息事件。</td>
+            <td>terminal 不需要订阅 Room 才能收到分派任务。</td>
+          </tr>
+          <tr>
+            <td><code>Actor Inbox</code></td>
+            <td>每个 Actor 的收件箱。</td>
+            <td>记录投递状态，不记录任务业务结果。</td>
+          </tr>
+          <tr>
+            <td><code>Actor Task</code></td>
+            <td>分派给某个 Actor 执行的任务。</td>
+            <td>v0 第一种任务是 <code>send_message</code>。</td>
+          </tr>
+          <tr>
+            <td><code>Capability Token</code></td>
+            <td>短期、带范围的操作授权。</td>
+            <td><code>reply</code> token 允许 aiagent 基于收到的消息创建回复任务。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <figure>
+        <svg viewBox="0 0 1000 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Msghub domain model">
+          <defs>
+            <pattern id="dots-domain" width="22" height="22" patternUnits="userSpaceOnUse">
+              <circle cx="1" cy="1" r="0.9" fill="#E3E2DC"/>
+            </pattern>
+          </defs>
+          <rect width="100%" height="100%" fill="#f5f4ed"/>
+          <rect width="100%" height="100%" fill="url(#dots-domain)" opacity="0.55"/>
+          <text x="64" y="44" fill="#1B365D" font-size="14" font-family="JetBrains Mono, SF Mono, Consolas, monospace" letter-spacing="3">FIGURE  1</text>
+          <text x="184" y="44" fill="#504e49" font-size="14" font-family="JetBrains Mono, SF Mono, Consolas, monospace" letter-spacing="3">DOMAIN MODEL</text>
+          <line x1="64" y1="58" x2="936" y2="58" stroke="#1B365D" stroke-width="1"/>
+
+          <rect x="420" y="116" width="160" height="76" rx="8" fill="#EEF2F7" stroke="#1B365D" stroke-width="1.5"/>
+          <text x="500" y="150" text-anchor="middle" fill="#141413" font-size="24" font-weight="500" font-family="serif">Room</text>
+          <text x="500" y="174" text-anchor="middle" fill="#504e49" font-size="16" font-family="monospace">message timeline</text>
+
+          <rect x="112" y="252" width="176" height="76" rx="8" fill="#E9E8E1" stroke="#6b6a64" stroke-width="1.2"/>
+          <text x="200" y="286" text-anchor="middle" fill="#141413" font-size="24" font-weight="500" font-family="serif">Actor</text>
+          <text x="200" y="310" text-anchor="middle" fill="#504e49" font-size="16" font-family="monospace">terminal · aiagent</text>
+
+          <rect x="420" y="252" width="160" height="76" rx="8" fill="#faf9f5" stroke="#141413" stroke-width="1.2"/>
+          <text x="500" y="286" text-anchor="middle" fill="#141413" font-size="24" font-weight="500" font-family="serif">Message</text>
+          <text x="500" y="310" text-anchor="middle" fill="#504e49" font-size="16" font-family="monospace">append-only fact</text>
+
+          <rect x="708" y="252" width="180" height="76" rx="8" fill="#EAE9E2" stroke="#504e49" stroke-width="1.2"/>
+          <text x="798" y="286" text-anchor="middle" fill="#141413" font-size="24" font-weight="500" font-family="serif">Actor Inbox</text>
+          <text x="798" y="310" text-anchor="middle" fill="#504e49" font-size="16" font-family="monospace">per-actor delivery</text>
+
+          <rect x="420" y="408" width="160" height="76" rx="8" fill="#faf9f5" stroke="#141413" stroke-width="1.2"/>
+          <text x="500" y="442" text-anchor="middle" fill="#141413" font-size="24" font-weight="500" font-family="serif">Actor Task</text>
+          <text x="500" y="466" text-anchor="middle" fill="#504e49" font-size="16" font-family="monospace">send_message</text>
+
+          <rect x="708" y="408" width="180" height="76" rx="8" fill="#EEEDE6" stroke="#B2B1AC" stroke-width="1.2"/>
+          <text x="798" y="442" text-anchor="middle" fill="#141413" font-size="24" font-weight="500" font-family="serif">Capability</text>
+          <text x="798" y="466" text-anchor="middle" fill="#504e49" font-size="16" font-family="monospace">scoped authority</text>
+
+          <line x1="500" y1="192" x2="500" y2="252" stroke="#1B365D" stroke-width="1.4"/>
+          <path d="M494 242 L500 252 L506 242" fill="none" stroke="#1B365D" stroke-width="1.6" stroke-linecap="round"/>
+          <text x="526" y="226" fill="#1B365D" font-size="14" font-family="monospace">owns</text>
+
+          <line x1="288" y1="290" x2="420" y2="290" stroke="#504e49" stroke-width="1.2"/>
+          <path d="M410 284 L420 290 L410 296" fill="none" stroke="#504e49" stroke-width="1.6" stroke-linecap="round"/>
+          <text x="354" y="276" text-anchor="middle" fill="#504e49" font-size="14" font-family="monospace">source</text>
+
+          <line x1="580" y1="290" x2="708" y2="290" stroke="#504e49" stroke-width="1.2"/>
+          <path d="M698 284 L708 290 L698 296" fill="none" stroke="#504e49" stroke-width="1.6" stroke-linecap="round"/>
+          <text x="644" y="276" text-anchor="middle" fill="#504e49" font-size="14" font-family="monospace">fanout</text>
+
+          <line x1="708" y1="446" x2="580" y2="446" stroke="#504e49" stroke-width="1.2"/>
+          <path d="M590 440 L580 446 L590 452" fill="none" stroke="#504e49" stroke-width="1.6" stroke-linecap="round"/>
+          <text x="644" y="432" text-anchor="middle" fill="#504e49" font-size="14" font-family="monospace">authorizes</text>
+
+          <line x1="500" y1="328" x2="500" y2="408" stroke="#504e49" stroke-width="1.2"/>
+          <path d="M494 398 L500 408 L506 398" fill="none" stroke="#504e49" stroke-width="1.6" stroke-linecap="round"/>
+          <text x="526" y="372" fill="#504e49" font-size="14" font-family="monospace">reply creates</text>
+        </svg>
+        <figcaption>Figure 1. Room 是消息载体；Message 是事实；Inbox 是投递状态；Task 是待执行工作；Capability 是让回复动作有边界的授权。</figcaption>
+      </figure>
+
+      <div class="callout">
+        v0 明确不引入 <code>direction</code>、<code>raw_payload</code>、<code>agent_session_id</code>、<code>source_message_from_id</code>、<code>source_message_to_id</code>。这些字段属于旧模型或运行时边界，不属于独立消息中心的最小核心。
+      </div>
+    </section>
+
+    <section id="flow" class="chapter-break">
+      <h2>协议与数据流</h2>
+      <p>
+        对外协议只有一套 iLink-like HTTP 接口。<code>sendmessage</code> 的语义由 Actor Kind 决定：terminal 调用表示上报外部真实消息；aiagent 调用表示基于上下文授权创建发送任务。
+      </p>
+      <figure>
+        <svg viewBox="0 0 1000 620" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Msghub iLink flow">
+          <defs>
+            <pattern id="dots-flow" width="22" height="22" patternUnits="userSpaceOnUse">
+              <circle cx="1" cy="1" r="0.9" fill="#E3E2DC"/>
+            </pattern>
+          </defs>
+          <rect width="100%" height="100%" fill="#f5f4ed"/>
+          <rect width="100%" height="100%" fill="url(#dots-flow)" opacity="0.55"/>
+          <text x="64" y="44" fill="#1B365D" font-size="14" font-family="JetBrains Mono, SF Mono, Consolas, monospace" letter-spacing="3">FIGURE  2</text>
+          <text x="184" y="44" fill="#504e49" font-size="14" font-family="JetBrains Mono, SF Mono, Consolas, monospace" letter-spacing="3">I-LINK-LIKE ROUNDTRIP</text>
+          <line x1="64" y1="58" x2="936" y2="58" stroke="#1B365D" stroke-width="1"/>
+
+          <rect x="64" y="104" width="184" height="72" rx="8" fill="#E9E8E1" stroke="#6b6a64"/>
+          <text x="156" y="136" text-anchor="middle" fill="#141413" font-size="22" font-weight="500">Linux WeChat</text>
+          <text x="156" y="160" text-anchor="middle" fill="#504e49" font-size="15" font-family="monospace">provider client</text>
+
+          <rect x="64" y="256" width="184" height="72" rx="8" fill="#E9E8E1" stroke="#6b6a64"/>
+          <text x="156" y="288" text-anchor="middle" fill="#141413" font-size="22" font-weight="500">Terminal Actor</text>
+          <text x="156" y="312" text-anchor="middle" fill="#504e49" font-size="15" font-family="monospace">wechat agent</text>
+
+          <rect x="408" y="256" width="184" height="72" rx="8" fill="#EEF2F7" stroke="#1B365D" stroke-width="1.4"/>
+          <text x="500" y="288" text-anchor="middle" fill="#141413" font-size="22" font-weight="500">msghub</text>
+          <text x="500" y="312" text-anchor="middle" fill="#1B365D" font-size="15" font-family="monospace">actor broker</text>
+
+          <rect x="752" y="256" width="184" height="72" rx="8" fill="#EEEDE6" stroke="#B2B1AC"/>
+          <text x="844" y="288" text-anchor="middle" fill="#141413" font-size="22" font-weight="500">AI Agent</text>
+          <text x="844" y="312" text-anchor="middle" fill="#504e49" font-size="15" font-family="monospace">subscriber</text>
+
+          <rect x="408" y="440" width="184" height="72" rx="8" fill="#EAE9E2" stroke="#504e49"/>
+          <text x="500" y="472" text-anchor="middle" fill="#141413" font-size="22" font-weight="500">Postgres</text>
+          <text x="500" y="496" text-anchor="middle" fill="#504e49" font-size="15" font-family="monospace">messages · inbox · tasks</text>
+
+          <line x1="156" y1="176" x2="156" y2="256" stroke="#504e49" stroke-width="1.2"/>
+          <path d="M150 246 L156 256 L162 246" fill="none" stroke="#504e49" stroke-width="1.6"/>
+          <text x="176" y="220" fill="#504e49" font-size="14" font-family="monospace">observe</text>
+
+          <line x1="248" y1="284" x2="408" y2="284" stroke="#1B365D" stroke-width="1.4"/>
+          <path d="M398 278 L408 284 L398 290" fill="none" stroke="#1B365D" stroke-width="1.6"/>
+          <text x="328" y="266" text-anchor="middle" fill="#1B365D" font-size="14" font-family="monospace">sendmessage</text>
+
+          <line x1="592" y1="284" x2="752" y2="284" stroke="#504e49" stroke-width="1.2"/>
+          <path d="M742 278 L752 284 L742 290" fill="none" stroke="#504e49" stroke-width="1.6"/>
+          <text x="672" y="266" text-anchor="middle" fill="#504e49" font-size="14" font-family="monospace">getupdates</text>
+
+          <path d="M844 328 C844 384 760 388 660 388 C560 388 500 364 500 328" fill="none" stroke="#504e49" stroke-width="1.2"/>
+          <path d="M506 338 L500 328 L494 338" fill="none" stroke="#504e49" stroke-width="1.6"/>
+          <text x="710" y="376" text-anchor="middle" fill="#504e49" font-size="14" font-family="monospace">sendmessage(context_token)</text>
+
+          <path d="M500 328 C500 384 356 388 248 316" fill="none" stroke="#504e49" stroke-width="1.2"/>
+          <path d="M258 318 L248 316 L254 324" fill="none" stroke="#504e49" stroke-width="1.6"/>
+          <text x="348" y="376" text-anchor="middle" fill="#504e49" font-size="14" font-family="monospace">getupdates task</text>
+
+          <path d="M248 304 C336 424 464 412 500 328" fill="none" stroke="#1B365D" stroke-width="1.4"/>
+          <path d="M502 340 L500 328 L492 338" fill="none" stroke="#1B365D" stroke-width="1.6"/>
+          <text x="356" y="430" text-anchor="middle" fill="#1B365D" font-size="14" font-family="monospace">ack task result</text>
+
+          <line x1="500" y1="328" x2="500" y2="440" stroke="#504e49" stroke-width="1.2"/>
+          <path d="M494 430 L500 440 L506 430" fill="none" stroke="#504e49" stroke-width="1.6"/>
+          <text x="524" y="388" fill="#504e49" font-size="14" font-family="monospace">tx</text>
+        </svg>
+        <figcaption>Figure 2. 同一套接口覆盖两类 Actor：terminal 上报和执行；aiagent 订阅和创建回复任务。</figcaption>
+      </figure>
+
+      <h3>Endpoint 语义</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Endpoint</th>
+            <th>terminal actor</th>
+            <th>aiagent actor</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>POST /ilink/sendmessage</code></td>
+            <td>上报 provider 侧收到的真实消息，写入 <code>messages</code>。</td>
+            <td>使用 <code>context_token</code> 创建 <code>send_message</code> Actor Task。</td>
+          </tr>
+          <tr>
+            <td><code>POST /ilink/getupdates</code></td>
+            <td>拉取分派给自己的任务，例如发送微信消息。</td>
+            <td>拉取订阅到的消息和任务执行结果。</td>
+          </tr>
+          <tr>
+            <td><code>POST /ilink/ack</code></td>
+            <td>确认 inbox item，并提交 task 成功或失败。</td>
+            <td>确认自己已经处理过的 inbox item。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="modules" class="chapter-break">
+      <h2>模块与调用者</h2>
+      <p>
+        当前实现把 HTTP、领域模型、内存 store、Postgres store 和进程入口分开。Store interface 是最重要的内部边界：server 不关心数据落在内存还是 Postgres。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>模块</th>
+            <th>职责</th>
+            <th>调用方向</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>cmd/msghub/main.go</code></td>
+            <td>进程入口，读取环境变量，选择 store，seed 默认 Actor，启动 HTTP server。</td>
+            <td>调用 <code>internal/msghub</code>。</td>
+          </tr>
+          <tr>
+            <td><code>internal/msghub/server.go</code></td>
+            <td>HTTP 协议边界，认证 Bearer token，按 Actor Kind 分发 sendmessage。</td>
+            <td>依赖 <code>Store</code> interface。</td>
+          </tr>
+          <tr>
+            <td><code>internal/msghub/model.go</code></td>
+            <td>领域对象、事件类型、请求响应 DTO。</td>
+            <td>被 server/store/test 共用。</td>
+          </tr>
+          <tr>
+            <td><code>internal/msghub/postgres_store.go</code></td>
+            <td>Postgres 事务、幂等写入、fanout、task 状态、capability 校验。</td>
+            <td>实现 <code>Store</code>。</td>
+          </tr>
+          <tr>
+            <td><code>internal/msghub/memory_store.go</code></td>
+            <td>内存实现，用于快速测试和无 DB 临时启动。</td>
+            <td>实现 <code>Store</code>。</td>
+          </tr>
+          <tr>
+            <td><code>internal/msghub/schema.sql</code></td>
+            <td>独立 msghub schema。</td>
+            <td>由 Postgres store embed 并初始化。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>外部调用者</h3>
+      <div class="grid three">
+        <div class="panel">
+          <span class="tag">terminal</span>
+          <h3>Linux WeChat Agent</h3>
+          <p>在 Linux 容器里连接微信客户端。它把微信收到的消息同步到 msghub，也从 msghub 拉取发送任务并调用微信客户端发送。</p>
+        </div>
+        <div class="panel">
+          <span class="tag">aiagent</span>
+          <h3>Clawman-as-agent</h3>
+          <p>未来 Clawman 可以作为 aiagent actor 接入。它从 msghub 拉取消息，再把回复意图写回 msghub。</p>
+        </div>
+        <div class="panel">
+          <span class="tag">admin</span>
+          <h3>Management Client</h3>
+          <p>概念已保留，但 v0 暂无 admin API。Actor seed 当前通过环境变量完成。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="database" class="chapter-break">
+      <h2>数据库设计</h2>
+      <p class="lead">
+        DB 设计遵循一个原则：消息事实、投递状态、执行任务分开存。不要用一张 messages 表同时表达事实、订阅者进度和待执行命令。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>表</th>
+            <th>目的</th>
+            <th>关键约束</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>actors</code></td>
+            <td>协议客户端身份。</td>
+            <td><code>actor_key</code> unique，<code>token_hash</code> unique，kind 限定为 terminal、aiagent、admin。</td>
+          </tr>
+          <tr>
+            <td><code>rooms</code></td>
+            <td>外部会话身份。</td>
+            <td><code>tenant_id + channel + provider_account_id + external_room_id</code> unique。</td>
+          </tr>
+          <tr>
+            <td><code>messages</code></td>
+            <td>append-only 消息事实。</td>
+            <td><code>room_id + source_actor_id + external_message_id</code> unique。</td>
+          </tr>
+          <tr>
+            <td><code>actor_subscriptions</code></td>
+            <td>Actor 对 Room 的订阅关系。</td>
+            <td><code>actor_id + room_id</code> unique。</td>
+          </tr>
+          <tr>
+            <td><code>actor_inbox</code></td>
+            <td>每个 Actor 的收件箱投递状态。</td>
+            <td><code>actor_id + event_type + resource_type + resource_id</code> unique。</td>
+          </tr>
+          <tr>
+            <td><code>actor_tasks</code></td>
+            <td>分派给 Actor 执行的任务。</td>
+            <td>status 限定为 pending、acked、failed。</td>
+          </tr>
+          <tr>
+            <td><code>capability_tokens</code></td>
+            <td>短期授权。</td>
+            <td>action 限定为 reply、send_message、ack_task；uses_remaining 不能小于 0。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>明确不保留的兼容字段</h3>
+      <pre>direction
+raw_payload
+agent_session_id
+source_message_from_id
+source_message_to_id
+prompt
+memory_items
+memory_write_jobs
+memory_change_audit</pre>
+      <p>
+        这些字段不进入 msghub v0，是因为它们要么属于旧 Clawman runtime，要么会把 provider 原始数据和规范化消息事实重新混在一起。v0 把 provider-specific detail 放进 <code>messages.body</code> 或 <code>actor_tasks.payload</code>。
+      </p>
+    </section>
+
+    <section id="validation" class="chapter-break">
+      <h2>验收结果</h2>
+      <p>
+        当前验收覆盖三层：单进程 HTTP roundtrip、Postgres-backed roundtrip、真实进程级 HTTP e2e。进程级测试启动 <code>cmd/msghub</code>，通过 HTTP 调用 <code>/ilink/*</code>，随后直接检查 Postgres 表数据。
+      </p>
+      <div class="grid three">
+        <div class="panel">
+          <div class="metric"><span class="metric-value">2</span><span class="metric-label">actors</span></div>
+          <p class="muted">terminal-wechat + aiagent-clawman</p>
+        </div>
+        <div class="panel">
+          <div class="metric"><span class="metric-value">1</span><span class="metric-label">room / message / task</span></div>
+          <p class="muted">私聊 Room、一条 inbound message、一条 send_message task。</p>
+        </div>
+        <div class="panel">
+          <div class="metric"><span class="metric-value">3</span><span class="metric-label">inbox events</span></div>
+          <p class="muted">message.received、message.send_requested、message.sent。</p>
+        </div>
+      </div>
+      <h3>通过的命令</h3>
+      <pre>go test -count=1 ./...
+MSGHUB_E2E_DATABASE_URL='postgres://tinyclaw:tinyclaw@127.0.0.1:54329/msghub_e2e?sslmode=disable' \
+  go test -count=1 ./internal/msghub -run TestPostgresIlinkActorRoundTrip -v</pre>
+      <h3>DB 检查结果</h3>
+      <pre>{"actors" : 2, "rooms" : 1, "messages" : 1, "actor_inbox" : 3, "actor_tasks" : 1, "capability_tokens" : 1}
+
+message: wechat-message-1 | alice | text | hello
+task: acked | pong
+inbox: message.received=1, message.send_requested=1, message.sent=1</pre>
+      <div class="callout">
+        非 iLink 路由也被验证：<code>/api/messages</code> 返回 404。这保证 msghub 对外不是 Clawman API 的兼容副本。
+      </div>
+    </section>
+
+    <section id="risks" class="chapter-break">
+      <h2>剩余决策</h2>
+      <p>
+        v0 已经能支撑 terminal-agent 与 aiagent 通过统一接口完成消息收发闭环。下一层真正需要决策的是生产可运维能力，而不是继续加字段。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>主题</th>
+            <th>当前判断</th>
+            <th>触发条件</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Actor 管理 API</td>
+            <td>v0 用环境变量 seed 足够。</td>
+            <td>需要动态创建 terminal/aiagent、禁用 Actor、轮换 token。</td>
+          </tr>
+          <tr>
+            <td>Capability Token 存储</td>
+            <td>当前存明文 token 以支持 getupdates 重放同一个 pending inbox。</td>
+            <td>进入生产安全审计时，改为签名自包含 token 或加密存储。</td>
+          </tr>
+          <tr>
+            <td>Room Participants</td>
+            <td>v0 不需要。</td>
+            <td>需要完整群成员列表、成员角色、当前 display name、跨 Room 身份合并。</td>
+          </tr>
+          <tr>
+            <td>Media Objects</td>
+            <td>v0 放在 body/payload。</td>
+            <td>需要预上传、复用、过期、加密 CDN 元数据或 scoped media URL。</td>
+          </tr>
+          <tr>
+            <td>Task Retry / Lock</td>
+            <td>v0 只记录 pending、acked、failed。</td>
+            <td>terminal-agent 多实例、任务超时重试、死信队列。</td>
+          </tr>
+          <tr>
+            <td>Clawman 接入</td>
+            <td>应作为 aiagent actor 接入。</td>
+            <td>需要把当前 <code>/api/messages -> Agent Run -> Delivery</code> 改成 <code>/ilink/getupdates -> Agent Run -> /ilink/sendmessage</code>。</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        推荐下一步不是继续扩表，而是实现一个最小 Linux WeChat terminal-agent，用真实微信客户端完成：读取消息、写入 msghub、拉取 send_message task、发送微信、ack task。
+      </p>
+    </section>
+  </main>
+</body>
+</html>

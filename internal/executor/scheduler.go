@@ -51,13 +51,14 @@ type Runner interface {
 }
 
 type AgentRunRequest struct {
-	AgentRun            core.AgentRun
-	ContextMessages     []core.Message
-	SelectedAgents      []core.Agent
-	MediaBaseURL        string
-	MemorySearchURL     string
-	MemorySearchToken   string
-	MemorySearchResults []core.MemorySearchResult
+	AgentRun               core.AgentRun
+	ContextMessages        []core.Message
+	SelectedAgents         []core.Agent
+	MediaBaseURL           string
+	MemorySearchURL        string
+	MemorySearchToken      string
+	MemorySearchResults    []core.MemorySearchResult
+	AttachmentObservations []core.AttachmentObservationResult
 }
 
 type Scheduler struct {
@@ -256,6 +257,7 @@ func (s *Scheduler) runOnceWithOwner(ctx context.Context, owner string) bool {
 		"selected_agent_ids", selectedAgentIDs,
 		"selected_agent_keys", selectedAgentKeys,
 		"memory_search_count", result.MemorySearchCount,
+		"attachment_observation_count", result.AttachmentObservationCount,
 		"memory_write_job_count", len(result.MemoryWriteProposals),
 		"background_task_count", result.BackgroundTaskCount,
 		"delivery_id", deliveryID,

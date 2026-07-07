@@ -21,15 +21,16 @@ type Config struct {
 
 	MetricsAddr string
 
-	AgentRunner            string
-	AgentWorkerConcurrency int
-	CodexBin               string
-	CodexWorkDir           string
-	CodexModel             string
-	CodexSandbox           string
-	CodexOpenAIBaseURL     string
-	CodexDisabledFeatures  []string
-	CodexRunnerTimeout     time.Duration
+	AgentRunner                string
+	AgentWorkerConcurrency     int
+	CodexBin                   string
+	CodexWorkDir               string
+	CodexModel                 string
+	CodexSandbox               string
+	CodexOpenAIBaseURL         string
+	CodexAutoCompactTokenLimit int
+	CodexDisabledFeatures      []string
+	CodexRunnerTimeout         time.Duration
 
 	GeneratedMediaS3Endpoint        string
 	GeneratedMediaS3Bucket          string
@@ -71,6 +72,7 @@ func LoadConfig() (Config, error) {
 			"CODEX_OPENAI_BASE_URL",
 			os.Getenv("OPENAI_BASE_URL"),
 		)),
+		CodexAutoCompactTokenLimit: parseNonNegativeIntEnvDefault("CODEX_AUTO_COMPACT_TOKEN_LIMIT", 40000),
 		CodexDisabledFeatures: parseCSVEnv("CODEX_DISABLED_FEATURES", []string{
 			"apps",
 			"tool_suggest",
@@ -129,6 +131,18 @@ func parsePositiveIntEnvDefault(key string, def int) int {
 	}
 	v, err := strconv.Atoi(raw)
 	if err != nil || v <= 0 {
+		return def
+	}
+	return v
+}
+
+func parseNonNegativeIntEnvDefault(key string, def int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v < 0 {
 		return def
 	}
 	return v
